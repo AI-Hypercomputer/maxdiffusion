@@ -274,40 +274,44 @@ def _select_flash_block_sizes(
     dtype: jnp.dtype,
     attention_kernel: str,
 ) -> BlockSizes:
+  """Selects Flash/Splash attention block sizes, clamping only for short sequences and preserving user config."""
   query_seq_len = _flash_sequence_length(query)
   key_seq_len = _flash_sequence_length(key)
+  default_max_block = 1024 if dtype == jnp.bfloat16 else 512
+  use_tokamax = "tokamax" in attention_kernel
 
-  q_max_block_size = 1024 if dtype == jnp.bfloat16 else 512
-  if key_seq_len != query_seq_len:
-    kv_max_block_size = ((key_seq_len + 127) // 128) * 128
-  else:
-    kv_max_block_size = q_max_block_size
+  if flash_block_sizes is not None:
+    user_bkv = getattr(flash_block_sizes, "block_kv", flash_block_sizes.block_q)
+    kv_max_bound = ((key_seq_len + 127) // 128) * 128
+    safe_bkv = min(user_bkv, kv_max_bound)
 
-  # Custom kernels use a lightweight carrier that omits the standard Splash
-  # backward fields. A remapped/local standard kernel still needs a complete
-  # BlockSizes object, including when cross-attention happens to have q_len ==
-  # kv_len.
-  if flash_block_sizes is not None and not hasattr(flash_block_sizes, "use_fused_bwd_kernel"):
-    flash_block_sizes = _coerce_tokamax_block_sizes(flash_block_sizes)
+    user_bq = flash_block_sizes.block_q
+    q_max_bound = ((query_seq_len + 127) // 128) * 128
+    safe_bq = min(user_bq, q_max_bound)
 
-  # Keep configured block sizes for self-attention, but let
-  # cross-attention derive safe KV-aware sizes when q_len != kv_len.
-  if flash_block_sizes and key_seq_len == query_seq_len:
-    if attention_kernel in ["tokamax_flash", "tokamax_ring"]:
-      return _coerce_tokamax_block_sizes(flash_block_sizes)
-    return flash_block_sizes
+    return splash_attention_kernel.BlockSizes(
+        block_q=safe_bq,
+        block_kv=safe_bkv,
+        block_kv_compute=min(getattr(flash_block_sizes, "block_kv_compute", safe_bkv), safe_bkv),
+        block_q_dkv=safe_bq,
+        block_kv_dkv=safe_bkv,
+        block_kv_dkv_compute=min(safe_bkv, query_seq_len),
+        block_q_dq=None if use_tokamax else safe_bq,
+        block_kv_dq=None if use_tokamax else min(safe_bkv, query_seq_len),
+        use_fused_bwd_kernel=True if use_tokamax else False,
+    )
 
-  block_size_q = flash_block_sizes.block_q if flash_block_sizes else q_max_block_size
-  use_tokamax = attention_kernel in ["tokamax_flash", "tokamax_ring"]
+  block_q = min(default_max_block, query_seq_len)
+  block_kv = min(default_max_block, key_seq_len)
   return splash_attention_kernel.BlockSizes(
-      block_q=block_size_q,
-      block_kv_compute=min(kv_max_block_size, key_seq_len),
-      block_kv=min(kv_max_block_size, key_seq_len),
-      block_q_dkv=block_size_q,
-      block_kv_dkv=min(kv_max_block_size, key_seq_len),
-      block_kv_dkv_compute=min(kv_max_block_size, query_seq_len),
-      block_q_dq=None if use_tokamax else block_size_q,
-      block_kv_dq=None if use_tokamax else min(kv_max_block_size, query_seq_len),
+      block_q=block_q,
+      block_kv=block_kv,
+      block_kv_compute=block_kv,
+      block_q_dkv=block_q,
+      block_kv_dkv=block_kv,
+      block_kv_dkv_compute=min(block_kv, query_seq_len),
+      block_q_dq=None if use_tokamax else block_q,
+      block_kv_dq=None if use_tokamax else min(block_kv, query_seq_len),
       use_fused_bwd_kernel=True if use_tokamax else False,
   )
 
@@ -1963,7 +1967,8 @@ def _apply_attention(
 
   # Module-level Registry lookup
   if effective_attention_kernel in KERNEL_REGISTRY:
-    return KERNEL_REGISTRY[effective_attention_kernel](query, key, value, context)
+    with jax.named_scope(f"kernel_{effective_attention_kernel}"):
+      return KERNEL_REGISTRY[effective_attention_kernel](query, key, value, context)
 
   raise ValueError(f"Unexpected attention kernel {effective_attention_kernel=}.")
 

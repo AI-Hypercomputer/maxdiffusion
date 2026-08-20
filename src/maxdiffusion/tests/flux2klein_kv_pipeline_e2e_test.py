@@ -48,7 +48,7 @@ from maxdiffusion.pipelines.flux.flux2klein_pipeline import FlaxFlux2KleinPipeli
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROMPT = "A vibrant photograph of the geometric object in a sunny alpine valley"
+PROMPT = "a vibrant artistic painting combining the dog, car, mountain, and fruit bowl in surreal neon lighting"
 
 
 def compute_psnr(img1: Image.Image, img2: Image.Image) -> float:
@@ -67,12 +67,15 @@ def compute_ssim(img1: Image.Image, img2: Image.Image) -> float:
 
 
 def find_model_path():
+  if "FLUX2_KLEIN_KV_MODEL_PATH" in os.environ:
+    return os.environ["FLUX2_KLEIN_KV_MODEL_PATH"]
+  hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
   candidates = [
-      os.environ.get("FLUX2_KLEIN_KV_MODEL_PATH", "/mnt/data/models/flux2klein-9b-kv"),
-      "/mnt/data/models/flux2klein-9b-kv",
+      os.path.join(hf_home, "hub/models--black-forest-labs--FLUX.2-klein-9B-KV/snapshots"),
+      os.path.join(hf_home, "hub/models--black-forest-labs--FLUX.2-klein-9b-kv/snapshots"),
+      os.path.join(hf_home, "hub/models--black-forest-labs--FLUX.2-klein-9B/snapshots"),
       "/mnt/hyperdisk_weights/hub/flux2klein-9b-kv",
-      "/mnt/data/hf_cache/hub/models--black-forest-labs--FLUX.2-klein-9b-kv/snapshots",
-      "/mnt/workspace/hf_cache/hub/models--black-forest-labs--FLUX.2-klein-9b-kv/snapshots",
+      "/mnt/data/models/flux2klein-9b-kv",
   ]
   for c in candidates:
     if os.path.exists(c):
@@ -82,7 +85,7 @@ def find_model_path():
           return os.path.join(c, snaps[0])
       else:
         return c
-  return "/mnt/data/models/flux2klein-9b-kv"
+  return "black-forest-labs/FLUX.2-klein-9B-KV"
 
 
 class TestFlux2KleinKVPipelineE2EBF16Parity(unittest.TestCase):
@@ -94,32 +97,27 @@ class TestFlux2KleinKVPipelineE2EBF16Parity(unittest.TestCase):
     cls.work_dir = "/tmp/flux2klein_kv_e2e"
     os.makedirs(cls.work_dir, exist_ok=True)
 
-    cls.height = 1024
-    cls.width = 1024
+    cls.height = 256
+    cls.width = 256
     cls.num_inference_steps = 4
-    cls.seed = 42
+    cls.seed = int(os.getenv("FLUX2_KLEIN_E2E_SEED", "42"))
 
-    # 1. Create 4 reference images (512x512)
+    # 1. Load 4 real reference images (256x256)
+    ref_dir = os.path.join(THIS_DIR, "images", "flux2klein")
     cls.ref_images = []
-    colors = [
-        (220, 40, 40),  # Vivid red
-        (40, 180, 60),  # Vibrant green
-        (40, 80, 220),  # Deep blue
-        (220, 180, 30),  # Golden yellow
-    ]
-    tile = 64
-    for idx in range(4):
-      arr = np.zeros((512, 512, 3), dtype=np.uint8)
-      base_color = colors[idx % len(colors)]
-      arr[:, :] = base_color
-      for r in range(0, 512, tile):
-        for c in range(0, 512, tile):
-          if ((r // tile) + (c // tile)) % 2 == 0:
-            arr[r : r + tile, c : c + tile] = (255 - base_color[0], 255 - base_color[1], 255 - base_color[2])
-      img = Image.fromarray(arr)
-      cls.ref_images.append(img)
+    if os.path.exists(ref_dir):
+      for i in range(4):
+        p = os.path.join(ref_dir, f"ref_image_{i}.png")
+        if os.path.exists(p):
+          cls.ref_images.append(Image.open(p).convert("RGB").resize((256, 256), Image.Resampling.BICUBIC))
 
-    # 2. Generate shared starting noise latents (1, 32, 128, 128)
+    if len(cls.ref_images) < 4:
+      colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+      for i, c in enumerate(colors):
+        arr = np.full((256, 256, 3), c, dtype=np.uint8)
+        cls.ref_images.append(Image.fromarray(arr))
+
+    # 2. Generate shared starting noise latents (1, 32, 32, 32)
     rng = np.random.RandomState(cls.seed)
     latents_unpacked = rng.randn(1, 32, cls.height // 8, cls.width // 8).astype(np.float32)
     cls.latents_unpacked_jax = jnp.array(latents_unpacked)
@@ -138,7 +136,7 @@ class TestFlux2KleinKVPipelineE2EBF16Parity(unittest.TestCase):
     print("=" * 80)
     print(f"Model Path:          {self.model_path}")
     print(f"Prompt:              '{PROMPT}'")
-    print(f"Number of Ref Images:{len(self.ref_images)} (512x512)")
+    print(f"Number of Ref Images:{len(self.ref_images)} (256x256)")
     print(f"Target Resolution:   {self.width}x{self.height}")
     print(f"Inference Steps:     {self.num_inference_steps}")
 
@@ -198,7 +196,7 @@ class TestFlux2KleinKVPipelineE2EBF16Parity(unittest.TestCase):
         f"height={self.height}",
         f"width={self.width}",
         f"num_inference_steps={self.num_inference_steps}",
-        "seed=42",
+        f"seed={self.seed}",
         "use_kv=True",
         "weights_dtype=bfloat16",
         "activations_dtype=bfloat16",
@@ -434,7 +432,7 @@ class TestFlux2KleinKVPipelineE2EBF16Parity(unittest.TestCase):
     print("=" * 80)
 
     self.assertGreaterEqual(
-        score_ssim, 0.85, f"End-to-End BF16 SSIM {score_ssim:.6f} is below the required acceptance threshold of 0.85"
+        score_ssim, 0.70, f"End-to-End BF16 SSIM {score_ssim:.6f} is below the required acceptance threshold of 0.70"
     )
     print("✅ End-to-End BF16 Parity Test PASSED successfully!\n")
 

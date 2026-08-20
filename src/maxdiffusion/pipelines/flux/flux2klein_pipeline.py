@@ -568,7 +568,6 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
       warmup: bool = False,
       output_dir: str = "output/",
       output_name: str = "flux2klein_generated_image.png",
-      profile_target: Optional[str] = None,
       use_kv: Optional[bool] = None,
   ):
     # 1. Setup JIT functions
@@ -746,16 +745,9 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
 
         # Run Text Encoding with sharded input arrays matching compile_aot_async
         prompt_ids = put_data_on_devices(prompt_ids, data_sharding)
-        prompt_mask = put_data_on_devices(prompt_mask, data_sharding)
-        do_prof_qwen3 = profile_target in ("all", "qwen3")
-        if do_prof_qwen3:
-          tb_dir = getattr(self._config, "tensorboard_dir", "/tmp")
-          jax.profiler.start_trace(os.path.join(tb_dir, "profile_qwen3"))
         with jax.named_scope("qwen3_text_encoder"):
           prompt_embeds_jax = self._jitted_qwen3_forward(qwen3_params, prompt_ids, prompt_mask)
         prompt_embeds_jax.block_until_ready()
-        if do_prof_qwen3:
-          jax.profiler.stop_trace()
       except Exception as e:
         max_logging.log(f"❌ {host_prefix} EXCEPTION IN PHASE A (QWEN3 ENCODING): {e}")
         import traceback
@@ -815,11 +807,6 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
         timesteps_device = put_data_on_devices(scheduler_state.timesteps, replicated_sharding)
         sigmas_device = put_data_on_devices(scheduler_state.sigmas, replicated_sharding)
 
-        do_prof_denoise = profile_target in ("all", "denoise")
-        if do_prof_denoise:
-          tb_dir = getattr(self._config, "tensorboard_dir", "/tmp")
-          jax.profiler.start_trace(os.path.join(tb_dir, "profile_denoise"))
-
         use_kv = getattr(self._config, "use_kv", False) if use_kv is None else use_kv
         if use_kv and len(packed_ref_latents) > 0:
           ref_latents_device = put_data_on_devices(ref_latents_jax, data_sharding)
@@ -858,8 +845,6 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
                 seq_len_img,
             )
             latents_jax.block_until_ready()
-        if do_prof_denoise:
-          jax.profiler.stop_trace()
 
       except Exception as e:
         max_logging.log(f"❌ {host_prefix} EXCEPTION IN DENOISE LOOP: {e}")
@@ -897,16 +882,10 @@ class FlaxFlux2KleinPipeline(FlaxDiffusionPipeline):
     trace["denoise_to_vae"] = t0_vae_start - t0_denoise_end
     max_logging.log(f" -> [TIMING] Denoising to VAE Overhead: {trace['denoise_to_vae']:.4f} seconds ⏱️")
 
-    do_prof_vae = profile_target in ("all", "vae")
-    if do_prof_vae:
-      tb_dir = getattr(self._config, "tensorboard_dir", "/tmp")
-      jax.profiler.start_trace(os.path.join(tb_dir, "profile_vae"))
     with jax.named_scope("vae_decoder"):
       decoded_out = self._jitted_vae_decode(vae_params, latents_jax, vae_bn_mean_jax, vae_bn_std_jax, height, width)
     images_rgb = decoded_out.sample
     images_rgb.block_until_ready()
-    if do_prof_vae:
-      jax.profiler.stop_trace()
 
     t0_vae_end = time.perf_counter()
     trace["vae_decode"] = t0_vae_end - t0_vae_start

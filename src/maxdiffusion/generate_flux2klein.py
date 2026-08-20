@@ -709,11 +709,15 @@ def main(argv):
       max_logging.log(f"   - {step_num}. VAE -> Qwen3:             {avg_vae_to_qwen3*1000:.2f} ms ({avg_vae_to_qwen3:.4f}s)")
       step_num += 1
     else:
-      max_logging.log(f"   - {step_num}. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)")
+      max_logging.log(
+          f"   - {step_num}. Start -> Qwen3:          {avg_start_to_qwen3*1000:.2f} ms ({avg_start_to_qwen3:.4f}s)"
+      )
       step_num += 1
     max_logging.log(f"   - {step_num}. Qwen3 Encoding:         {avg_prompt_enc*1000:.2f} ms ({avg_prompt_enc:.4f}s)")
     step_num += 1
-    max_logging.log(f"   - {step_num}. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)")
+    max_logging.log(
+        f"   - {step_num}. Qwen3 -> Denoising:      {avg_qwen3_to_denoise*1000:.2f} ms ({avg_qwen3_to_denoise:.4f}s)"
+    )
     step_num += 1
     max_logging.log(f"   - {step_num}. Flux Denoising Loop:    {avg_denoise*1000:.2f} ms ({avg_denoise:.4f}s)")
     step_num += 1

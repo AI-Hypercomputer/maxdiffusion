@@ -1442,95 +1442,99 @@ class NNXFluxAttention(nnx.Module):
     B, L = hidden_states.shape[:2]
     H, D = self.heads, self.dim_head
 
-    qkv_proj = self.i_qkv(hidden_states).reshape(B, L, 3, H, D)
-    query_proj, key_proj, value_proj = jnp.split(qkv_proj, 3, axis=2)
-    query_proj = self.query_norm(query_proj.squeeze(2))
-    key_proj = self.key_norm(key_proj.squeeze(2))
-    value_proj = value_proj.squeeze(2)
+    with jax.named_scope("qkv_projections"):
+      qkv_proj = self.i_qkv(hidden_states).reshape(B, L, 3, H, D)
+      query_proj, key_proj, value_proj = jnp.split(qkv_proj, 3, axis=2)
+      query_proj = self.query_norm(query_proj.squeeze(2))
+      key_proj = self.key_norm(key_proj.squeeze(2))
+      value_proj = value_proj.squeeze(2)
 
-    if encoder_hidden_states is not None:
-      B_enc, L_txt = encoder_hidden_states.shape[:2]
-      encoder_qkv_proj = self.e_qkv(encoder_hidden_states).reshape(B_enc, L_txt, 3, H, D)
-      enc_query_proj, enc_key_proj, enc_value_proj = jnp.split(encoder_qkv_proj, 3, axis=2)
-      enc_query_proj = self.encoder_query_norm(enc_query_proj.squeeze(2))
-      enc_key_proj = self.encoder_key_norm(enc_key_proj.squeeze(2))
-      enc_value_proj = enc_value_proj.squeeze(2)
+      if encoder_hidden_states is not None:
+        B_enc, L_txt = encoder_hidden_states.shape[:2]
+        encoder_qkv_proj = self.e_qkv(encoder_hidden_states).reshape(B_enc, L_txt, 3, H, D)
+        enc_query_proj, enc_key_proj, enc_value_proj = jnp.split(encoder_qkv_proj, 3, axis=2)
+        enc_query_proj = self.encoder_query_norm(enc_query_proj.squeeze(2))
+        enc_key_proj = self.encoder_key_norm(enc_key_proj.squeeze(2))
+        enc_value_proj = enc_value_proj.squeeze(2)
 
-      query_proj = jnp.concatenate((enc_query_proj, query_proj), axis=1)
-      key_proj = jnp.concatenate((enc_key_proj, key_proj), axis=1)
-      value_proj = jnp.concatenate((enc_value_proj, value_proj), axis=1)
+        query_proj = jnp.concatenate((enc_query_proj, query_proj), axis=1)
+        key_proj = jnp.concatenate((enc_key_proj, key_proj), axis=1)
+        value_proj = jnp.concatenate((enc_value_proj, value_proj), axis=1)
 
     if image_rotary_emb is not None:
-      if not isinstance(image_rotary_emb, (tuple, list)):
-        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-      else:
-        image_rotary_emb_reordered = image_rotary_emb
-      query_proj = query_proj.swapaxes(1, 2)
-      key_proj = key_proj.swapaxes(1, 2)
-      query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb_reordered)
-      query_proj = query_proj.swapaxes(1, 2)
-      key_proj = key_proj.swapaxes(1, 2)
+      with jax.named_scope("rope_embeddings"):
+        if not isinstance(image_rotary_emb, (tuple, list)):
+          image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+        else:
+          image_rotary_emb_reordered = image_rotary_emb
+        query_proj = query_proj.swapaxes(1, 2)
+        key_proj = key_proj.swapaxes(1, 2)
+        query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb_reordered)
+        query_proj = query_proj.swapaxes(1, 2)
+        key_proj = key_proj.swapaxes(1, 2)
 
     layer_kv = None
     num_txt_tokens = encoder_hidden_states.shape[1] if encoder_hidden_states is not None else 0
 
-    if kv_cache_mode == "extract" and num_ref_tokens > 0:
-      ref_start = num_txt_tokens
-      ref_end = num_txt_tokens + num_ref_tokens
-      k_ref = key_proj[:, ref_start:ref_end, :, :]
-      v_ref = value_proj[:, ref_start:ref_end, :, :]
-      layer_kv = (k_ref, v_ref)
+    with jax.named_scope("joint_attention_op"):
+      if kv_cache_mode == "extract" and num_ref_tokens > 0:
+        ref_start = num_txt_tokens
+        ref_end = num_txt_tokens + num_ref_tokens
+        k_ref = key_proj[:, ref_start:ref_end, :, :]
+        v_ref = value_proj[:, ref_start:ref_end, :, :]
+        layer_kv = (k_ref, v_ref)
 
-      q_txt = query_proj[:, :ref_start]
-      q_ref = query_proj[:, ref_start:ref_end]
-      q_img = query_proj[:, ref_end:]
+        q_txt = query_proj[:, :ref_start]
+        q_ref = query_proj[:, ref_start:ref_end]
+        q_img = query_proj[:, ref_end:]
 
-      q_txt_img = jnp.concatenate([q_txt, q_img], axis=1).reshape(B, -1, H * D)
-      k_all = key_proj.reshape(B, -1, H * D)
-      v_all = value_proj.reshape(B, -1, H * D)
+        q_txt_img = jnp.concatenate([q_txt, q_img], axis=1).reshape(B, -1, H * D)
+        k_all = key_proj.reshape(B, -1, H * D)
+        v_all = value_proj.reshape(B, -1, H * D)
 
-      attn_txt_img = self.attention_op.apply_attention(q_txt_img, k_all, v_all)
-      attn_txt = attn_txt_img[:, :ref_start]
-      attn_img = attn_txt_img[:, ref_start:]
+        attn_txt_img = self.attention_op.apply_attention(q_txt_img, k_all, v_all)
+        attn_txt = attn_txt_img[:, :ref_start]
+        attn_img = attn_txt_img[:, ref_start:]
 
-      q_ref_flat = q_ref.reshape(B, -1, H * D)
-      k_ref_flat = k_ref.reshape(B, -1, H * D)
-      v_ref_flat = v_ref.reshape(B, -1, H * D)
-      attn_ref = self.attention_op.apply_attention(q_ref_flat, k_ref_flat, v_ref_flat)
+        q_ref_flat = q_ref.reshape(B, -1, H * D)
+        k_ref_flat = k_ref.reshape(B, -1, H * D)
+        v_ref_flat = v_ref.reshape(B, -1, H * D)
+        attn_ref = self.attention_op.apply_attention(q_ref_flat, k_ref_flat, v_ref_flat)
 
-      attn_output = jnp.concatenate([attn_txt, attn_ref, attn_img], axis=1)
+        attn_output = jnp.concatenate([attn_txt, attn_ref, attn_img], axis=1)
 
-    elif kv_cache_mode == "cached" and kv_cache is not None:
-      k_ref, v_ref = kv_cache
-      k_txt = key_proj[:, :num_txt_tokens]
-      k_img = key_proj[:, num_txt_tokens:]
-      v_txt = value_proj[:, :num_txt_tokens]
-      v_img = value_proj[:, num_txt_tokens:]
+      elif kv_cache_mode == "cached" and kv_cache is not None:
+        k_ref, v_ref = kv_cache
+        k_txt = key_proj[:, :num_txt_tokens]
+        k_img = key_proj[:, num_txt_tokens:]
+        v_txt = value_proj[:, :num_txt_tokens]
+        v_img = value_proj[:, num_txt_tokens:]
 
-      k_all = jnp.concatenate([k_txt, k_ref, k_img], axis=1).reshape(B, -1, H * D)
-      v_all = jnp.concatenate([v_txt, v_ref, v_img], axis=1).reshape(B, -1, H * D)
-      q_all = query_proj.reshape(B, -1, H * D)
+        k_all = jnp.concatenate([k_txt, k_ref, k_img], axis=1).reshape(B, -1, H * D)
+        v_all = jnp.concatenate([v_txt, v_ref, v_img], axis=1).reshape(B, -1, H * D)
+        q_all = query_proj.reshape(B, -1, H * D)
 
-      attn_output = self.attention_op.apply_attention(q_all, k_all, v_all)
+        attn_output = self.attention_op.apply_attention(q_all, k_all, v_all)
 
-    else:
-      query_proj = query_proj.reshape(B, -1, H * D)
-      key_proj = key_proj.reshape(B, -1, H * D)
-      value_proj = value_proj.reshape(B, -1, H * D)
+      else:
+        query_proj = query_proj.reshape(B, -1, H * D)
+        key_proj = key_proj.reshape(B, -1, H * D)
+        value_proj = value_proj.reshape(B, -1, H * D)
 
-      if encoder_hidden_states is not None:
-        query_proj = nn.with_logical_constraint(query_proj, ("activation_batch", "activation_length", "activation_heads"))
-        key_proj = nn.with_logical_constraint(key_proj, ("activation_batch", "activation_length", "activation_heads"))
-        value_proj = nn.with_logical_constraint(value_proj, ("activation_batch", "activation_length", "activation_heads"))
+        if encoder_hidden_states is not None:
+          query_proj = nn.with_logical_constraint(query_proj, ("activation_batch", "activation_length", "activation_heads"))
+          key_proj = nn.with_logical_constraint(key_proj, ("activation_batch", "activation_length", "activation_heads"))
+          value_proj = nn.with_logical_constraint(value_proj, ("activation_batch", "activation_length", "activation_heads"))
 
-      attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+        attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
 
     context_attn_output = None
     if encoder_hidden_states is not None:
-      context_attn_output = attn_output[:, : encoder_hidden_states.shape[1]]
-      attn_output = attn_output[:, encoder_hidden_states.shape[1] :]
-      attn_output = self.i_proj(attn_output)
-      context_attn_output = self.e_proj(context_attn_output)
+      with jax.named_scope("attention_out_projections"):
+        context_attn_output = attn_output[:, : encoder_hidden_states.shape[1]]
+        attn_output = attn_output[:, encoder_hidden_states.shape[1] :]
+        attn_output = self.i_proj(attn_output)
+        context_attn_output = self.e_proj(context_attn_output)
 
     return (attn_output, context_attn_output), layer_kv
 
@@ -1718,29 +1722,33 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
       c_scale_mlp = jnp.expand_dims(c_scale_mlp, axis=1)
       c_gate_mlp = jnp.expand_dims(c_gate_mlp, axis=1)
 
-    norm1_h = self.norm1(hidden_states) * (1.0 + scale_msa) + shift_msa
-    norm1_enc = self.norm1_context(encoder_hidden_states) * (1.0 + c_scale_msa) + c_shift_msa
+    with jax.named_scope("norm1_and_modulation"):
+      norm1_h = self.norm1(hidden_states) * (1.0 + scale_msa) + shift_msa
+      norm1_enc = self.norm1_context(encoder_hidden_states) * (1.0 + c_scale_msa) + c_shift_msa
 
-    (attn_img, attn_txt), layer_kv = self.attn(
-        hidden_states=norm1_h,
-        encoder_hidden_states=norm1_enc,
-        image_rotary_emb=image_rotary_emb,
-        kv_cache=kv_cache,
-        kv_cache_mode=kv_cache_mode,
-        num_ref_tokens=num_ref_tokens,
-    )
+    with jax.named_scope("double_attention"):
+      (attn_img, attn_txt), layer_kv = self.attn(
+          hidden_states=norm1_h,
+          encoder_hidden_states=norm1_enc,
+          image_rotary_emb=image_rotary_emb,
+          kv_cache=kv_cache,
+          kv_cache_mode=kv_cache_mode,
+          num_ref_tokens=num_ref_tokens,
+      )
 
-    hidden_states = hidden_states + gate_msa * attn_img
-    encoder_hidden_states = encoder_hidden_states + c_gate_msa * attn_txt
+      hidden_states = hidden_states + gate_msa * attn_img
+      encoder_hidden_states = encoder_hidden_states + c_gate_msa * attn_txt
 
-    norm2_h = self.norm2(hidden_states) * (1.0 + scale_mlp) + shift_mlp
-    norm2_enc = self.norm2_context(encoder_hidden_states) * (1.0 + c_scale_mlp) + c_shift_mlp
+    with jax.named_scope("norm2_and_modulation"):
+      norm2_h = self.norm2(hidden_states) * (1.0 + scale_mlp) + shift_mlp
+      norm2_enc = self.norm2_context(encoder_hidden_states) * (1.0 + c_scale_mlp) + c_shift_mlp
 
-    mlp_output = self.ff(norm2_h)
-    encoder_mlp_output = self.ff_context(norm2_enc)
+    with jax.named_scope("double_mlp"):
+      mlp_output = self.ff(norm2_h)
+      encoder_mlp_output = self.ff_context(norm2_enc)
 
-    hidden_states = hidden_states + gate_mlp * mlp_output
-    encoder_hidden_states = encoder_hidden_states + c_gate_mlp * encoder_mlp_output
+      hidden_states = hidden_states + gate_mlp * mlp_output
+      encoder_hidden_states = encoder_hidden_states + c_gate_mlp * encoder_mlp_output
 
     return encoder_hidden_states, hidden_states, layer_kv
 
@@ -1836,86 +1844,93 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
       scale_msa = jnp.expand_dims(scale_msa, axis=1)
       gate = jnp.expand_dims(gate, axis=1)
 
-    norm_hidden_states = self.norm(hidden_states)
-    norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+    with jax.named_scope("norm_and_modulation"):
+      norm_hidden_states = self.norm(hidden_states)
+      norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
 
-    qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
-    qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
-    mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
+    with jax.named_scope("linear1_qkv_and_mlp"):
+      qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
+      qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
+      mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
 
-    B, L = hidden_states.shape[:2]
-    H, D = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3)
-    qkv_proj = qkv.reshape(B, L, 3, H, D).transpose(2, 0, 3, 1, 4)
-    q, k, v = qkv_proj
+      B, L = hidden_states.shape[:2]
+      H, D = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3)
+      qkv_proj = qkv.reshape(B, L, 3, H, D).transpose(2, 0, 3, 1, 4)
+      q, k, v = qkv_proj
 
-    q = self.attn.query_norm(q)
-    k = self.attn.key_norm(k)
+      q = self.attn.query_norm(q)
+      k = self.attn.key_norm(k)
 
     if image_rotary_emb is not None:
-      if isinstance(image_rotary_emb, (tuple, list)):
-        image_rotary_emb_reordered = image_rotary_emb
-      else:
-        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
-      q, k = apply_rope(q, k, image_rotary_emb_reordered)
+      with jax.named_scope("rope_embeddings"):
+        if isinstance(image_rotary_emb, (tuple, list)):
+          image_rotary_emb_reordered = image_rotary_emb
+        else:
+          image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+        q, k = apply_rope(q, k, image_rotary_emb_reordered)
 
     layer_kv = None
-    if kv_cache_mode == "extract" and num_ref_tokens > 0:
-      ref_start = num_txt_tokens
-      ref_end = num_txt_tokens + num_ref_tokens
-      k_ref = k[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3)
-      v_ref = v[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3)
-      layer_kv = (k_ref, v_ref)
+    with jax.named_scope("single_attention_op"):
+      if kv_cache_mode == "extract" and num_ref_tokens > 0:
+        ref_start = num_txt_tokens
+        ref_end = num_txt_tokens + num_ref_tokens
+        k_ref = k[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3)
+        v_ref = v[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3)
+        layer_kv = (k_ref, v_ref)
 
-      q_txt_img = (
-          jnp.concatenate([q[:, :, :ref_start, :], q[:, :, ref_end:, :]], axis=2).transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      )
-      k_all = k.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      v_all = v.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        q_txt_img = (
+            jnp.concatenate([q[:, :, :ref_start, :], q[:, :, ref_end:, :]], axis=2)
+            .transpose(0, 2, 1, 3)
+            .reshape(B, -1, H * D)
+        )
+        k_all = k.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        v_all = v.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
 
-      attn_txt_img = self.attn.attention_op.apply_attention(q_txt_img, k_all, v_all)
-      attn_txt = attn_txt_img[:, :ref_start]
-      attn_img = attn_txt_img[:, ref_start:]
+        attn_txt_img = self.attn.attention_op.apply_attention(q_txt_img, k_all, v_all)
+        attn_txt = attn_txt_img[:, :ref_start]
+        attn_img = attn_txt_img[:, ref_start:]
 
-      q_ref_flat = q[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      k_ref_flat = k[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      v_ref_flat = v[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      attn_ref = self.attn.attention_op.apply_attention(q_ref_flat, k_ref_flat, v_ref_flat)
+        q_ref_flat = q[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        k_ref_flat = k[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        v_ref_flat = v[:, :, ref_start:ref_end, :].transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        attn_ref = self.attn.attention_op.apply_attention(q_ref_flat, k_ref_flat, v_ref_flat)
 
-      attn_output = jnp.concatenate([attn_txt, attn_ref, attn_img], axis=1)
+        attn_output = jnp.concatenate([attn_txt, attn_ref, attn_img], axis=1)
 
-    elif kv_cache_mode == "cached" and kv_cache is not None:
-      k_ref, v_ref = kv_cache
-      k_ref_trans = k_ref.transpose(0, 2, 1, 3)
-      v_ref_trans = v_ref.transpose(0, 2, 1, 3)
+      elif kv_cache_mode == "cached" and kv_cache is not None:
+        k_ref, v_ref = kv_cache
+        k_ref_trans = k_ref.transpose(0, 2, 1, 3)
+        v_ref_trans = v_ref.transpose(0, 2, 1, 3)
 
-      k_all = (
-          jnp.concatenate([k[:, :, :num_txt_tokens, :], k_ref_trans, k[:, :, num_txt_tokens:, :]], axis=2)
-          .transpose(0, 2, 1, 3)
-          .reshape(B, -1, H * D)
-      )
-      v_all = (
-          jnp.concatenate([v[:, :, :num_txt_tokens, :], v_ref_trans, v[:, :, num_txt_tokens:, :]], axis=2)
-          .transpose(0, 2, 1, 3)
-          .reshape(B, -1, H * D)
-      )
-      q_all = q.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        k_all = (
+            jnp.concatenate([k[:, :, :num_txt_tokens, :], k_ref_trans, k[:, :, num_txt_tokens:, :]], axis=2)
+            .transpose(0, 2, 1, 3)
+            .reshape(B, -1, H * D)
+        )
+        v_all = (
+            jnp.concatenate([v[:, :, :num_txt_tokens, :], v_ref_trans, v[:, :, num_txt_tokens:, :]], axis=2)
+            .transpose(0, 2, 1, 3)
+            .reshape(B, -1, H * D)
+        )
+        q_all = q.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
 
-      attn_output = self.attn.attention_op.apply_attention(q_all, k_all, v_all)
+        attn_output = self.attn.attention_op.apply_attention(q_all, k_all, v_all)
 
-    else:
-      q_flat = q.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      k_flat = k.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      v_flat = v.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
-      attn_output = self.attn.attention_op.apply_attention(q_flat, k_flat, v_flat)
+      else:
+        q_flat = q.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        k_flat = k.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        v_flat = v.transpose(0, 2, 1, 3).reshape(B, -1, H * D)
+        attn_output = self.attn.attention_op.apply_attention(q_flat, k_flat, v_flat)
 
-    mlp1, mlp2 = jnp.split(mlp, 2, axis=-1)
-    mlp_activated = nnx.silu(mlp1) * mlp2
+    with jax.named_scope("swiglu_and_linear2"):
+      mlp1, mlp2 = jnp.split(mlp, 2, axis=-1)
+      mlp_activated = nnx.silu(mlp1) * mlp2
 
-    attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
-    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
-    hidden_states = self.linear2(attn_mlp)
-    hidden_states = gate * hidden_states
-    hidden_states = residual + hidden_states
+      attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
+      attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
+      hidden_states = self.linear2(attn_mlp)
+      hidden_states = gate * hidden_states
+      hidden_states = residual + hidden_states
     return hidden_states, layer_kv
 
 
@@ -2087,58 +2102,61 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
       num_ref_tokens: int = 0,
       ref_fixed_timestep: float = 0.0,
   ) -> Union[jax.Array, Transformer2DModelOutput, Tuple[Any, Any]]:
-    hidden_states = self.x_embedder(hidden_states)
-    timestep_scaled = timestep * 1000.0
-    guidance_scaled = guidance * 1000.0 if guidance is not None else None
-    temb = self.time_text_embed(timestep_scaled, guidance_scaled, pooled_projections)
-    temb = temb.astype(hidden_states.dtype)
+    with jax.named_scope("input_embeddings"):
+      hidden_states = self.x_embedder(hidden_states)
+      timestep_scaled = timestep * 1000.0
+      guidance_scaled = guidance * 1000.0 if guidance is not None else None
+      temb = self.time_text_embed(timestep_scaled, guidance_scaled, pooled_projections)
+      temb = temb.astype(hidden_states.dtype)
 
-    temb_silu = nnx.silu(temb)
-    double_stream_mod_img = self.double_stream_modulation_img(temb_silu)
-    double_stream_mod_txt = self.double_stream_modulation_txt(temb_silu)
-    single_stream_mod = self.single_stream_modulation(temb_silu)
+      temb_silu = nnx.silu(temb)
+      double_stream_mod_img = self.double_stream_modulation_img(temb_silu)
+      double_stream_mod_txt = self.double_stream_modulation_txt(temb_silu)
+      single_stream_mod = self.single_stream_modulation(temb_silu)
 
-    if encoder_hidden_states is not None:
-      encoder_hidden_states = self.context_embedder(encoder_hidden_states)
+      if encoder_hidden_states is not None:
+        encoder_hidden_states = self.context_embedder(encoder_hidden_states)
 
-    if txt_ids.ndim == 3:
-      txt_ids = txt_ids[0]
-    if img_ids.ndim == 3:
-      img_ids = img_ids[0]
+      if txt_ids.ndim == 3:
+        txt_ids = txt_ids[0]
+      if img_ids.ndim == 3:
+        img_ids = img_ids[0]
 
-    image_rotary_emb = self.pos_embed(img_ids)
-    text_rotary_emb = self.pos_embed(txt_ids)
-    concat_rotary_emb = (
-        jnp.concatenate([text_rotary_emb[0], image_rotary_emb[0]], axis=0),
-        jnp.concatenate([text_rotary_emb[1], image_rotary_emb[1]], axis=0),
-    )
+      image_rotary_emb = self.pos_embed(img_ids)
+      text_rotary_emb = self.pos_embed(txt_ids)
+      concat_rotary_emb = (
+          jnp.concatenate([text_rotary_emb[0], image_rotary_emb[0]], axis=0),
+          jnp.concatenate([text_rotary_emb[1], image_rotary_emb[1]], axis=0),
+      )
 
     if kv_cache_mode == "extract" and num_ref_tokens > 0:
-      num_img_tokens = hidden_states.shape[1] - num_ref_tokens
-      ref_timestep = jnp.full_like(timestep_scaled, ref_fixed_timestep * 1000.0)
-      ref_temb = self.time_text_embed(ref_timestep, guidance_scaled, pooled_projections).astype(hidden_states.dtype)
-      ref_temb_silu = nnx.silu(ref_temb)
-      ref_double_mod_img = self.double_stream_modulation_img(ref_temb_silu)
-      ref_single_mod = self.single_stream_modulation(ref_temb_silu)
+      with jax.named_scope("extract_reference_modulation"):
+        num_img_tokens = hidden_states.shape[1] - num_ref_tokens
+        ref_timestep = jnp.full_like(timestep_scaled, ref_fixed_timestep * 1000.0)
+        ref_temb = self.time_text_embed(ref_timestep, guidance_scaled, pooled_projections).astype(hidden_states.dtype)
+        ref_temb_silu = nnx.silu(ref_temb)
+        ref_double_mod_img = self.double_stream_modulation_img(ref_temb_silu)
+        ref_single_mod = self.single_stream_modulation(ref_temb_silu)
 
-      ref_mod_expanded = jnp.repeat(jnp.expand_dims(ref_double_mod_img, 1), num_ref_tokens, axis=1)
-      img_mod_expanded = jnp.repeat(jnp.expand_dims(double_stream_mod_img, 1), num_img_tokens, axis=1)
-      double_stream_mod_img = jnp.concatenate([ref_mod_expanded, img_mod_expanded], axis=1)
+        ref_mod_expanded = jnp.repeat(jnp.expand_dims(ref_double_mod_img, 1), num_ref_tokens, axis=1)
+        img_mod_expanded = jnp.repeat(jnp.expand_dims(double_stream_mod_img, 1), num_img_tokens, axis=1)
+        double_stream_mod_img = jnp.concatenate([ref_mod_expanded, img_mod_expanded], axis=1)
 
       double_block_caches = []
-      for double_block in self.double_blocks:
-        encoder_hidden_states, hidden_states, layer_kv = double_block(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            temb=temb,
-            image_rotary_emb=concat_rotary_emb,
-            temb_mod_img=double_stream_mod_img,
-            temb_mod_txt=double_stream_mod_txt,
-            kv_cache=None,
-            kv_cache_mode="extract",
-            num_ref_tokens=num_ref_tokens,
-        )
-        double_block_caches.append(layer_kv)
+      for idx, double_block in enumerate(self.double_blocks):
+        with jax.named_scope(f"double_block_{idx}"):
+          encoder_hidden_states, hidden_states, layer_kv = double_block(
+              hidden_states=hidden_states,
+              encoder_hidden_states=encoder_hidden_states,
+              temb=temb,
+              image_rotary_emb=concat_rotary_emb,
+              temb_mod_img=double_stream_mod_img,
+              temb_mod_txt=double_stream_mod_txt,
+              kv_cache=None,
+              kv_cache_mode="extract",
+              num_ref_tokens=num_ref_tokens,
+          )
+          double_block_caches.append(layer_kv)
 
       num_txt_tokens = encoder_hidden_states.shape[1]
       hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
@@ -2149,22 +2167,24 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
       single_stream_mod = jnp.concatenate([txt_mod_expanded, ref_smod_expanded, img_smod_expanded], axis=1)
 
       single_block_caches = []
-      for single_block in self.single_blocks:
-        hidden_states, layer_kv = single_block(
-            hidden_states=hidden_states,
-            temb=temb,
-            image_rotary_emb=concat_rotary_emb,
-            temb_mod=single_stream_mod,
-            kv_cache=None,
-            kv_cache_mode="extract",
-            num_txt_tokens=num_txt_tokens,
-            num_ref_tokens=num_ref_tokens,
-        )
-        single_block_caches.append(layer_kv)
+      for idx, single_block in enumerate(self.single_blocks):
+        with jax.named_scope(f"single_block_{idx}"):
+          hidden_states, layer_kv = single_block(
+              hidden_states=hidden_states,
+              temb=temb,
+              image_rotary_emb=concat_rotary_emb,
+              temb_mod=single_stream_mod,
+              kv_cache=None,
+              kv_cache_mode="extract",
+              num_txt_tokens=num_txt_tokens,
+              num_ref_tokens=num_ref_tokens,
+          )
+          single_block_caches.append(layer_kv)
 
-      hidden_states = hidden_states[:, num_txt_tokens + num_ref_tokens :, ...]
-      hidden_states = self.norm_out(hidden_states, temb)
-      output = self.proj_out(hidden_states)
+      with jax.named_scope("output_norm_and_projection"):
+        hidden_states = hidden_states[:, num_txt_tokens + num_ref_tokens :, ...]
+        hidden_states = self.norm_out(hidden_states, temb)
+        output = self.proj_out(hidden_states)
 
       extracted_kv_cache = {
           "double": tuple(double_block_caches),
@@ -2181,66 +2201,72 @@ class NNXFlux2KleinTransformer2DModel(nnx.Module):
       num_ref = kv_cache.get("num_ref_tokens", 0) if isinstance(kv_cache, dict) else 0
 
       for idx, double_block in enumerate(self.double_blocks):
-        encoder_hidden_states, hidden_states, _ = double_block(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            temb=temb,
-            image_rotary_emb=concat_rotary_emb,
-            temb_mod_img=double_stream_mod_img,
-            temb_mod_txt=double_stream_mod_txt,
-            kv_cache=double_caches[idx],
-            kv_cache_mode="cached",
-            num_ref_tokens=num_ref,
-        )
+        with jax.named_scope(f"double_block_{idx}"):
+          encoder_hidden_states, hidden_states, _ = double_block(
+              hidden_states=hidden_states,
+              encoder_hidden_states=encoder_hidden_states,
+              temb=temb,
+              image_rotary_emb=concat_rotary_emb,
+              temb_mod_img=double_stream_mod_img,
+              temb_mod_txt=double_stream_mod_txt,
+              kv_cache=double_caches[idx],
+              kv_cache_mode="cached",
+              num_ref_tokens=num_ref,
+          )
 
       num_txt_tokens = encoder_hidden_states.shape[1]
       hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
 
       for idx, single_block in enumerate(self.single_blocks):
-        hidden_states, _ = single_block(
-            hidden_states=hidden_states,
-            temb=temb,
-            image_rotary_emb=concat_rotary_emb,
-            temb_mod=single_stream_mod,
-            kv_cache=single_caches[idx],
-            kv_cache_mode="cached",
-            num_txt_tokens=num_txt_tokens,
-            num_ref_tokens=num_ref,
-        )
+        with jax.named_scope(f"single_block_{idx}"):
+          hidden_states, _ = single_block(
+              hidden_states=hidden_states,
+              temb=temb,
+              image_rotary_emb=concat_rotary_emb,
+              temb_mod=single_stream_mod,
+              kv_cache=single_caches[idx],
+              kv_cache_mode="cached",
+              num_txt_tokens=num_txt_tokens,
+              num_ref_tokens=num_ref,
+          )
 
-      hidden_states = hidden_states[:, num_txt_tokens:, ...]
-      hidden_states = self.norm_out(hidden_states, temb)
-      output = self.proj_out(hidden_states)
+      with jax.named_scope("output_norm_and_projection"):
+        hidden_states = hidden_states[:, num_txt_tokens:, ...]
+        hidden_states = self.norm_out(hidden_states, temb)
+        output = self.proj_out(hidden_states)
 
       if not return_dict:
         return (output,)
       return Transformer2DModelOutput(sample=output)
 
     else:
-      for double_block in self.double_blocks:
-        encoder_hidden_states, hidden_states, _ = double_block(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            temb=temb,
-            image_rotary_emb=concat_rotary_emb,
-            temb_mod_img=double_stream_mod_img,
-            temb_mod_txt=double_stream_mod_txt,
-        )
+      for idx, double_block in enumerate(self.double_blocks):
+        with jax.named_scope(f"double_block_{idx}"):
+          encoder_hidden_states, hidden_states, _ = double_block(
+              hidden_states=hidden_states,
+              encoder_hidden_states=encoder_hidden_states,
+              temb=temb,
+              image_rotary_emb=concat_rotary_emb,
+              temb_mod_img=double_stream_mod_img,
+              temb_mod_txt=double_stream_mod_txt,
+          )
 
       num_txt_tokens = encoder_hidden_states.shape[1]
       hidden_states = jnp.concatenate([encoder_hidden_states, hidden_states], axis=1)
 
-      for single_block in self.single_blocks:
-        hidden_states, _ = single_block(
-            hidden_states=hidden_states,
-            temb=temb,
-            image_rotary_emb=concat_rotary_emb,
-            temb_mod=single_stream_mod,
-        )
+      for idx, single_block in enumerate(self.single_blocks):
+        with jax.named_scope(f"single_block_{idx}"):
+          hidden_states, _ = single_block(
+              hidden_states=hidden_states,
+              temb=temb,
+              image_rotary_emb=concat_rotary_emb,
+              temb_mod=single_stream_mod,
+          )
 
-      hidden_states = hidden_states[:, num_txt_tokens:, ...]
-      hidden_states = self.norm_out(hidden_states, temb)
-      output = self.proj_out(hidden_states)
+      with jax.named_scope("output_norm_and_projection"):
+        hidden_states = hidden_states[:, num_txt_tokens:, ...]
+        hidden_states = self.norm_out(hidden_states, temb)
+        output = self.proj_out(hidden_states)
 
       if not return_dict:
         return (output,)
