@@ -76,12 +76,41 @@ def validate_train_config(config):
     )
 
 
-def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr):
+try:
+  from google_cloud_mldiagnostics import metrics as mld_metrics, metric_types
+except ImportError:
+  mld_metrics = None
+  metric_types = None
+
+
+if metric_types is not None:
+  _METRICS_TO_MANAGED = {
+      "learning/loss": metric_types.MetricType.LOSS,
+      "learning/current_learning_rate": metric_types.MetricType.LEARNING_RATE,
+      "learning/grad_norm": metric_types.MetricType.GRADIENT_NORM,
+      "learning/total_weights": metric_types.MetricType.TOTAL_WEIGHTS,
+      "perf/step_time_seconds": metric_types.MetricType.STEP_TIME,
+      "perf/per_device_tflops_per_sec": metric_types.MetricType.TFLOPS,
+  }
+else:
+  _METRICS_TO_MANAGED = {
+      "learning/loss": "loss",
+      "learning/current_learning_rate": "learning_rate",
+      "learning/grad_norm": "gradient_norm",
+      "learning/total_weights": "total_weights",
+      "perf/step_time_seconds": "step_time",
+      "perf/per_device_tflops_per_sec": "tflops",
+  }
+
+
+def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr, total_weights=None):
   """Records scalar metrics to be written to tensorboard"""
   metrics["scalar"].update({"perf/step_time_seconds": step_time_delta.total_seconds()})
   metrics["scalar"].update({"perf/per_device_tflops": per_device_tflops})
   metrics["scalar"].update({"perf/per_device_tflops_per_sec": per_device_tflops / step_time_delta.total_seconds()})
   metrics["scalar"].update({"learning/current_learning_rate": lr})
+  if total_weights is not None:
+    metrics["scalar"].update({"learning/total_weights": float(total_weights)})
 
 
 _metrics_queue = queue.Queue()
@@ -132,6 +161,25 @@ def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step
 
     if config.gcs_metrics and jax.process_index() == 0:
       running_gcs_metrics = max_utils.write_metrics_for_gcs(_buffered_metrics, _buffered_step, config, running_gcs_metrics)
+
+    if mld_metrics is not None and max_utils.ml_diagnostics_enabled(config) and jax.process_index() == 0:
+      if "scalar" in _buffered_metrics:
+        scalars = _buffered_metrics["scalar"]
+        metric_records = []
+        for key, raw_val in scalars.items():
+          val = float(raw_val.item() if hasattr(raw_val, "item") else raw_val)
+          metric_name = _METRICS_TO_MANAGED.get(key, key)
+          metric_records.append({
+              "metric_name": metric_name,
+              "value": val,
+              "step": int(_buffered_step),
+          })
+
+        if metric_records:
+          mld_metrics.record_metrics(metric_records)
+
+    _buffered_step = None
+    _buffered_metrics = None
 
   _buffered_step = step
   _buffered_metrics = metrics

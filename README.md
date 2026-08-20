@@ -95,6 +95,8 @@ MaxDiffusion supports
   - [Getting Started: Multihost development](#getting-started-multihost-development)
 - [Comparison to Alternatives](#comparison-to-alternatives)
 - [Development](#development)
+  - [Profiling](#profiling)
+  - [Metrics](#metrics)
 
 # Getting Started
 
@@ -915,3 +917,6 @@ The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. 
 
 ## Profiling
 To learn how to enable ML Diagnostics and XProf profiling for your runs, please see our [ML Diagnostics Guide](docs/profiling.md).
+
+## Metrics
+To learn how to enable ML Diagnostics metrics tracking for your runs, please see our [Metrics Guide](docs/metrics.md).

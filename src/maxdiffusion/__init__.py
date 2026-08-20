@@ -47,8 +47,6 @@ _import_structure = {
     "configuration_utils": ["ConfigMixin"],
     "max_logging": [],
     "max_utils": [],
-    "maxdiffusion_google": [],
-    "maxdiffusion_google_hub": [],
     "maxdiffusion_utils": [],
     "models": [],
     "multihost_dataloading": [],

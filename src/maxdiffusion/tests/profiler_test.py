@@ -66,9 +66,7 @@ class ProfilerTest(unittest.TestCase):
   @patch("maxdiffusion.max_utils.machinelearning_run")
   @patch("maxdiffusion.max_utils.xprof")
   @patch("jax.process_index", return_value=1)
-  def test_ml_diagnostics_profiler_non_master_host(
-      self, mock_process_index, mock_xprof, mock_ml_run
-  ):
+  def test_ml_diagnostics_profiler_non_master_host(self, mock_process_index, mock_xprof, mock_ml_run):
     """Tests that ML Diagnostics profiler is also enabled on non-master hosts (process_index != 0)."""
     config = MockConfig(
         enable_ml_diagnostics=True,
@@ -79,7 +77,7 @@ class ProfilerTest(unittest.TestCase):
         tensorboard_dir="/tmp/fake_tensorboard",
     )
 
-    self.assertTrue(max_utils._ml_diagnostics_profiler_enabled(config))
+    self.assertTrue(max_utils.ml_diagnostics_enabled(config))
 
     with max_utils.Profiler(config, session_name="test_session"):
       mock_xprof.return_value.start.assert_called_once_with("test_session")
@@ -90,9 +88,7 @@ class ProfilerTest(unittest.TestCase):
   @patch("maxdiffusion.max_utils.machinelearning_run")
   @patch("maxdiffusion.max_utils.xprof")
   @patch("jax.process_index", return_value=0)
-  def test_both_profilers_enabled_prioritizes_mld(
-      self, mock_process_index, mock_xprof, mock_ml_run, mock_start_trace
-  ):
+  def test_both_profilers_enabled_prioritizes_mld(self, mock_process_index, mock_xprof, mock_ml_run, mock_start_trace):
     """Tests that when both ML Diagnostics and JAX profiler are enabled, ML Diagnostics is prioritized and JAX profiler is skipped."""
     config = MockConfig(
         enable_ml_diagnostics=True,
