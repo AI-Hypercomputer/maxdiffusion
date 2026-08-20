@@ -389,7 +389,7 @@ def run_inference_2_1_i2v(
       latent_model_input = jnp.concatenate([latents_input, condition_combined], axis=1)
       timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
-      outputs = transformer_forward_pass(
+      noise_pred = transformer_forward_pass(
           graphdef,
           sharded_state,
           rest_of_state,
@@ -406,7 +406,6 @@ def run_inference_2_1_i2v(
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
       )
-      noise_pred, _ = outputs
 
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
       new_latents, new_scheduler_state = scheduler.step(
@@ -467,11 +466,11 @@ def run_inference_2_1_i2v(
         encoder_attention_mask=encoder_attention_mask,
     )
     if use_magcache and do_cfg:
-      noise_pred, _, residual_x_cur = outputs
+      noise_pred, residual_x_cur = outputs
       if not skip_blocks:
         cached_residual = residual_x_cur
     else:
-      noise_pred, _ = outputs
+      noise_pred = outputs
 
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents, return_dict=False)

@@ -50,8 +50,6 @@ class ModelsImportTest(unittest.TestCase):
         configuration_utils,
         max_logging,
         max_utils,
-        maxdiffusion_google,
-        maxdiffusion_google_hub,
         maxdiffusion_utils,
         multihost_dataloading,
         pyconfig,
@@ -64,8 +62,6 @@ class ModelsImportTest(unittest.TestCase):
     self.assertIsNotNone(configuration_utils)
     self.assertIsNotNone(max_logging)
     self.assertIsNotNone(max_utils)
-    self.assertIsNotNone(maxdiffusion_google)
-    self.assertIsNotNone(maxdiffusion_google_hub)
     self.assertIsNotNone(maxdiffusion_utils)
     self.assertIsNotNone(multihost_dataloading)
     self.assertIsNotNone(pyconfig)
@@ -74,7 +70,7 @@ class ModelsImportTest(unittest.TestCase):
 
   def test_mldiagnostics_import_and_usage(self):
     try:
-      from google_cloud_mldiagnostics import machinelearning_run, xprof
+      from google_cloud_mldiagnostics import machinelearning_run
       self.assertIsNotNone(machinelearning_run)
     except ImportError:
       pass

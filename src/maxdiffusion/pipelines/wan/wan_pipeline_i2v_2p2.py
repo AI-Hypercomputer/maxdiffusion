@@ -547,7 +547,7 @@ def run_inference_2_2_i2v(
       latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=-1)
       latent_model_input = jnp.transpose(latent_model_input, (0, 4, 1, 2, 3))
       timestep = jnp.broadcast_to(t, bsz * 2)
-      noise_pred, _, residual_x_cur = transformer_forward_pass(
+      noise_pred, residual_x_cur = transformer_forward_pass(
           graphdef,
           state,
           rest,
@@ -646,13 +646,14 @@ def run_inference_2_2_i2v(
         latents_doubled = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
         latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=1)
         timestep = jnp.broadcast_to(t, bsz * 2)
-        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+        noise_pred = transformer_forward_pass(
             graphdef,
             state,
             rest,
             latent_model_input,
             timestep,
             prompt_embeds_combined,
+            do_classifier_free_guidance=True,
             guidance_scale=guidance_scale,
             encoder_hidden_states_image=image_embeds_combined,
             kv_cache=kv_cache,
@@ -669,42 +670,47 @@ def run_inference_2_2_i2v(
         latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
         continue
 
-      dx_norm = float(jnp.sqrt(jnp.mean((latents - ref_latent) ** 2)))
-      dt = abs(t_float - ref_timestep)
-      accum_dx += dx_norm
-      accum_dt += dt
+      dx_norm = jnp.sqrt(jnp.mean((latents - ref_latent) ** 2))
+      dt = jnp.abs(t_float - ref_timestep)
+      accum_dx = accum_dx + dx_norm
+      accum_dt = accum_dt + dt
 
       score = alpha_x * accum_dx + alpha_t * accum_dt
+      should_reuse = (score <= sen_epsilon) & (reuse_count < max_reuse)
 
-      if score <= sen_epsilon and reuse_count < max_reuse:
-        noise_pred = ref_noise_pred
-        reuse_count += 1
-        cache_count += 1
-      else:
-        latents_doubled = jnp.concatenate([latents, latents], axis=0)
-        latents_doubled = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
-        latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=1)
-        timestep = jnp.broadcast_to(t, bsz * 2)
-        noise_pred, _, _ = transformer_forward_pass_full_cfg(
+      latents_doubled = jnp.concatenate([latents, latents], axis=0)
+      latents_doubled = jnp.transpose(latents_doubled, (0, 4, 1, 2, 3))
+      latent_model_input = jnp.concatenate([latents_doubled, condition_doubled], axis=1)
+      timestep = jnp.broadcast_to(t, bsz * 2)
+
+      def reuse_fn():
+        return ref_noise_pred
+
+      def compute_fn():
+        out = transformer_forward_pass(
             graphdef,
             state,
             rest,
             latent_model_input,
             timestep,
             prompt_embeds_combined,
+            do_classifier_free_guidance=True,
             guidance_scale=guidance_scale,
             encoder_hidden_states_image=image_embeds_combined,
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
         )
-        noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
-        ref_noise_pred = noise_pred
-        ref_latent = latents
-        ref_timestep = t_float
-        accum_dx = 0.0
-        accum_dt = 0.0
-        reuse_count = 0
+        return jnp.transpose(out, (0, 2, 3, 4, 1))
+
+      noise_pred = jax.lax.cond(should_reuse, reuse_fn, compute_fn)
+      ref_noise_pred = jnp.where(should_reuse, ref_noise_pred, noise_pred)
+      ref_latent = jnp.where(should_reuse, ref_latent, latents)
+      ref_timestep = jnp.where(should_reuse, ref_timestep, t_float)
+      accum_dx = jnp.where(should_reuse, accum_dx, 0.0)
+      accum_dt = jnp.where(should_reuse, accum_dt, 0.0)
+      reuse_count = jnp.where(should_reuse, reuse_count + 1, 0)
+      cache_count = jnp.where(should_reuse, cache_count + 1, cache_count)
 
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
 
@@ -867,7 +873,7 @@ def run_inference_2_2_i2v(
         mask_high,
         _,
     ) = operands
-    noise_pred, latents_out = transformer_forward_pass(
+    return transformer_forward_pass(
         high_noise_graphdef,
         high_noise_state,
         high_noise_rest,
@@ -881,7 +887,6 @@ def run_inference_2_2_i2v(
         rotary_emb=r_emb,
         encoder_attention_mask=mask_high,
     )
-    return noise_pred, latents_out
 
   def low_noise_branch(operands):
     (
@@ -895,7 +900,7 @@ def run_inference_2_2_i2v(
         _,
         mask_low,
     ) = operands
-    noise_pred, latents_out = transformer_forward_pass(
+    return transformer_forward_pass(
         low_noise_graphdef,
         low_noise_state,
         low_noise_rest,
@@ -909,7 +914,6 @@ def run_inference_2_2_i2v(
         rotary_emb=r_emb,
         encoder_attention_mask=mask_low,
     )
-    return noise_pred, latents_out
 
   if do_classifier_free_guidance:
     condition = jnp.concatenate([condition] * 2)
@@ -939,7 +943,7 @@ def run_inference_2_2_i2v(
       timestep = jnp.broadcast_to(t, latents_input.shape[0])
 
       use_high_noise = jnp.greater_equal(t, boundary)
-      noise_pred, _ = jax.lax.cond(
+      noise_pred = jax.lax.cond(
           use_high_noise,
           high_noise_branch,
           low_noise_branch,
@@ -987,7 +991,7 @@ def run_inference_2_2_i2v(
     # tracing both 14B branches per step and keeps the AOT cache usable.
     use_high_noise = bool(np.asarray(scheduler_state.timesteps)[step] >= np.asarray(boundary))
     branch = high_noise_branch if use_high_noise else low_noise_branch
-    noise_pred, _ = branch((
+    noise_pred = branch((
         latent_model_input,
         timestep,
         prompt_embeds_combined,
