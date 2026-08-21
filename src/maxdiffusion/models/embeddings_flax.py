@@ -615,7 +615,7 @@ class NNXCombinedTimestepGuidanceTextProjEmbeddings(nnx.Module):
           weights_dtype=weights_dtype,
       )
 
-    if pooled_projection_dim > 0:
+    if pooled_projection_dim is not None and pooled_projection_dim > 0:
       self.pooled_embedder = NNXPixArtAlphaTextProjection(
           rngs=rngs,
           in_features=pooled_projection_dim,
@@ -643,7 +643,7 @@ class NNXCombinedTimestepGuidanceTextProjEmbeddings(nnx.Module):
     else:
       time_guidance_emb = timestep_emb
 
-    if pooled_projection is not None and self.pooled_projection_dim > 0:
+    if pooled_projection is not None and self.pooled_projection_dim is not None and self.pooled_projection_dim > 0:
       pooled_projections = self.pooled_embedder(pooled_projection)
       conditioning = time_guidance_emb + pooled_projections
     else:
