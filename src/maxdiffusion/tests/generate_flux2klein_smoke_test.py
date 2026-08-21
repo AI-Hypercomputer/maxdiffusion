@@ -17,6 +17,7 @@ limitations under the License.
 import os
 import unittest
 import pytest
+import jax
 
 import numpy as np
 from PIL import Image
@@ -54,22 +55,24 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
         "run_name=smoke_test_4b",
         f"output_dir={output_dir}",
         "jax_cache_dir=/tmp/cache_dir",
-        "skip_jax_distributed_system=True",
         f"prompt={PROMPT}",
         "height=512",
         "width=512",
-        "batch_size=1",
+        f"per_device_batch_size={1.0 / jax.device_count()}",
         "seed=42",
-        "ici_fsdp_parallelism=-1",
         "weights_dtype=bfloat16",
         "activations_dtype=bfloat16",
         "precision=DEFAULT",
+        "num_reps=5",
+        "text_encoder_attention=dot_product",
     ]
 
     generate_flux2klein.main(args)
 
-    self.assertTrue(os.path.exists(out_path), "Smoke test 4B failed to produce output image!")
-    test_image = np.array(Image.open(out_path)).astype(np.uint8)
+    rep_out_path = os.path.join(output_dir, "rep_1_flux2klein_generated_image.png")
+    final_out_path = rep_out_path if os.path.exists(rep_out_path) else out_path
+    self.assertTrue(os.path.exists(final_out_path), "Smoke test 4B failed to produce output image!")
+    test_image = np.array(Image.open(final_out_path)).astype(np.uint8)
 
     self.assertEqual(base_image.shape, test_image.shape)
     ssim_compare = ssim(base_image, test_image, channel_axis=-1, data_range=255)
@@ -97,27 +100,29 @@ class GenerateFlux2KleinSmokeTest(unittest.TestCase):
         "run_name=smoke_test_9b",
         f"output_dir={output_dir}",
         "jax_cache_dir=/tmp/cache_dir",
-        "skip_jax_distributed_system=True",
         f"prompt={PROMPT}",
         "height=512",
         "width=512",
-        "batch_size=1",
+        f"per_device_batch_size={1.0 / jax.device_count()}",
         "seed=42",
-        "ici_fsdp_parallelism=-1",
         "weights_dtype=bfloat16",
         "activations_dtype=bfloat16",
         "precision=DEFAULT",
+        "num_reps=5",
+        "text_encoder_attention=dot_product",
     ]
 
     generate_flux2klein.main(args)
 
-    self.assertTrue(os.path.exists(out_path), "Smoke test 9B failed to produce output image!")
-    test_image = np.array(Image.open(out_path)).astype(np.uint8)
+    rep_out_path = os.path.join(output_dir, "rep_1_flux2klein_generated_image.png")
+    final_out_path = rep_out_path if os.path.exists(rep_out_path) else out_path
+    self.assertTrue(os.path.exists(final_out_path), "Smoke test 9B failed to produce output image!")
+    test_image = np.array(Image.open(final_out_path)).astype(np.uint8)
 
     self.assertEqual(base_image.shape, test_image.shape)
     ssim_compare = ssim(base_image, test_image, channel_axis=-1, data_range=255)
     print(f"\n[SMOKE TEST 9B] SSIM Score: {ssim_compare:.6f}")
-    self.assertGreaterEqual(ssim_compare, 0.80)
+    self.assertGreaterEqual(ssim_compare, 0.8)
 
 
 if __name__ == "__main__":

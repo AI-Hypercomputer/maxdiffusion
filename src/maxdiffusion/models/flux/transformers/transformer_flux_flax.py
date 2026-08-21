@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 import jax
 import math
 import jax.numpy as jnp
@@ -27,11 +27,9 @@ from ...normalization_flax import (
     AdaLayerNormZeroSingle,
     AdaLayerNormContinuous,
     AdaLayerNormZero,
-    NNXAdaLayerNormZeroSingle,
     NNXAdaLayerNormContinuous,
-    NNXAdaLayerNormZero,
 )
-from ...attention_flax import FlaxFluxAttention as FluxAttention, FlaxFluxAttention, apply_rope
+from ...attention_flax import FlaxFluxAttention as FluxAttention, FlaxFluxAttention, apply_rope, NNXAttentionOp
 from flax import nnx
 from ...embeddings_flax import (
     FluxPosEmbed,
@@ -1278,64 +1276,121 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
     return Transformer2DModelOutput(sample=output)
 
 
-# =============================================================================
-# FLAX NNX MODEL IMPLEMENTATIONS FOR FLUX.2-KLEIN
-# =============================================================================
+class NNXFlaxSwiGluFeedForward(nnx.Module):
+  """Flax NNX SwiGLU FeedForward module."""
+
+  def __init__(
+      self,
+      rngs: nnx.Rngs,
+      dim: int,
+      dim_out: int,
+      mult: float = 3.0,
+      dtype: jnp.dtype = jnp.float32,
+      weights_dtype: jnp.dtype = jnp.float32,
+  ):
+    inner_dim = int(dim * mult)
+    self.linear_in = nnx.Linear(
+        in_features=dim,
+        out_features=inner_dim * 2,
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+    self.linear_out = nnx.Linear(
+        in_features=inner_dim,
+        out_features=dim_out,
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+
+  def __call__(self, x: jax.Array) -> jax.Array:
+    x = self.linear_in(x)
+    x1, x2 = jnp.split(x, 2, axis=-1)
+    hidden = nnx.silu(x1) * x2
+    return self.linear_out(hidden)
 
 
-class NNXFluxDoubleAttention(nnx.Module):
+class NNXFluxAttention(nnx.Module):
+  """Flax NNX Double-Stream Joint Attention for FLUX.2-Klein."""
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       query_dim: int,
-      heads: int,
-      dim_head: int,
-      qkv_bias: bool = False,
+      heads: int = 8,
+      dim_head: int = 64,
+      attention_kernel: str = "dot_product",
+      flash_min_seq_length: int = 512,
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      mesh: Optional[jax.sharding.Mesh] = None,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      qkv_bias: bool = False,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
-    self.query_dim = query_dim
     self.heads = heads
     self.dim_head = dim_head
-    inner_dim = heads * dim_head
+    inner_dim = dim_head * heads
+    scale = dim_head**-0.5
 
-    self.qkv = nnx.Linear(
+    self.attention_op = NNXAttentionOp(
+        mesh=mesh,
+        attention_kernel=attention_kernel,
+        scale=scale,
+        heads=heads,
+        dim_head=dim_head,
+        flash_min_seq_length=flash_min_seq_length,
+        flash_block_sizes=flash_block_sizes,
+        dtype=dtype,
+        float32_qk_product=False,
+        split_head_dim=False,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
+    )
+
+    kernel_axes = ("embed", "heads")
+    proj_attn_kernel_axes = ("heads", "embed")
+
+    self.i_qkv = nnx.Linear(
         in_features=query_dim,
         out_features=inner_dim * 3,
         use_bias=qkv_bias,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
     )
-    self.encoder_qkv = nnx.Linear(
+    self.e_qkv = nnx.Linear(
         in_features=query_dim,
         out_features=inner_dim * 3,
         use_bias=qkv_bias,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "heads")),
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), kernel_axes),
         bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("heads",)),
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
     )
-    self.proj_attn = nnx.Linear(
+    self.i_proj = nnx.Linear(
         in_features=inner_dim,
         out_features=query_dim,
-        use_bias=True,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), proj_attn_kernel_axes),
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
     )
-    self.encoder_proj_attn = nnx.Linear(
+    self.e_proj = nnx.Linear(
         in_features=inner_dim,
         out_features=query_dim,
-        use_bias=True,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("heads", "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, ("embed",)),
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), proj_attn_kernel_axes),
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1356,59 +1411,84 @@ class NNXFluxDoubleAttention(nnx.Module):
         param_dtype=weights_dtype,
         rngs=rngs,
     )
+    self.encoder_query_norm = nnx.RMSNorm(
+        num_features=dim_head,
+        epsilon=1e-6,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("heads",)),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+    self.encoder_key_norm = nnx.RMSNorm(
+        num_features=dim_head,
+        epsilon=1e-6,
+        scale_init=nnx.with_partitioning(nnx.initializers.ones, ("heads",)),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
 
   def __call__(
       self,
       hidden_states: jax.Array,
-      encoder_hidden_states: jax.Array,
-      image_rotary_emb: Tuple[jax.Array, jax.Array],
-  ) -> Tuple[jax.Array, jax.Array]:
-    batch_size, img_len, _ = hidden_states.shape
-    txt_len = encoder_hidden_states.shape[1]
+      encoder_hidden_states: Optional[jax.Array] = None,
+      image_rotary_emb: Optional[Tuple[jax.Array, jax.Array]] = None,
+  ) -> Tuple[jax.Array, Optional[jax.Array]]:
+    B, L = hidden_states.shape[:2]
+    H, D = self.heads, self.dim_head
 
-    qkv_img = self.qkv(hidden_states)
-    qkv_txt = self.encoder_qkv(encoder_hidden_states)
+    qkv_proj = self.i_qkv(hidden_states).reshape(B, L, 3, H, D)
+    query_proj, key_proj, value_proj = jnp.split(qkv_proj, 3, axis=2)
+    query_proj = self.query_norm(query_proj.squeeze(2))
+    key_proj = self.key_norm(key_proj.squeeze(2))
+    value_proj = value_proj.squeeze(2)
 
-    q_img, k_img, v_img = jnp.split(qkv_img, 3, axis=-1)
-    q_txt, k_txt, v_txt = jnp.split(qkv_txt, 3, axis=-1)
+    if encoder_hidden_states is not None:
+      B_enc, L_txt = encoder_hidden_states.shape[:2]
+      encoder_qkv_proj = self.e_qkv(encoder_hidden_states).reshape(B_enc, L_txt, 3, H, D)
+      enc_query_proj, enc_key_proj, enc_value_proj = jnp.split(encoder_qkv_proj, 3, axis=2)
+      enc_query_proj = self.encoder_query_norm(enc_query_proj.squeeze(2))
+      enc_key_proj = self.encoder_key_norm(enc_key_proj.squeeze(2))
+      enc_value_proj = enc_value_proj.squeeze(2)
 
-    q_img = rearrange(q_img, "b l (h d) -> b l h d", h=self.heads)
-    k_img = rearrange(k_img, "b l (h d) -> b l h d", h=self.heads)
-    v_img = rearrange(v_img, "b l (h d) -> b l h d", h=self.heads)
-
-    q_txt = rearrange(q_txt, "b l (h d) -> b l h d", h=self.heads)
-    k_txt = rearrange(k_txt, "b l (h d) -> b l h d", h=self.heads)
-    v_txt = rearrange(v_txt, "b l (h d) -> b l h d", h=self.heads)
-
-    q_img = self.query_norm(q_img)
-    k_img = self.key_norm(k_img)
-    q_txt = self.query_norm(q_txt)
-    k_txt = self.key_norm(k_txt)
-
-    q = jnp.concatenate([q_txt, q_img], axis=1)
-    k = jnp.concatenate([k_txt, k_img], axis=1)
-    v = jnp.concatenate([v_txt, v_img], axis=1)
+      query_proj = jnp.concatenate((enc_query_proj, query_proj), axis=1)
+      key_proj = jnp.concatenate((enc_key_proj, key_proj), axis=1)
+      value_proj = jnp.concatenate((enc_value_proj, value_proj), axis=1)
 
     if image_rotary_emb is not None:
-      q, k = apply_rope(q, k, image_rotary_emb)
+      if not isinstance(image_rotary_emb, (tuple, list)):
+        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+      else:
+        image_rotary_emb_reordered = image_rotary_emb
+      query_proj = query_proj.swapaxes(1, 2)
+      key_proj = key_proj.swapaxes(1, 2)
+      query_proj, key_proj = apply_rope(query_proj, key_proj, image_rotary_emb_reordered)
+      query_proj = query_proj.swapaxes(1, 2)
+      key_proj = key_proj.swapaxes(1, 2)
 
-    scale = self.dim_head**-0.5
-    attn_weights = jnp.einsum("b q h d, b k h d -> b h q k", q, k, precision=None) * scale
-    attn_weights = jax.nn.softmax(attn_weights, axis=-1)
-    out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v, precision=None)
+    query_proj = query_proj.reshape(B, -1, H * D)
+    key_proj = key_proj.reshape(B, -1, H * D)
+    value_proj = value_proj.reshape(B, -1, H * D)
 
-    out = rearrange(out, "b l h d -> b l (h d)")
+    if encoder_hidden_states is not None:
+      query_proj = nn.with_logical_constraint(query_proj, ("activation_batch", "activation_length", "activation_heads"))
+      key_proj = nn.with_logical_constraint(key_proj, ("activation_batch", "activation_length", "activation_heads"))
+      value_proj = nn.with_logical_constraint(value_proj, ("activation_batch", "activation_length", "activation_heads"))
 
-    out_txt = out[:, :txt_len, :]
-    out_img = out[:, txt_len:, :]
+    attn_output = self.attention_op.apply_attention(query_proj, key_proj, value_proj)
+    context_attn_output = None
 
-    out_img = self.proj_attn(out_img)
-    out_txt = self.encoder_proj_attn(out_txt)
+    if encoder_hidden_states is not None:
+      context_attn_output = attn_output[:, : encoder_hidden_states.shape[1]]
+      attn_output = attn_output[:, encoder_hidden_states.shape[1] :]
+      attn_output = self.i_proj(attn_output)
+      context_attn_output = self.e_proj(context_attn_output)
 
-    return out_img, out_txt
+    return attn_output, context_attn_output
 
 
 class NNXFluxSingleAttention(nnx.Module):
+  """Flax NNX Single-Stream Attention for FLUX.2-Klein."""
 
   def __init__(
       self,
@@ -1416,33 +1496,34 @@ class NNXFluxSingleAttention(nnx.Module):
       dim: int,
       num_attention_heads: int,
       attention_head_dim: int,
+      attention_kernel: str = "dot_product",
+      flash_min_seq_length: int = 512,
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      mesh: Optional[jax.sharding.Mesh] = None,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
-    self.dim = dim
-    self.heads = num_attention_heads
-    self.dim_head = attention_head_dim
-    inner_dim = num_attention_heads * attention_head_dim
+    self.num_attention_heads = num_attention_heads
+    self.attention_head_dim = attention_head_dim
+    scale = attention_head_dim**-0.5
 
-    self.to_qkv_mlp_proj = nnx.Linear(
-        in_features=dim,
-        out_features=inner_dim * 3 + int(dim * 4.0),
-        use_bias=False,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+    self.attention_op = NNXAttentionOp(
+        mesh=mesh,
+        attention_kernel=attention_kernel,
+        scale=scale,
+        heads=num_attention_heads,
+        dim_head=attention_head_dim,
+        flash_min_seq_length=flash_min_seq_length,
+        flash_block_sizes=flash_block_sizes,
         dtype=dtype,
-        param_dtype=weights_dtype,
-        rngs=rngs,
+        float32_qk_product=False,
+        split_head_dim=False,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
-    self.to_out = nnx.Linear(
-        in_features=inner_dim + int(dim * 4.0),
-        out_features=dim,
-        use_bias=False,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
-        dtype=dtype,
-        param_dtype=weights_dtype,
-        rngs=rngs,
-    )
-    self.norm_q = nnx.RMSNorm(
+    self.query_norm = nnx.RMSNorm(
         num_features=attention_head_dim,
         epsilon=1e-6,
         scale_init=nnx.with_partitioning(nnx.initializers.ones, ("heads",)),
@@ -1450,7 +1531,7 @@ class NNXFluxSingleAttention(nnx.Module):
         param_dtype=weights_dtype,
         rngs=rngs,
     )
-    self.norm_k = nnx.RMSNorm(
+    self.key_norm = nnx.RMSNorm(
         num_features=attention_head_dim,
         epsilon=1e-6,
         scale_init=nnx.with_partitioning(nnx.initializers.ones, ("heads",)),
@@ -1458,43 +1539,10 @@ class NNXFluxSingleAttention(nnx.Module):
         param_dtype=weights_dtype,
         rngs=rngs,
     )
-
-  def __call__(
-      self,
-      hidden_states: jax.Array,
-      image_rotary_emb: Tuple[jax.Array, jax.Array],
-  ) -> jax.Array:
-    batch_size, seq_len, _ = hidden_states.shape
-    inner_dim = self.heads * self.dim_head
-
-    qkv_mlp = self.to_qkv_mlp_proj(hidden_states)
-    qkv, mlp = jnp.split(qkv_mlp, [inner_dim * 3], axis=-1)
-
-    q, k, v = jnp.split(qkv, 3, axis=-1)
-    q = rearrange(q, "b l (h d) -> b l h d", h=self.heads)
-    k = rearrange(k, "b l (h d) -> b l h d", h=self.heads)
-    v = rearrange(v, "b l (h d) -> b l h d", h=self.heads)
-
-    q = self.norm_q(q)
-    k = self.norm_k(k)
-
-    if image_rotary_emb is not None:
-      q, k = apply_rope(q, k, image_rotary_emb)
-
-    scale = self.dim_head**-0.5
-    attn_weights = jnp.einsum("b q h d, b k h d -> b h q k", q, k, precision=None) * scale
-    attn_weights = jax.nn.softmax(attn_weights, axis=-1)
-    attn_out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v, precision=None)
-    attn_out = rearrange(attn_out, "b l h d -> b l (h d)")
-
-    mlp_act = jax.nn.gelu(mlp, approximate=True)
-    attn_mlp = jnp.concatenate([attn_out, mlp_act], axis=-1)
-
-    out = self.to_out(attn_mlp)
-    return out
 
 
 class NNXFluxDoubleTransformerBlock(nnx.Module):
+  """Flax NNX Double-Stream Transformer Block for FLUX.2-Klein."""
 
   def __init__(
       self,
@@ -1502,66 +1550,89 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
       dim: int,
       num_attention_heads: int,
       attention_head_dim: int,
-      mlp_ratio: float = 4.0,
+      mlp_ratio: float = 3.0,
+      attention_kernel: str = "dot_product",
+      flash_min_seq_length: int = 512,
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      mesh: Optional[jax.sharding.Mesh] = None,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      qkv_bias: bool = False,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
     self.dim = dim
     self.num_heads = num_attention_heads
     self.head_dim = attention_head_dim
-    mlp_hidden_dim = int(dim * mlp_ratio)
 
-    self.img_norm1 = NNXAdaLayerNormZero(dim, dtype=dtype, weights_dtype=weights_dtype)
-    self.txt_norm1 = NNXAdaLayerNormZero(dim, dtype=dtype, weights_dtype=weights_dtype)
+    self.norm1 = nnx.LayerNorm(
+        num_features=dim,
+        use_bias=False,
+        use_scale=False,
+        epsilon=1e-6,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+    self.norm1_context = nnx.LayerNorm(
+        num_features=dim,
+        use_bias=False,
+        use_scale=False,
+        epsilon=1e-6,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+    self.norm2 = nnx.LayerNorm(
+        num_features=dim,
+        use_bias=False,
+        use_scale=False,
+        epsilon=1e-6,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+    self.norm2_context = nnx.LayerNorm(
+        num_features=dim,
+        use_bias=False,
+        use_scale=False,
+        epsilon=1e-6,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
 
-    self.attn = NNXFluxDoubleAttention(
+    self.attn = NNXFluxAttention(
         rngs=rngs,
         query_dim=dim,
         heads=num_attention_heads,
         dim_head=attention_head_dim,
+        attention_kernel=attention_kernel,
+        flash_min_seq_length=flash_min_seq_length,
+        flash_block_sizes=flash_block_sizes,
+        mesh=mesh,
+        dtype=dtype,
+        weights_dtype=weights_dtype,
+        qkv_bias=qkv_bias,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
+    )
+
+    self.ff = NNXFlaxSwiGluFeedForward(
+        rngs=rngs,
+        dim=dim,
+        dim_out=dim,
+        mult=mlp_ratio,
         dtype=dtype,
         weights_dtype=weights_dtype,
     )
-
-    self.img_mlp = nnx.Linear(
-        in_features=dim,
-        out_features=mlp_hidden_dim,
-        use_bias=True,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
-        dtype=dtype,
-        param_dtype=weights_dtype,
+    self.ff_context = NNXFlaxSwiGluFeedForward(
         rngs=rngs,
-    )
-    self.img_mlp_out = nnx.Linear(
-        in_features=mlp_hidden_dim,
-        out_features=dim,
-        use_bias=True,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        dim=dim,
+        dim_out=dim,
+        mult=mlp_ratio,
         dtype=dtype,
-        param_dtype=weights_dtype,
-        rngs=rngs,
-    )
-    self.txt_mlp = nnx.Linear(
-        in_features=dim,
-        out_features=mlp_hidden_dim,
-        use_bias=True,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
-        dtype=dtype,
-        param_dtype=weights_dtype,
-        rngs=rngs,
-    )
-    self.txt_mlp_out = nnx.Linear(
-        in_features=mlp_hidden_dim,
-        out_features=dim,
-        use_bias=True,
-        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
-        dtype=dtype,
-        param_dtype=weights_dtype,
-        rngs=rngs,
+        weights_dtype=weights_dtype,
     )
 
   def __call__(
@@ -1573,33 +1644,49 @@ class NNXFluxDoubleTransformerBlock(nnx.Module):
       temb_mod_img: Optional[jax.Array] = None,
       temb_mod_txt: Optional[jax.Array] = None,
   ) -> Tuple[jax.Array, jax.Array]:
-    norm_h, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.img_norm1(hidden_states, emb=temb_mod_img)
-    norm_enc, c_gate_msa_txt, c_shift_mlp_txt, c_scale_mlp_txt, c_gate_mlp_txt = self.txt_norm1(
-        encoder_hidden_states, emb=temb_mod_txt
-    )
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(temb_mod_img, 6, axis=-1)
+    c_shift_msa, c_scale_msa, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = jnp.split(temb_mod_txt, 6, axis=-1)
+
+    shift_msa = jnp.expand_dims(shift_msa, axis=1)
+    scale_msa = jnp.expand_dims(scale_msa, axis=1)
+    gate_msa = jnp.expand_dims(gate_msa, axis=1)
+    shift_mlp = jnp.expand_dims(shift_mlp, axis=1)
+    scale_mlp = jnp.expand_dims(scale_mlp, axis=1)
+    gate_mlp = jnp.expand_dims(gate_mlp, axis=1)
+
+    c_shift_msa = jnp.expand_dims(c_shift_msa, axis=1)
+    c_scale_msa = jnp.expand_dims(c_scale_msa, axis=1)
+    c_gate_msa = jnp.expand_dims(c_gate_msa, axis=1)
+    c_shift_mlp = jnp.expand_dims(c_shift_mlp, axis=1)
+    c_scale_mlp = jnp.expand_dims(c_scale_mlp, axis=1)
+    c_gate_mlp = jnp.expand_dims(c_gate_mlp, axis=1)
+
+    norm1_h = self.norm1(hidden_states) * (1.0 + scale_msa) + shift_msa
+    norm1_enc = self.norm1_context(encoder_hidden_states) * (1.0 + c_scale_msa) + c_shift_msa
 
     attn_img, attn_txt = self.attn(
-        hidden_states=norm_h,
-        encoder_hidden_states=norm_enc,
+        hidden_states=norm1_h,
+        encoder_hidden_states=norm1_enc,
         image_rotary_emb=image_rotary_emb,
     )
 
-    hidden_states = hidden_states + c_gate_msa * attn_img
-    encoder_hidden_states = encoder_hidden_states + c_gate_msa_txt * attn_txt
+    hidden_states = hidden_states + gate_msa * attn_img
+    encoder_hidden_states = encoder_hidden_states + c_gate_msa * attn_txt
 
-    norm_h_mlp = norm_h * (1.0 + c_scale_mlp) + c_shift_mlp
-    norm_enc_mlp = norm_enc * (1.0 + c_scale_mlp_txt) + c_shift_mlp_txt
+    norm2_h = self.norm2(hidden_states) * (1.0 + scale_mlp) + shift_mlp
+    norm2_enc = self.norm2_context(encoder_hidden_states) * (1.0 + c_scale_mlp) + c_shift_mlp
 
-    img_ff = self.img_mlp_out(jax.nn.gelu(self.img_mlp(norm_h_mlp), approximate=True))
-    txt_ff = self.txt_mlp_out(jax.nn.gelu(self.txt_mlp(norm_enc_mlp), approximate=True))
+    mlp_output = self.ff(norm2_h)
+    encoder_mlp_output = self.ff_context(norm2_enc)
 
-    hidden_states = hidden_states + c_gate_mlp * img_ff
-    encoder_hidden_states = encoder_hidden_states + c_gate_mlp_txt * txt_ff
+    hidden_states = hidden_states + gate_mlp * mlp_output
+    encoder_hidden_states = encoder_hidden_states + c_gate_mlp * encoder_mlp_output
 
     return encoder_hidden_states, hidden_states
 
 
 class NNXFluxSingleTransformerBlock(nnx.Module):
+  """Flax NNX Single-Stream Transformer Block for FLUX.2-Klein."""
 
   def __init__(
       self,
@@ -1607,18 +1694,65 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
       dim: int,
       num_attention_heads: int,
       attention_head_dim: int,
+      mlp_ratio: float = 3.0,
+      attention_kernel: str = "dot_product",
+      flash_min_seq_length: int = 512,
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      mesh: Optional[jax.sharding.Mesh] = None,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
     self.dim = dim
-    self.norm = NNXAdaLayerNormZeroSingle(dim, dtype=dtype, weights_dtype=weights_dtype)
+    self.num_attention_heads = num_attention_heads
+    self.attention_head_dim = attention_head_dim
+    mlp_hidden_dim = int(dim * mlp_ratio)
+
+    self.norm = nnx.LayerNorm(
+        num_features=dim,
+        use_bias=False,
+        use_scale=False,
+        epsilon=1e-6,
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+
+    out_dim = dim * 3 + 2 * mlp_hidden_dim
+    self.linear1 = nnx.Linear(
+        in_features=dim,
+        out_features=out_dim,
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
+    self.linear2 = nnx.Linear(
+        in_features=dim + mlp_hidden_dim,
+        out_features=dim,
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("mlp", "embed")),
+        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        dtype=dtype,
+        param_dtype=weights_dtype,
+        rngs=rngs,
+    )
     self.attn = NNXFluxSingleAttention(
         rngs=rngs,
         dim=dim,
         num_attention_heads=num_attention_heads,
         attention_head_dim=attention_head_dim,
+        attention_kernel=attention_kernel,
+        flash_min_seq_length=flash_min_seq_length,
+        flash_block_sizes=flash_block_sizes,
+        mesh=mesh,
         dtype=dtype,
         weights_dtype=weights_dtype,
+        ulysses_shards=ulysses_shards,
+        ulysses_attention_chunks=ulysses_attention_chunks,
     )
 
   def __call__(
@@ -1628,22 +1762,59 @@ class NNXFluxSingleTransformerBlock(nnx.Module):
       image_rotary_emb: Tuple[jax.Array, jax.Array],
       temb_mod: Optional[jax.Array] = None,
   ) -> jax.Array:
-    norm_hidden_states, gate_msa = self.norm(hidden_states, emb=temb_mod)
-    attn_output = self.attn(
-        hidden_states=norm_hidden_states,
-        image_rotary_emb=image_rotary_emb,
-    )
-    hidden_states = hidden_states + gate_msa * attn_output
+    residual = hidden_states
+    shift_msa, scale_msa, gate = jnp.split(temb_mod, 3, axis=-1)
+    shift_msa = jnp.expand_dims(shift_msa, axis=1)
+    scale_msa = jnp.expand_dims(scale_msa, axis=1)
+    gate = jnp.expand_dims(gate, axis=1)
+
+    norm_hidden_states = self.norm(hidden_states)
+    norm_hidden_states = (1 + scale_msa) * norm_hidden_states + shift_msa
+
+    qkv, mlp = jnp.split(self.linear1(norm_hidden_states), [3 * self.dim], axis=-1)
+    qkv = nn.with_logical_constraint(qkv, ("activation_batch", "activation_length", "activation_embed"))
+    mlp = nn.with_logical_constraint(mlp, ("activation_batch", "activation_length", "activation_embed"))
+
+    B, L = hidden_states.shape[:2]
+    H, D = self.num_attention_heads, qkv.shape[-1] // (self.num_attention_heads * 3)
+    qkv_proj = qkv.reshape(B, L, 3, H, D).transpose(2, 0, 3, 1, 4)
+    q, k, v = qkv_proj
+
+    q = self.attn.query_norm(q)
+    k = self.attn.key_norm(k)
+
+    if image_rotary_emb is not None:
+      if isinstance(image_rotary_emb, (tuple, list)):
+        image_rotary_emb_reordered = image_rotary_emb
+      else:
+        image_rotary_emb_reordered = rearrange(image_rotary_emb, "n d (i j) -> n d i j", i=2, j=2)
+      q, k = apply_rope(q, k, image_rotary_emb_reordered)
+
+    q = q.transpose(0, 2, 1, 3).reshape(q.shape[0], q.shape[2], -1)
+    k = k.transpose(0, 2, 1, 3).reshape(k.shape[0], k.shape[2], -1)
+    v = v.transpose(0, 2, 1, 3).reshape(v.shape[0], v.shape[2], -1)
+
+    attn_output = self.attn.attention_op.apply_attention(q, k, v)
+
+    mlp1, mlp2 = jnp.split(mlp, 2, axis=-1)
+    mlp_activated = nnx.silu(mlp1) * mlp2
+
+    attn_mlp = jnp.concatenate([attn_output, mlp_activated], axis=2)
+    attn_mlp = nn.with_logical_constraint(attn_mlp, ("activation_batch", "activation_length", "activation_embed"))
+    hidden_states = self.linear2(attn_mlp)
+    hidden_states = gate * hidden_states
+    hidden_states = residual + hidden_states
     return hidden_states
 
 
-class NNXFluxTransformer2DModel(nnx.Module):
+class NNXFlux2KleinTransformer2DModel(nnx.Module):
+  """Flax NNX Top-Level FLUX.2-Klein Transformer 2D Model."""
 
   def __init__(
       self,
       rngs: nnx.Rngs,
       patch_size: int = 1,
-      in_channels: int = 64,
+      in_channels: int = 128,
       num_layers: int = 5,
       num_single_layers: int = 20,
       attention_head_dim: int = 128,
@@ -1651,10 +1822,18 @@ class NNXFluxTransformer2DModel(nnx.Module):
       joint_attention_dim: int = 4096,
       pooled_projection_dim: int = 768,
       guidance_embeds: bool = True,
-      axes_dim: Tuple[int, ...] = (16, 56, 56),
-      theta: float = 10000.0,
+      axes_dim: Tuple[int, ...] = (32, 32, 32, 32),
+      theta: float = 2000.0,
+      mlp_ratio: float = 3.0,
+      attention_kernel: str = "dot_product",
+      flash_min_seq_length: int = 512,
+      flash_block_sizes: Optional[Dict[str, int]] = None,
+      mesh: Optional[jax.sharding.Mesh] = None,
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
+      scale_shift_order: str = "scale_shift",
+      ulysses_shards: int = -1,
+      ulysses_attention_chunks: int = 1,
   ):
     self.in_channels = in_channels
     self.out_channels = in_channels
@@ -1663,6 +1842,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     self.num_single_layers = num_single_layers
     self.attention_head_dim = attention_head_dim
     self.num_attention_heads = num_attention_heads
+    self.joint_attention_dim = joint_attention_dim
     self.inner_dim = num_attention_heads * attention_head_dim
     self.dtype = dtype
 
@@ -1679,7 +1859,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     self.double_stream_modulation_img = nnx.Linear(
         in_features=self.inner_dim,
         out_features=6 * self.inner_dim,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        use_bias=False,
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1687,7 +1867,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     self.double_stream_modulation_txt = nnx.Linear(
         in_features=self.inner_dim,
         out_features=6 * self.inner_dim,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        use_bias=False,
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1695,7 +1875,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     self.single_stream_modulation = nnx.Linear(
         in_features=self.inner_dim,
         out_features=3 * self.inner_dim,
-        bias_init=nnx.with_partitioning(nnx.initializers.zeros, (None,)),
+        use_bias=False,
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1704,6 +1884,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     self.x_embedder = nnx.Linear(
         in_features=in_channels,
         out_features=self.inner_dim,
+        use_bias=False,
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1711,6 +1892,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     self.context_embedder = nnx.Linear(
         in_features=joint_attention_dim,
         out_features=self.inner_dim,
+        use_bias=False,
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1723,8 +1905,15 @@ class NNXFluxTransformer2DModel(nnx.Module):
                 dim=self.inner_dim,
                 num_attention_heads=num_attention_heads,
                 attention_head_dim=attention_head_dim,
+                mlp_ratio=mlp_ratio,
+                attention_kernel=attention_kernel,
+                flash_min_seq_length=flash_min_seq_length,
+                flash_block_sizes=flash_block_sizes,
+                mesh=mesh,
                 dtype=dtype,
                 weights_dtype=weights_dtype,
+                ulysses_shards=ulysses_shards,
+                ulysses_attention_chunks=ulysses_attention_chunks,
             )
             for _ in range(num_layers)
         ]
@@ -1737,8 +1926,15 @@ class NNXFluxTransformer2DModel(nnx.Module):
                 dim=self.inner_dim,
                 num_attention_heads=num_attention_heads,
                 attention_head_dim=attention_head_dim,
+                mlp_ratio=mlp_ratio,
+                attention_kernel=attention_kernel,
+                flash_min_seq_length=flash_min_seq_length,
+                flash_block_sizes=flash_block_sizes,
+                mesh=mesh,
                 dtype=dtype,
                 weights_dtype=weights_dtype,
+                ulysses_shards=ulysses_shards,
+                ulysses_attention_chunks=ulysses_attention_chunks,
             )
             for _ in range(num_single_layers)
         ]
@@ -1748,13 +1944,14 @@ class NNXFluxTransformer2DModel(nnx.Module):
         rngs=rngs,
         embedding_dim=self.inner_dim,
         eps=1e-6,
+        scale_shift_order=scale_shift_order,
         dtype=dtype,
         weights_dtype=weights_dtype,
     )
     self.proj_out = nnx.Linear(
         in_features=self.inner_dim,
         out_features=in_channels,
-        use_bias=True,
+        use_bias=False,
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -1764,12 +1961,13 @@ class NNXFluxTransformer2DModel(nnx.Module):
       self,
       hidden_states: jax.Array,
       encoder_hidden_states: jax.Array,
-      pooled_projections: jax.Array,
-      timestep: jax.Array,
-      img_ids: jax.Array,
-      txt_ids: jax.Array,
+      pooled_projections: Optional[jax.Array] = None,
+      timestep: Optional[jax.Array] = None,
+      img_ids: Optional[jax.Array] = None,
+      txt_ids: Optional[jax.Array] = None,
       guidance: Optional[jax.Array] = None,
-  ) -> jax.Array:
+      return_dict: bool = True,
+  ) -> Union[jax.Array, Transformer2DModelOutput]:
     hidden_states = self.x_embedder(hidden_states)
     timestep = timestep * 1000.0
     if guidance is not None:
@@ -1777,7 +1975,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     temb = self.time_text_embed(timestep, guidance, pooled_projections)
     temb = temb.astype(hidden_states.dtype)
 
-    temb_silu = jax.nn.silu(temb)
+    temb_silu = nnx.silu(temb)
     double_stream_mod_img = self.double_stream_modulation_img(temb_silu)
     double_stream_mod_txt = self.double_stream_modulation_txt(temb_silu)
     single_stream_mod = self.single_stream_modulation(temb_silu)
@@ -1821,4 +2019,7 @@ class NNXFluxTransformer2DModel(nnx.Module):
     hidden_states = hidden_states[:, num_txt_tokens:, ...]
     hidden_states = self.norm_out(hidden_states, temb)
     output = self.proj_out(hidden_states)
-    return output
+
+    if not return_dict:
+      return (output,)
+    return Transformer2DModelOutput(sample=output)

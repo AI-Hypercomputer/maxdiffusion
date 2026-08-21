@@ -187,11 +187,13 @@ class NNXAdaLayerNormContinuous(nnx.Module):
       rngs: nnx.Rngs,
       embedding_dim: int,
       eps: float = 1e-6,
+      scale_shift_order: str = "shift_scale",
       dtype: jnp.dtype = jnp.float32,
       weights_dtype: jnp.dtype = jnp.float32,
   ):
     self.embedding_dim = embedding_dim
     self.eps = eps
+    self.scale_shift_order = scale_shift_order
     self.dtype = dtype
     self.layer_norm = nnx.LayerNorm(
         num_features=embedding_dim, epsilon=eps, use_bias=False, use_scale=False, dtype=dtype, rngs=rngs
@@ -199,7 +201,8 @@ class NNXAdaLayerNormContinuous(nnx.Module):
     self.linear = nnx.Linear(
         in_features=embedding_dim,
         out_features=embedding_dim * 2,
-        use_bias=True,
+        use_bias=False,
+        kernel_init=nnx.with_partitioning(nnx.initializers.lecun_normal(), ("embed", "mlp")),
         dtype=dtype,
         param_dtype=weights_dtype,
         rngs=rngs,
@@ -207,7 +210,12 @@ class NNXAdaLayerNormContinuous(nnx.Module):
 
   def __call__(self, x: jax.Array, conditioning_embedding: jax.Array) -> jax.Array:
     emb = self.linear(jax.nn.silu(conditioning_embedding))
-    scale, shift = jnp.split(emb, 2, axis=-1)
+    if self.scale_shift_order == "shift_scale":
+      shift, scale = jnp.split(emb, 2, axis=-1)
+    else:
+      scale, shift = jnp.split(emb, 2, axis=-1)
+    shift = nn.with_logical_constraint(shift, ("activation_batch", "activation_embed"))
+    scale = nn.with_logical_constraint(scale, ("activation_batch", "activation_embed"))
     x_norm = self.layer_norm(x)
     return (1.0 + scale[:, None, :]) * x_norm + shift[:, None, :]
 

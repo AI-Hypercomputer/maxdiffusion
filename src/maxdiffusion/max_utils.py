@@ -410,11 +410,17 @@ def walk_and_upload_blobs(config, output_dir):
 
 
 def device_put_replicated(x, sharding):
-  """
-  Although the name indicates replication, this function can be used
+  """Although the name indicates replication, this function can be used
+
   to also shard an array based on sharding.
   """
-  return jax.make_array_from_callback(x.shape, sharding, lambda index: x[index])
+  arr = getattr(x, "value", x)
+  shd = getattr(sharding, "value", sharding)
+  res = jax.make_array_from_callback(arr.shape, shd, lambda index: arr[index])
+  if hasattr(x, "set_value"):
+    x.set_value(res)
+    return x
+  return res
 
 
 def fill_unspecified_mesh_axes(parallelism_vals, target_product, parallelism_type):
@@ -795,18 +801,19 @@ def get_flash_block_sizes(config):
           f"block_kv_dq: {user_block_sizes.get('block_kv_dq')},"
           f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
       )
+    use_fused_bwd = True if attention_is_tokamax else bool(user_block_sizes.get("use_fused_bwd_kernel", False))
     flash_block_sizes = splash_attention_kernel.BlockSizes(
-        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"])
+        block_q=user_block_sizes.get("block_q_dkv", user_block_sizes.get("block_kv"))
         if attention_is_tokamax
-        else user_block_sizes["block_q"],
-        block_kv_compute=user_block_sizes["block_kv_compute"],
-        block_kv=user_block_sizes["block_kv"],
-        block_q_dkv=user_block_sizes["block_q_dkv"],
-        block_kv_dkv=user_block_sizes["block_kv_dkv"],
-        block_kv_dkv_compute=user_block_sizes["block_kv_dkv_compute"],
-        block_q_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_q_dq"),
-        block_kv_dq=None if attention_is_tokamax else value_or_none(user_block_sizes, "block_kv_dq"),
-        use_fused_bwd_kernel=True if attention_is_tokamax else value_or_none(user_block_sizes, "use_fused_bwd_kernel"),
+        else user_block_sizes.get("block_q"),
+        block_kv_compute=user_block_sizes.get("block_kv_compute"),
+        block_kv=user_block_sizes.get("block_kv"),
+        block_q_dkv=user_block_sizes.get("block_q_dkv", user_block_sizes.get("block_q")),
+        block_kv_dkv=user_block_sizes.get("block_kv_dkv", user_block_sizes.get("block_kv")),
+        block_kv_dkv_compute=user_block_sizes.get("block_kv_dkv_compute", user_block_sizes.get("block_kv_compute")),
+        block_q_dq=None if use_fused_bwd else user_block_sizes.get("block_q_dq", user_block_sizes.get("block_q")),
+        block_kv_dq=None if use_fused_bwd else user_block_sizes.get("block_kv_dq", user_block_sizes.get("block_kv")),
+        use_fused_bwd_kernel=use_fused_bwd,
     )
   return flash_block_sizes
 
@@ -929,15 +936,23 @@ def initialize_jax_for_gpu():
 
 
 def maybe_initialize_jax_distributed_system(raw_keys):
-  if raw_keys["skip_jax_distributed_system"]:
+  if raw_keys.get("skip_jax_distributed_system", False):
     max_logging.log("Skipping jax distributed system due to skip_jax_distributed_system=True flag.")
+    return
+  from jax._src.xla_bridge import backends_are_initialized
+
+  if backends_are_initialized():
+    max_logging.log("XLA backends already initialized; skipping jax.distributed.initialize().")
     return
   if is_gpu_backend(raw_keys):
     max_logging.log("Attempting to initialize the jax distributed system for GPU backend...")
     initialize_jax_for_gpu()
     max_logging.log("Jax distributed system initialized on GPU!")
   else:
-    jax.distributed.initialize()
+    try:
+      jax.distributed.initialize()
+    except Exception as e:
+      max_logging.log(f"Warning: jax.distributed.initialize() skipped or failed: {e}")
 
 
 def safe_getattr(obj: Any, name: str, default: Any) -> Any:

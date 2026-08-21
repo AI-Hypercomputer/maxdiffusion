@@ -74,7 +74,20 @@ mask_padding_tokens: True
 #    in cross attention q.
 attention_sharding_uniform: True 
 
-flash_block_sizes: {}
+flash_block_sizes: {
+  "block_q": 4608,
+  "block_kv": 1024,
+  "block_kv_compute": 1024,
+}
+ulysses_shards: 2
+ulysses_attention_chunks: 1
+text_encoder_attention: 'flash'
+text_encoder_flash_block_sizes: {
+  "block_q": 512,
+  "block_kv": 512,
+  "block_kv_compute": 512,
+}
+text_encoder_max_layer: 27
 # GroupNorm groups
 norm_num_groups: 32
 
@@ -154,12 +167,12 @@ data_sharding: [['data', 'fsdp', 'context', 'tensor']]
 # value to auto-shard based on available slices and devices.
 # By default, product of the DCN axes should equal number of slices
 # and product of the ICI axes should equal number of devices per slice.
-dcn_data_parallelism: 1  # recommended DCN axis to be auto-sharded
-dcn_fsdp_parallelism: -1
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: 1
 dcn_context_parallelism: 1
 dcn_tensor_parallelism: 1
 ici_data_parallelism: 1
-ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_fsdp_parallelism: 1
 ici_context_parallelism: 1
 ici_tensor_parallelism: 1
 
@@ -203,7 +216,7 @@ num_train_epochs: 1
 seed: 0
 output_dir: 'output/'
 output_name: "flux2klein_generated_image.png"
-per_device_batch_size: 1
+per_device_batch_size: 1.0
 
 warmup_steps_fraction: 0.1
 learning_rate_schedule_steps: -1 # By default the length of the schedule is set to the number of steps.
@@ -231,6 +244,7 @@ do_classifier_free_guidance: True
 guidance_scale: 4.0
 guidance_rescale: 0.0
 num_inference_steps: 4
+num_reps: 1
 save_final_checkpoint: False
 
 # SDXL Lightning parameters

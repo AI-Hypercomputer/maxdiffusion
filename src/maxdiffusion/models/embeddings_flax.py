@@ -97,7 +97,7 @@ class NNXTimestepEmbedding(nnx.Module):
         in_features=in_channels,
         out_features=time_embed_dim,
         use_bias=sample_proj_bias,
-        dtype=jnp.float32,
+        dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -126,7 +126,7 @@ class NNXTimestepEmbedding(nnx.Module):
         in_features=time_embed_dim,
         out_features=time_embed_dim_out,
         use_bias=sample_proj_bias,
-        dtype=jnp.float32,
+        dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -355,7 +355,7 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         in_features=in_features,
         out_features=hidden_size,
         use_bias=True,
-        dtype=jnp.float32,
+        dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -371,7 +371,7 @@ class NNXPixArtAlphaTextProjection(nnx.Module):
         in_features=hidden_size,
         out_features=out_features,
         use_bias=True,
-        dtype=jnp.float32,
+        dtype=dtype,
         param_dtype=weights_dtype,
         precision=precision,
         kernel_init=nnx.with_partitioning(
@@ -633,7 +633,7 @@ class NNXCombinedTimestepGuidanceTextProjEmbeddings(nnx.Module):
       pooled_projection: Optional[jax.Array] = None,
   ) -> jax.Array:
     timesteps_proj = self.time_proj(timestep)
-    dtype = pooled_projection.dtype if pooled_projection is not None else jnp.float32
+    dtype = pooled_projection.dtype if pooled_projection is not None else self.dtype
     timestep_emb = self.timestep_embedder(timesteps_proj.astype(dtype))
 
     if self.guidance_embeds and guidance is not None:
