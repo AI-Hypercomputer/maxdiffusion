@@ -19,3 +19,6 @@ _import_structure = {"pipeline_jflux": "JfluxPipeline"}
 from .flux_pipeline import (
     FluxPipeline,
 )
+from .flux2klein_pipeline import (
+    FlaxFlux2KleinPipeline,
+)
