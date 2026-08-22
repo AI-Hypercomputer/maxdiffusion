@@ -197,7 +197,20 @@ class _AotEntry:
       # Under an outer trace a deserialized executable cannot be applied
       # and tracers must not be recorded -- inline like a nested jit.
       return self.jitted(**dynamic, **static)
-    signature = _dynamic_signature((), {**dynamic, **static})
+
+    # Fast-path signature cache: avoid tree_flatten_with_path + SHA256 string hashing on repeated steps
+    shapes_dtypes = tuple(
+        (leaf.shape, leaf.dtype) if hasattr(leaf, "shape") and hasattr(leaf, "dtype") else None for leaf in leaves
+    )
+    cache_key = (treedef, shapes_dtypes, tuple(sorted(static.items())))
+    signature = getattr(self, "_sig_cache", {}).get(cache_key)
+    if signature is None:
+      signature = _dynamic_signature((), {**dynamic, **static})
+      if not hasattr(self, "_sig_cache"):
+        self._sig_cache = {}
+      if len(self._sig_cache) < 64:
+        self._sig_cache[cache_key] = signature
+
     if _STATE.warmup_only:
       # Compilation only needs avals; skip the (possibly seconds-long)
       # real execution and hand back correctly-shaped/sharded zeros so
@@ -243,12 +256,17 @@ class _AotEntry:
         # Fewer expected shardings than leaves = XLA pruned unused inputs;
         # the caller retries via Compiled's own pruning path. Not an error.
         return None
+
+      # Fast path: check if all leaves already match expected sharding exactly
+      if all(getattr(leaf, "sharding", None) is expected for leaf, expected in zip(leaves, flat_expected)):
+        return leaves
+
       aligned = []
       for leaf, expected in zip(leaves, flat_expected):
         if not hasattr(leaf, "shape"):  # python scalar traced as weak array
           leaf = jnp.asarray(leaf)
         sharding = getattr(leaf, "sharding", None)
-        if sharding is not None and sharding.is_equivalent_to(expected, leaf.ndim):
+        if sharding is not None and (sharding is expected or sharding.is_equivalent_to(expected, leaf.ndim)):
           aligned.append(leaf)
         else:
           aligned.append(jax.device_put(leaf, expected))

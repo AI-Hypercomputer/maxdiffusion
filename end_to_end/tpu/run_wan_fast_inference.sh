@@ -35,6 +35,7 @@ set -u
 MODEL=${1:-22}
 STEPS=${2:-40}
 PROMPT=${3:-""}
+shift $(($# > 3 ? 3 : $#))
 
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &> /dev/null && pwd)"
 cd "$PROJECT_ROOT" || exit 1
@@ -44,8 +45,9 @@ export JAX_DEFAULT_MATMUL_PRECISION=bfloat16
 export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 
 CACHE_ROOT=${WAN_CACHE_ROOT:-$HOME/.cache/maxdiffusion_wan}
-OUTPUT_DIR=${OUTPUT_DIR:-/tmp/wan_out}
-mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" "$OUTPUT_DIR"
+OUTPUT_DIR=${OUTPUT_DIR:-$HOME/maxdiffusion_wan_output}
+export TMPDIR=${TMPDIR:-$CACHE_ROOT/tmp}
+mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" "$OUTPUT_DIR" "$TMPDIR"
 
 # Tuned collective/scheduler flag set for v7 (from the PR #430 2D-ring
 # baseline). One line: libtpu stops parsing at a literal backslash.
@@ -53,27 +55,39 @@ export LIBTPU_INIT_ARGS="--xla_tpu_spmd_rng_bit_generator_unsafe=true --xla_tpu_
 # Timings only compare across runs passing the same extra flags.
 export LIBTPU_INIT_ARGS="${LIBTPU_INIT_ARGS} ${EXTRA_LIBTPU:-}"
 
-# fixed-m on by default: faster, and covered by tests/ring_fixed_m_test.py.
-if [ "${FIXEDM:-1}" = "1" ]; then
-  ATTENTION=ulysses_ring_custom_fixed_m
-  BQ=6400; BKV=2048
+# Attention selection
+ATTENTION=${ATTENTION:-ulysses_custom_fixed_m}
+
+if [ "$ATTENTION" = "ulysses_custom_fixed_m" ] || [ "$ATTENTION" = "ulysses_custom_fixed_m_per_q_block" ] || [ "$ATTENTION" = "ulysses_custom" ]; then
+  DEFAULT_U=4
+  DEFAULT_BQ=6400
+  DEFAULT_BKV=1024
+elif [ "${FIXEDM:-1}" = "1" ]; then
+  DEFAULT_U=2
+  DEFAULT_BQ=6400
+  DEFAULT_BKV=2048
 else
-  ATTENTION=ulysses_ring_custom
-  BQ=9472; BKV=1024
+  DEFAULT_U=2
+  DEFAULT_BQ=9472
+  DEFAULT_BKV=1024
 fi
+
+ULYSSES_SHARDS=${ULYSSES_SHARDS:-$DEFAULT_U}
+BQ=${BQ:-$DEFAULT_BQ}
+BKV=${BKV:-$DEFAULT_BKV}
 
 if [ "$MODEL" = "21" ]; then
   CONFIG=src/maxdiffusion/configs/base_wan_14b.yml
-  GUIDANCE_ARGS=""
+  GUIDANCE_ARGS=()
 else
   CONFIG=src/maxdiffusion/configs/base_wan_27b.yml
-  GUIDANCE_ARGS="guidance_scale_low=3.0 guidance_scale_high=4.0"
+  GUIDANCE_ARGS=(guidance_scale_low=3.0 guidance_scale_high=4.0)
 fi
 
 PROMPT_ARG=()
 [ -n "$PROMPT" ] && PROMPT_ARG=("prompt=$PROMPT")
 RUN_NAME="wan${MODEL}_fast_$(date +%m%d-%H%M%S)"
-echo "== ${ATTENTION} | tile ${BQ}/${BKV} | ${STEPS} steps"
+echo "== ${ATTENTION} | U=${ULYSSES_SHARDS} | tile ${BQ}/${BKV} | ${STEPS} steps"
 
 # libtpu's XLA:CPU AOT feature-mismatch log is cosmetic and ignores every
 # log-level env var; filter just that message from stderr.
@@ -83,20 +97,22 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   jax_cache_dir="$CACHE_ROOT/jax" \
   aot_cache_dir="$CACHE_ROOT/aot_wan$MODEL" \
   converted_weights_dir="$CACHE_ROOT/converted" \
-  attention=$ATTENTION \
-  ulysses_shards=2 \
+  attention="$ATTENTION" \
+  ulysses_shards="$ULYSSES_SHARDS" \
   ici_data_parallelism=2 ici_fsdp_parallelism=1 \
   ici_context_parallelism=4 ici_tensor_parallelism=1 \
   per_device_batch_size=0.125 \
   num_inference_steps="$STEPS" num_frames=81 width=1280 height=720 \
   weights_dtype=bfloat16 activations_dtype=bfloat16 \
-  vae_spatial=4 vae_decode_chunk=-1 \
+  vae_spatial=4 vae_decode_chunk="${VAE_DECODE_CHUNK:--1}" \
   vae_weights_dtype=bfloat16 vae_dtype=bfloat16 \
   text_encoder_dtype=bfloat16 compile_text_encoder="${COMPILE_TE:-false}" use_batched_text_encoder=false \
-  use_base2_exp=true use_experimental_scheduler=true \
-  fps=16 $GUIDANCE_ARGS \
+  use_kv_cache=true use_base2_exp=true use_experimental_scheduler=true \
+  fps=16 "${GUIDANCE_ARGS[@]}" \
+  seed="${SEED:-12345}" \
   flash_block_sizes="{\"block_q\":$BQ,\"block_kv\":$BKV,\"block_kv_compute\":$BKV,\"block_kv_compute_in\":1024,\"heads_per_tile\":1,\"vmem_limit_bytes\":67108864,\"block_q_dkv\":$BQ,\"block_kv_dkv\":$BKV,\"block_kv_dkv_compute\":$BKV}" \
   "${PROMPT_ARG[@]}" \
+  "$@" \
   2> >(grep -vE --line-buffered 'cpu_aot_loader|machine type for execution' >&2)
 
 mp4=$(ls -t wan_output_*.mp4 2>/dev/null | head -1)

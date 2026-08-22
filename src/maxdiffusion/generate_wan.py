@@ -16,6 +16,7 @@ from typing import Sequence
 import jax
 import time
 import os
+import uuid
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
@@ -35,6 +36,25 @@ from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
 
 
 jax.config.update("jax_use_shardy_partitioner", True)
+
+
+def _non_reusable_aot_revision():
+  """Returns a unique identity so unversioned/dirty development source can never hit old HLO."""
+  return f"unversioned:{uuid.uuid4().hex}"
+
+
+def _resolve_wan_aot_source_revision(config, commit_hash=None):
+  """Prefers an explicit Git revision, then a packaged-build revision."""
+  for revision in (commit_hash, getattr(config, "aot_build_revision", None)):
+    if revision is not None and str(revision).strip():
+      return str(revision).strip()
+  return None
+
+
+def _is_reusable_aot_revision(source_revision) -> bool:
+  if source_revision is None or not str(source_revision).strip():
+    return False
+  return not str(source_revision).startswith(("dirty:", "unversioned:"))
 
 
 def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=None):
@@ -276,21 +296,33 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   # Per-shape AOT executable cache: deserialization starts on background
   # threads now and overlaps the remaining setup; unknown shapes silently
   # fall back to jit and are serialized by save_pending() after warmup.
+  detected_revision = max_utils.get_git_commit_hash()
+  source_revision = _resolve_wan_aot_source_revision(config, detected_revision)
+  aot_cache_dir = getattr(config, "aot_cache_dir", "")
+  if aot_cache_dir and not _is_reusable_aot_revision(source_revision):
+    max_logging.log(
+        "[aot] No clean Git commit or aot_build_revision was supplied; "
+        "persistent Wan AOT caching is disabled for this development run."
+    )
+    aot_cache_dir = ""
+
+  aot_metadata = {
+      "model": config.pretrained_model_name_or_path,
+      "attention": config.attention,
+      # Kernel block sizes change the lowered graph, not the input
+      # shapes — they must key the executable or a re-tuned config
+      # would silently hit stale binaries.
+      "flash_block_sizes": str(config.flash_block_sizes),
+      "mesh_shape": str(pipeline.mesh.shape),
+      "weights_dtype": str(config.weights_dtype),
+      "activations_dtype": str(config.activations_dtype),
+      "scan_layers": str(config.scan_layers),
+      "jax": jax.__version__,
+      "source_revision": source_revision if source_revision else _non_reusable_aot_revision(),
+  }
   aot_cache.install(
-      getattr(config, "aot_cache_dir", ""),
-      meta={
-          "model": config.pretrained_model_name_or_path,
-          "attention": config.attention,
-          # Kernel block sizes change the lowered graph, not the input
-          # shapes — they must key the executable or a re-tuned config
-          # would silently hit stale binaries.
-          "flash_block_sizes": str(config.flash_block_sizes),
-          "mesh_shape": str(pipeline.mesh.shape),
-          "weights_dtype": str(config.weights_dtype),
-          "activations_dtype": str(config.activations_dtype),
-          "scan_layers": str(config.scan_layers),
-          "jax": jax.__version__,
-      },
+      aot_cache_dir,
+      meta=aot_metadata,
       mesh=pipeline.mesh,
   )
   # Deserialization is seconds and warmup must see the loaded executables
@@ -357,12 +389,21 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     trace = {}
   generation_time = time.perf_counter() - s0
   saved_video_path = []
-  for i in range(len(videos)):
-    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
-    saved_video_path.append(video_path)
-    if config.output_dir.startswith("gs://"):
-      max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
+  if jax.process_index() == 0:
+    import numpy as np
+
+    for i in range(len(videos)):
+      if config.output_dir and not config.output_dir.startswith("gs://"):
+        os.makedirs(config.output_dir, exist_ok=True)
+        video_path = os.path.join(config.output_dir, f"{config.run_name}_{config.seed}_{i}.mp4")
+      else:
+        video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
+      frames_np = np.asarray(videos[i])
+      export_to_video(frames_np, video_path, fps=config.fps)
+      saved_video_path.append(video_path)
+      max_logging.log(f"Saved video to {video_path}")
+      if config.output_dir.startswith("gs://"):
+        max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)

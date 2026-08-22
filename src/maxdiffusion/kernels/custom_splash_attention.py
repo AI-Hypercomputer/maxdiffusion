@@ -17,6 +17,7 @@ limitations under the License.
 """Custom Pallas flash attention kernel for TPU."""
 
 import functools
+import math
 
 import jax
 import jax.numpy as jnp
@@ -47,23 +48,44 @@ class _BlockSizes:
     self.block_kv_compute_in = block_kv_compute_in
 
 
-# Fixed-m softmax-bound constants. Instead of tracking the online-softmax
-# running max per KV block, eligible heads subtract a precomputed per-query
-# upper bound on the logits (Cauchy-Schwarz: max_j q_i.k_j <= ||q_i|| *
-# max_j||k_j||). _FIXED_M_RECENTER (C) shifts the exp2 exponents up so the
-# largest surviving term stays above the f32 subnormal-flush floor 2^-126:
-# with k-smoothing the per-row max is >= 0, so the max term has exponent
-# >= -ceil(bound) + C, which stays > -126 while ceil(bound) <=
-# _FIXED_M_SAFE_BOUND (= C + 126 - 1 of margin). Heads whose worst-case bound
-# exceeds the gate fall back to online softmax (the "sink" heads).
-_FIXED_M_RECENTER = 88.0
-_FIXED_M_SAFE_BOUND = 213.0
-# Ring-path gate: the ring processes UN-smoothed K shards (no ring rank holds
-# the full K to compute a mean, and a per-shard mean would shift each hop's
-# logits differently, breaking the cross-shard merge). Without k-smoothing the
-# per-row max logit has no >=0 guarantee, so the safe bound halves (calibrated
-# for ring_size=2, matching DiffusionServing's ring gate).
-_FIXED_M_RING_SAFE_BOUND = _FIXED_M_SAFE_BOUND / 2.0
+FP32_OUTPUT_HEADROOM_BITS = 8.0  # Assumes activation |V| <= 2**FP32_OUTPUT_HEADROOM_BITS = 256.0
+
+
+def get_fixed_m_constants(kv_seq_len: int, is_ring: bool = False) -> tuple[float, float]:
+  """Computes dynamic fixed-m constants C(N) and safe bounds based on KV sequence length.
+
+  Derivation:
+    1. Overflow Ceiling: C(N) = 127.0 - ceil(log2(N)) - FP32_OUTPUT_HEADROOM_BITS guarantees that:
+       - Denominator accumulator: l = sum_j 2^{z_j - m} <= N * 2^C(N) <= 2^{127 - 8} = 2^{119}
+       - Output accumulator: |o_d| = |sum_j V_{j,d} 2^{z_j - m}| <= V_max * N * 2^C(N) <= 2^{127} < 2^{128} (FP32 Max)
+       for any activation magnitude |V| <= 256.0 (2^8).
+    2. Subnormal Underflow Floor: Requiring the minimal shifted exponent to stay >= -125.0
+       (1 bit of safety margin above IEEE-754 normal floor -126.0):
+       - Ulysses (Centered, M >= 0): ceil(U) <= C(N) + 125.0 = W(N).
+       - Ring (Uncentered, M >= -U): U + ceil(U) <= W(N) => U <= floor(W(N) / 2).
+  """
+  if kv_seq_len is None or kv_seq_len <= 0:
+    raise ValueError(f"kv_seq_len must be a positive integer to compute dynamic fixed-m constants, got {kv_seq_len=}")
+
+  fp32_max_exp = 128.0
+  fp32_min_normal_exp = -126.0
+  output_headroom_bits = FP32_OUTPUT_HEADROOM_BITS
+
+  max_accumulation_bits = float(math.ceil(math.log2(float(kv_seq_len))))
+
+  # C(N) = 127.0 - max_accumulation_bits - output_headroom_bits
+  recenter = fp32_max_exp - max_accumulation_bits - output_headroom_bits - 1.0
+
+  # Safe window W(N) = C(N) - (-126.0) - 1.0 = C(N) + 125.0
+  safe_window = recenter - fp32_min_normal_exp - 1.0
+
+  if is_ring:
+    # For integer threshold K = floor(W / 2), U <= K guarantees U + ceil(U) <= 2K <= W
+    safe_bound = float(int(safe_window // 2))
+  else:
+    safe_bound = safe_window
+
+  return recenter, safe_bound
 
 
 def _flash_attention_kernel(
@@ -71,6 +93,7 @@ def _flash_attention_kernel(
     q_ref,
     k_ref,
     v_ref,
+    k_mean_ref,
     m_scratch_ref,
     l_scratch_ref,
     o_scratch_ref,
@@ -89,13 +112,23 @@ def _flash_attention_kernel(
     fuse_reciprocal: bool = True,
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
+    fixed_m_recenter: float | None = None,
+    q_heads_per_kv_head: int = 1,
 ):
+  """Pallas Mosaic TPU flash attention kernel with fixed-m support.
+
+  Scalar Prefetch Multiplexing:
+    `mk_ref` is a multiplexed scalar prefetch buffer of shape `(2, num_heads, num_q_blocks)`
+    passing both the precomputed block fixed-m base shift and discrete predicate in a single scalar memory slot:
+      - `mk_ref[0, h, i]`: Precomputed block shift m_B = ceil(max_i ||q_i|| * max_j ||k_j||) - C.
+      - `mk_ref[1, h, i]`: Gating eligibility predicate (1.0 for fixed-m, 0.0 for online).
+  """
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
   if rem != 0:
     raise NotImplementedError(f"{head_dim_v=} should be a multiple of {NUM_SUBLANES}")
 
-  h, _, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+  h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
   exp = jnp.exp2 if use_base2_exp else jnp.exp
   sv_dims = (((0,), (0,)), ((), ()))
 
@@ -105,26 +138,31 @@ def _flash_attention_kernel(
   # a single body per block, and the fixed bound stays PINNED through the
   # ragged last KV block, so every hop reports the identical m and the hops
   # combine by plain accumulation.
-  #
-  # Both must move together. Pinning without the uniform promise needs a
-  # SECOND body in the last block (fixed and online), and a two-body last
-  # block degrades the instruction schedule of the WHOLE grid -- measured 3x
-  # slower end to end, which is the cliff the design doc's D3 warns about.
-  # Keeping this one flag rather than two makes that combination unspellable.
   fixed_only = use_fixed_m and uniform_fixed_m
   if uniform_fixed_m and not use_fixed_m:
     raise ValueError("uniform_fixed_m requires use_fixed_m.")
 
-  # Per-head dispatch: heads inside the no-flush window run fixed-m, the rest
-  # keep online softmax. Branch once per head (body level), never per step.
-  is_fixed = (mk_ref[1, h] > 0.5) if (use_fixed_m and not fixed_only) else False
+  if use_fixed_m and fixed_m_recenter is None:
+    raise ValueError("fixed_m_recenter must be specified when use_fixed_m=True.")
+
+  # Per-(head, Q-block) dispatch: heads / Q-blocks inside the no-flush window run
+  # fixed-m, the rest keep online softmax.
+  if use_fixed_m and not fixed_only:
+    is_fixed = mk_ref[1, h, i] > 0.5
+  else:
+    is_fixed = False
 
   def _write_fixed_m():
-    # Per-query Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C.
-    qf = q_ref[...].astype(float32)
-    qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]  # (1, bq) per-query norm
-    bound = qn * mk_ref[0, h]
-    m_fixed = jnp.ceil(bound) - _FIXED_M_RECENTER
+    # Precomputed block bound m_B = ceil(max_i ||q_i|| * max_j ||k_j||) - C.
+    # Virtual K-centering applies the row-specific projection: m_i = m_B + q_i^T \bar{k}.
+    m_base = mk_ref[0, h, i]
+    if k_mean_ref is not None:
+      qf = q_ref[...].astype(float32)
+      km = k_mean_ref[h // q_heads_per_kv_head, :].astype(float32)
+      mu = (qf * km[None, :]).sum(axis=1)[None, :]
+      m_fixed = m_base + mu
+    else:
+      m_fixed = m_base
     m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
 
   @pl.when(j == 0)
@@ -232,7 +270,8 @@ def _flash_attention_kernel(
     l_scratch_ref[...] = l_prev
     o_scratch_ref[:] = o_prev
 
-  assert bkv % bkv_compute == 0
+  if bkv % bkv_compute != 0:
+    raise ValueError(f"block_kv ({bkv}) must be divisible by block_kv_compute ({bkv_compute})")
 
   if fixed_only:
 
@@ -443,7 +482,8 @@ def _flash_attention_kernel_mhpt(
       l_scratch_ref[h_local] = l_prev
       o_scratch_ref[h_local] = o_prev
 
-  assert bkv % bkv_compute == 0
+  if bkv % bkv_compute != 0:
+    raise ValueError(f"block_kv ({bkv}) must be divisible by block_kv_compute ({bkv_compute})")
 
   @pl.when(j != grid_width - 1)
   def body():
@@ -483,14 +523,12 @@ def _splash_attention_forward(
     vmem_limit_bytes: int | None = None,
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
+    fixed_m_recenter: float | None = None,
+    uniform_fixed_m: bool = False,
+    k_mean: jax.Array | None = None,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
-  # Scalar-prefetch operand carrying per-head fixed-m data:
-  #   mk[0, h] = max_j||k_j|| (Cauchy-Schwarz factor), mk[1, h] = eligibility.
-  # A dummy is supplied for online callers; the kernel ignores it.
-  if mk is None:
-    mk = jnp.zeros((2, num_q_heads), jnp.float32)
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
   bkv_compute = block_sizes.block_kv_compute
   bkv_compute_in = block_sizes.block_kv_compute_in
@@ -499,7 +537,36 @@ def _splash_attention_forward(
 
   actual_q_seq_len = q_seq_len if q_seq_len is not None else padded_q_seq_len
   actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else padded_kv_seq_len
+  if num_q_heads % num_kv_heads != 0:
+    raise ValueError(f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA.")
   q_heads_per_kv_head = num_q_heads // num_kv_heads
+  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
+  grid_height = (actual_q_seq_len + bq - 1) // bq
+  grid = (num_q_heads, grid_height, grid_width)
+
+  if use_fixed_m and fixed_m_recenter is None:
+    raise ValueError("`fixed_m_recenter` must be explicitly specified when `use_fixed_m=True`.")
+
+  # Scalar-prefetch operand carrying per-head / per-Q-block fixed-m data:
+  #   mk[0, h, i] = m_B (precomputed block fixed-m base shift), mk[1, h, i] = eligibility.
+  # A dummy is supplied for online callers; the kernel ignores it.
+  if use_fixed_m and mk is None:
+    raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
+  if mk is None:
+    mk = jnp.zeros((2, num_q_heads, grid_height), jnp.float32)
+  elif mk.ndim == 2:
+    mk = jnp.broadcast_to(mk[:, :, None], (2, num_q_heads, grid_height))
+
+  if mk.shape[0] != 2 or mk.shape[1] != num_q_heads or mk.shape[2] != grid_height:
+    raise ValueError(f"mk must have shape (2, {num_q_heads}, {grid_height}), got {mk.shape}")
+
+  if k_mean is None:
+    k_mean = jnp.zeros((num_kv_heads, head_dim_qk), dtype=jnp.float32)
+  elif k_mean.shape[0] == num_q_heads and num_q_heads != num_kv_heads:
+    k_mean = k_mean[::q_heads_per_kv_head]
+
+  if k_mean.shape[0] != num_kv_heads or k_mean.shape[1] != head_dim_qk:
+    raise ValueError(f"k_mean must have shape ({num_kv_heads}, {head_dim_qk}), got {k_mean.shape}")
 
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
@@ -517,6 +584,7 @@ def _splash_attention_forward(
       pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
       pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
       pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
+      pl.BlockSpec((k_mean.shape[0], head_dim_qk), lambda *_: (0, 0)),
   ]
   out_shapes = [
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
@@ -530,9 +598,6 @@ def _splash_attention_forward(
       pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
       pl.BlockSpec((None, head_dim_v, bq), out_index_map),
   ]
-  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
-  grid_height = (actual_q_seq_len + bq - 1) // bq
-  grid = (num_q_heads, grid_height, grid_width)
 
   all_out = pl.pallas_call(
       functools.partial(
@@ -546,6 +611,9 @@ def _splash_attention_forward(
           kv_seq_len=actual_kv_seq_len,
           use_base2_exp=use_base2_exp,
           use_fixed_m=use_fixed_m,
+          uniform_fixed_m=uniform_fixed_m,
+          fixed_m_recenter=fixed_m_recenter,
+          q_heads_per_kv_head=q_heads_per_kv_head,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
@@ -561,7 +629,7 @@ def _splash_attention_forward(
           vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
-  )(mk, q, k, v)
+  )(mk, q, k, v, k_mean)
   return all_out[-1]
 
 
@@ -578,6 +646,8 @@ def _splash_attention_forward_ring(
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
     uniform_fixed_m: bool = False,
+    fixed_m_recenter: float | None = None,
+    k_mean: jax.Array | None = None,
 ):
   """Ring-specific forward path that returns pre-reciprocal fp32 accumulators.
 
@@ -603,7 +673,23 @@ def _splash_attention_forward_ring(
 
   actual_q_seq_len = q_seq_len if q_seq_len is not None else padded_q_seq_len
   actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else padded_kv_seq_len
+  if num_q_heads % num_kv_heads != 0:
+    raise ValueError(f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA.")
   q_heads_per_kv_head = num_q_heads // num_kv_heads
+
+  if use_fixed_m and fixed_m_recenter is None:
+    raise ValueError("`fixed_m_recenter` must be explicitly specified when `use_fixed_m=True`.")
+
+  if use_fixed_m and mk is None:
+    raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
+
+  if k_mean is None:
+    k_mean = jnp.zeros((num_kv_heads, head_dim_qk), dtype=jnp.float32)
+  elif k_mean.shape[0] == num_q_heads and num_q_heads != num_kv_heads:
+    k_mean = k_mean[::q_heads_per_kv_head]
+
+  if k_mean.shape[0] != num_kv_heads or k_mean.shape[1] != head_dim_qk:
+    raise ValueError(f"k_mean must have shape ({num_kv_heads}, {head_dim_qk}), got {k_mean.shape}")
 
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
@@ -621,6 +707,7 @@ def _splash_attention_forward_ring(
       pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
       pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
       pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
+      pl.BlockSpec((k_mean.shape[0], head_dim_qk), lambda *_: (0, 0)),
   ]
   out_shapes = [
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
@@ -642,12 +729,16 @@ def _splash_attention_forward_ring(
   grid_height = (actual_q_seq_len + bq - 1) // bq
   grid = (num_q_heads, grid_height, grid_width)
 
-  # Scalar-prefetch operand carrying per-head fixed-m data (same convention as
-  # `_splash_attention_forward`): mk[0, h] = max_j||k_j|| over ALL ring shards
-  # (the caller all-reduces this over the ring axis), mk[1, h] = eligibility.
+  # Scalar-prefetch operand carrying per-head / per-Q-block fixed-m data:
+  #   mk[0, h, i] = max_j||k_j|| over ALL ring shards
+  # (the caller all-reduces this over the ring axis), mk[1, h, i] = eligibility.
   # A dummy is supplied for online callers; the kernel ignores it.
+  if use_fixed_m and mk is None:
+    raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
   if mk is None:
-    mk = jnp.zeros((2, num_q_heads), jnp.float32)
+    mk = jnp.zeros((2, num_q_heads, grid_height), jnp.float32)
+  elif mk.ndim == 2:
+    mk = jnp.broadcast_to(mk[:, :, None], (2, num_q_heads, grid_height))
 
   all_out = pl.pallas_call(
       functools.partial(
@@ -663,6 +754,8 @@ def _splash_attention_forward_ring(
           fuse_reciprocal=False,
           use_fixed_m=use_fixed_m,
           uniform_fixed_m=uniform_fixed_m,
+          fixed_m_recenter=fixed_m_recenter,
+          q_heads_per_kv_head=q_heads_per_kv_head,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
@@ -678,7 +771,7 @@ def _splash_attention_forward_ring(
           vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
-  )(mk, q, k, v)
+  )(mk, q, k, v, k_mean)
   out = jnp.swapaxes(all_out[3], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
   l = all_out[4][:, 0, :]  # (h, s)
   m = all_out[5][:, 0, :]  # (h, s)
@@ -707,8 +800,10 @@ def _splash_attention_forward_mhpt(
   actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else k.shape[1]
   hpt = heads_per_tile
 
-  assert num_q_heads % hpt == 0, f"num_heads {num_q_heads} must be divisible by heads_per_tile {hpt}"
-  assert num_q_heads == num_kv_heads, "MHPT currently requires num_q_heads == num_kv_heads (no GQA)"
+  if num_q_heads % hpt != 0:
+    raise ValueError(f"num_heads {num_q_heads} must be divisible by heads_per_tile {hpt}")
+  if num_q_heads != num_kv_heads:
+    raise ValueError(f"MHPT currently requires num_q_heads == num_kv_heads (no GQA), got {num_q_heads=} vs {num_kv_heads=}")
 
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
@@ -783,8 +878,18 @@ def make_splash_mha(
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
     use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
 ):
-  def _splash_attention(q, k, v, mk=None):
+  if use_fixed_m and not use_base2_exp:
+    raise NotImplementedError(
+        "fixed-m softmax bounds are derived strictly for base-2 exponents. Please set use_base2_exp=True."
+    )
+
+  recenter, _ = get_fixed_m_constants(orig_kv_seq_len, is_ring=False)
+
+  def _splash_attention(q, k, v, mk=None, k_mean=None):
+    if use_fixed_m and mk is None:
+      raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
     if heads_per_tile > 1:
       if use_fixed_m:
         raise NotImplementedError("fixed-m is not supported with heads_per_tile > 1")
@@ -812,6 +917,9 @@ def make_splash_mha(
         vmem_limit_bytes=vmem_limit_bytes,
         use_fixed_m=use_fixed_m,
         mk=mk,
+        uniform_fixed_m=uniform_fixed_m,
+        fixed_m_recenter=recenter,
+        k_mean=k_mean,
     )
 
   return _splash_attention

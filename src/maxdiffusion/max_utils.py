@@ -190,6 +190,8 @@ class Profiler:
 
 
 def initialize_summary_writer(config):
+  if "tensorboard_dir" not in config.get_keys() or not config.tensorboard_dir:
+    return None
   return writer.SummaryWriter(config.tensorboard_dir) if jax.process_index() == 0 else None
 
 

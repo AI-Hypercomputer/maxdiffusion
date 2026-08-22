@@ -34,9 +34,11 @@ from maxdiffusion.models.wan.transformers.transformer_wan import (
 )
 from maxdiffusion.models.embeddings_flax import NNXTimestepEmbedding, NNXPixArtAlphaTextProjection
 from maxdiffusion.models.normalization_flax import FP32LayerNorm
-from maxdiffusion.models.attention_flax import FlaxWanAttention
+from maxdiffusion.models.attention_flax import FlaxWanAttention, _unflatten_heads
+from maxdiffusion.kernels.fused_producers import fused_ln_adaln, fused_rmsnorm_rope
 from maxdiffusion.pyconfig import HyperParameters
 from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
+import numpy as np
 import qwix
 import flax
 
@@ -249,6 +251,311 @@ class WanTransformerTest(unittest.TestCase):
         )
       except NotImplementedError:
         pass
+
+  def test_fused_ln_adaln_parity(self):
+    """Verifies numerical parity of fused FP32 LayerNorm + AdaLN modulation."""
+    key = jax.random.PRNGKey(101)
+    k1, k2, k3 = jax.random.split(key, 3)
+    B, S, D = 1, 1024, 5120
+    x = jax.random.normal(k1, (B, S, D), dtype=jnp.bfloat16)
+    scale = jax.random.normal(k2, (B, 1, D), dtype=jnp.bfloat16)
+    shift = jax.random.normal(k3, (B, 1, D), dtype=jnp.bfloat16)
+
+    # Reference implementation
+    x_fp32 = x.astype(jnp.float32)
+    mean = jnp.mean(x_fp32, axis=-1, keepdims=True)
+    var = jnp.var(x_fp32, axis=-1, keepdims=True)
+    x_ln = (x_fp32 - mean) * jax.lax.rsqrt(var + 1e-6)
+    ref_out = (x_ln * (1.0 + scale.astype(jnp.float32)) + shift.astype(jnp.float32)).astype(x.dtype)
+
+    # Fused producer
+    fused_out = fused_ln_adaln(x, scale, shift, eps=1e-6)
+
+    np.testing.assert_allclose(
+        np.array(ref_out, dtype=np.float32),
+        np.array(fused_out, dtype=np.float32),
+        atol=0.01,
+        rtol=1e-2,
+    )
+
+  def test_fused_rmsnorm_rope_parity(self):
+    """Verifies numerical parity of fused RMSNorm + RoPE against unfused reference with complex freqs_cis."""
+    key = jax.random.PRNGKey(202)
+    k1, k2, k3, k4, k5, k6 = jax.random.split(key, 6)
+    B, S, D, H, DH = 1, 1024, 5120, 40, 128
+    eps = 1e-6
+
+    raw_q = jax.random.normal(k1, (B, S, D), dtype=jnp.bfloat16)
+    raw_k = jax.random.normal(k2, (B, S, D), dtype=jnp.bfloat16)
+    q_scale = jax.random.normal(k3, (D,), dtype=jnp.bfloat16)
+    k_scale = jax.random.normal(k4, (D,), dtype=jnp.bfloat16)
+
+    freqs_real = jax.random.normal(k5, (1, 1, S, DH // 2), dtype=jnp.float32)
+    freqs_imag = jax.random.normal(k6, (1, 1, S, DH // 2), dtype=jnp.float32)
+    freqs_cis = jax.lax.complex(freqs_real, freqs_imag)
+
+    # Unfused reference: FP32 RMSNorm -> unflatten -> RoPE
+    def ref_norm(x, scale):
+      var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)
+      return (x.astype(jnp.float32) * jax.lax.rsqrt(var + eps) * scale.astype(jnp.float32)).astype(x.dtype)
+
+    def ref_unflatten(x, heads):
+      b, s, d = x.shape
+      return x.reshape(b, s, heads, d // heads).transpose(0, 2, 1, 3)
+
+    def ref_apply_rope(xq, xk, freqs_cis):
+      cos = jnp.real(freqs_cis).astype(xq.dtype)
+      sin = jnp.imag(freqs_cis).astype(xq.dtype)
+      xq_reshaped = xq.reshape(*xq.shape[:-1], -1, 2)
+      xk_reshaped = xk.reshape(*xk.shape[:-1], -1, 2)
+      xq_0, xq_1 = xq_reshaped[..., 0], xq_reshaped[..., 1]
+      xk_0, xk_1 = xk_reshaped[..., 0], xk_reshaped[..., 1]
+      xq_out_0 = xq_0 * cos - xq_1 * sin
+      xq_out_1 = xq_0 * sin + xq_1 * cos
+      xk_out_0 = xk_0 * cos - xk_1 * sin
+      xk_out_1 = xk_0 * sin + xk_1 * cos
+      xq_out = jnp.concatenate([xq_out_0[..., None], xq_out_1[..., None]], axis=-1).reshape(xq.shape)
+      xk_out = jnp.concatenate([xk_out_0[..., None], xk_out_1[..., None]], axis=-1).reshape(xk.shape)
+      return xq_out, xk_out
+
+    q_ref, k_ref = ref_apply_rope(
+        ref_unflatten(ref_norm(raw_q, q_scale), H),
+        ref_unflatten(ref_norm(raw_k, k_scale), H),
+        freqs_cis,
+    )
+
+    # Fused producer
+    q_fused, k_fused = fused_rmsnorm_rope(
+        raw_q,
+        raw_k,
+        q_scale,
+        k_scale,
+        freqs_cis,
+        q_heads=H,
+        dim_head=DH,
+        eps=eps,
+    )
+
+    np.testing.assert_allclose(
+        np.array(q_ref, dtype=np.float32),
+        np.array(q_fused, dtype=np.float32),
+        atol=0.08,
+        rtol=1e-2,
+    )
+    np.testing.assert_allclose(
+        np.array(k_ref, dtype=np.float32),
+        np.array(k_fused, dtype=np.float32),
+        atol=0.08,
+        rtol=1e-2,
+    )
+
+  def test_fused_rmsnorm_rope_with_wan_rotary_embed(self):
+    """Verifies numerical parity of fused RMSNorm + RoPE against unfused reference with real WanRotaryPosEmbed frequencies."""
+    key = jax.random.PRNGKey(404)
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+    B, S, D, H, DH = 1, 1024, 5120, 40, 128
+    eps = 1e-6
+
+    # Generate real RoPE frequencies on the complex unit circle using WanRotaryPosEmbed
+    wan_rot_embed = WanRotaryPosEmbed(attention_head_dim=DH, patch_size=[1, 2, 2], max_seq_len=1024)
+    dummy_video = jnp.ones((B, 1, 64, 64, 16))
+    freqs_cis = wan_rot_embed(dummy_video)  # (1, 1, 1024, 64)
+
+    raw_q = jax.random.normal(k1, (B, S, D), dtype=jnp.bfloat16)
+    raw_k = jax.random.normal(k2, (B, S, D), dtype=jnp.bfloat16)
+    q_scale = jax.random.normal(k3, (D,), dtype=jnp.bfloat16)
+    k_scale = jax.random.normal(k4, (D,), dtype=jnp.bfloat16)
+
+    def ref_norm(x, scale):
+      var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)
+      return (x.astype(jnp.float32) * jax.lax.rsqrt(var + eps) * scale.astype(jnp.float32)).astype(x.dtype)
+
+    def ref_unflatten(x, heads):
+      b, s, d = x.shape
+      return x.reshape(b, s, heads, d // heads).transpose(0, 2, 1, 3)
+
+    def ref_apply_rope(xq, xk, freqs_cis):
+      cos = jnp.real(freqs_cis).astype(xq.dtype)
+      sin = jnp.imag(freqs_cis).astype(xq.dtype)
+      xq_reshaped = xq.reshape(*xq.shape[:-1], -1, 2)
+      xk_reshaped = xk.reshape(*xk.shape[:-1], -1, 2)
+      xq_0, xq_1 = xq_reshaped[..., 0], xq_reshaped[..., 1]
+      xk_0, xk_1 = xk_reshaped[..., 0], xk_reshaped[..., 1]
+      xq_out_0 = xq_0 * cos - xq_1 * sin
+      xq_out_1 = xq_0 * sin + xq_1 * cos
+      xk_out_0 = xk_0 * cos - xk_1 * sin
+      xk_out_1 = xk_0 * sin + xk_1 * cos
+      xq_out = jnp.concatenate([xq_out_0[..., None], xq_out_1[..., None]], axis=-1).reshape(xq.shape)
+      xk_out = jnp.concatenate([xk_out_0[..., None], xk_out_1[..., None]], axis=-1).reshape(xk.shape)
+      return xq_out, xk_out
+
+    q_ref, k_ref = ref_apply_rope(
+        ref_unflatten(ref_norm(raw_q, q_scale), H),
+        ref_unflatten(ref_norm(raw_k, k_scale), H),
+        freqs_cis,
+    )
+
+    q_fused, k_fused = fused_rmsnorm_rope(
+        raw_q,
+        raw_k,
+        q_scale,
+        k_scale,
+        freqs_cis,
+        q_heads=H,
+        dim_head=DH,
+        eps=eps,
+    )
+
+    np.testing.assert_allclose(
+        np.array(q_ref, dtype=np.float32),
+        np.array(q_fused, dtype=np.float32),
+        atol=0.08,
+        rtol=1e-2,
+    )
+    np.testing.assert_allclose(
+        np.array(k_ref, dtype=np.float32),
+        np.array(k_fused, dtype=np.float32),
+        atol=0.08,
+        rtol=1e-2,
+    )
+
+  def test_fused_rmsnorm_rope_gqa_parity(self):
+    """Verifies that fused_rmsnorm_rope correctly handles asymmetric GQA shapes (e.g. q_heads=8, kv_heads=2)."""
+    key = jax.random.PRNGKey(505)
+    k1, k2, k3, k4, k5 = jax.random.split(key, 5)
+
+    B = 2
+    S = 64
+    Q_H = 8
+    KV_H = 2
+    DH = 128
+    D_q = Q_H * DH
+    D_kv = KV_H * DH
+    eps = 1e-6
+
+    raw_q = jax.random.normal(k1, (B, S, D_q), dtype=jnp.bfloat16)
+    raw_k = jax.random.normal(k2, (B, S, D_kv), dtype=jnp.bfloat16)
+    q_scale = jax.random.normal(k3, (D_q,), dtype=jnp.float32)
+    k_scale = jax.random.normal(k4, (D_kv,), dtype=jnp.float32)
+    freqs_cis = jax.random.normal(k5, (1, 1, S, DH // 2), dtype=jnp.float32) + 1j * jax.random.normal(
+        key, (1, 1, S, DH // 2), dtype=jnp.float32
+    )
+
+    def ref_norm(x, scale):
+      x_fp32 = x.astype(jnp.float32)
+      rms = jax.lax.rsqrt(jnp.mean(jnp.square(x_fp32), axis=-1, keepdims=True) + eps)
+      return (x_fp32 * rms * scale).astype(x.dtype)
+
+    def ref_unflatten(x, heads):
+      return x.reshape(B, S, heads, DH).transpose(0, 2, 1, 3)
+
+    def ref_apply_rope(xq, xk, freqs):
+      cos = jnp.real(freqs).astype(xq.dtype)
+      sin = jnp.imag(freqs).astype(xq.dtype)
+      xq_reshaped = xq.reshape(*xq.shape[:-1], -1, 2)
+      xk_reshaped = xk.reshape(*xk.shape[:-1], -1, 2)
+      xq_0, xq_1 = xq_reshaped[..., 0], xq_reshaped[..., 1]
+      xk_0, xk_1 = xk_reshaped[..., 0], xk_reshaped[..., 1]
+      xq_out_0 = xq_0 * cos - xq_1 * sin
+      xq_out_1 = xq_0 * sin + xq_1 * cos
+      xk_out_0 = xk_0 * cos - xk_1 * sin
+      xk_out_1 = xk_0 * sin + xk_1 * cos
+      xq_out = jnp.concatenate([xq_out_0[..., None], xq_out_1[..., None]], axis=-1).reshape(xq.shape)
+      xk_out = jnp.concatenate([xk_out_0[..., None], xk_out_1[..., None]], axis=-1).reshape(xk.shape)
+      return xq_out, xk_out
+
+    q_ref, k_ref = ref_apply_rope(
+        ref_unflatten(ref_norm(raw_q, q_scale), Q_H),
+        ref_unflatten(ref_norm(raw_k, k_scale), KV_H),
+        freqs_cis,
+    )
+
+    q_fused, k_fused = fused_rmsnorm_rope(
+        raw_q,
+        raw_k,
+        q_scale,
+        k_scale,
+        freqs_cis,
+        q_heads=Q_H,
+        kv_heads=KV_H,
+        dim_head=DH,
+        eps=eps,
+    )
+
+    self.assertEqual(q_fused.shape, (B, Q_H, S, DH))
+    self.assertEqual(k_fused.shape, (B, KV_H, S, DH))
+
+    np.testing.assert_allclose(
+        np.array(q_ref, dtype=np.float32),
+        np.array(q_fused, dtype=np.float32),
+        atol=0.08,
+        rtol=1e-2,
+    )
+    np.testing.assert_allclose(
+        np.array(k_ref, dtype=np.float32),
+        np.array(k_fused, dtype=np.float32),
+        atol=0.08,
+        rtol=1e-2,
+    )
+
+  def test_wan_self_attention_is_self_attention_dispatch(self):
+    """Verifies that FlaxWanAttention with is_self_attention=True correctly dispatches fused RMSNorm+RoPE and matches reference."""
+    key = jax.random.PRNGKey(303)
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+    rngs = nnx.Rngs(k1)
+
+    batch_size = 1
+    seq_len = 1024
+    query_dim = 5120
+    heads = 40
+    dim_head = 128
+
+    flash_block_sizes = get_flash_block_sizes(self.config)
+    with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      attn = FlaxWanAttention(
+          rngs=rngs,
+          query_dim=query_dim,
+          heads=heads,
+          dim_head=dim_head,
+          attention_kernel="flash",
+          mesh=self.mesh,
+          flash_block_sizes=flash_block_sizes,
+          is_self_attention=True,
+      )
+      self.assertTrue(attn.is_self_attention)
+
+      hidden_states = jax.random.normal(k2, (batch_size, seq_len, query_dim), dtype=jnp.bfloat16)
+      freqs_real = jax.random.normal(k3, (1, 1, seq_len, dim_head // 2), dtype=jnp.float32)
+      freqs_imag = jax.random.normal(k4, (1, 1, seq_len, dim_head // 2), dtype=jnp.float32)
+      rotary_emb = jax.lax.complex(freqs_real, freqs_imag)
+
+      # Wan self-attention call passes encoder_hidden_states=hidden_states
+      out = attn(
+          hidden_states=hidden_states,
+          encoder_hidden_states=hidden_states,
+          rotary_emb=rotary_emb,
+      )
+      self.assertEqual(out.shape, (batch_size, seq_len, query_dim))
+
+      # Reference unfused path execution with identical weights
+      raw_q = attn.query(hidden_states)
+      raw_k = attn.key(hidden_states)
+      raw_v = attn.value(hidden_states)
+      q_norm = attn.norm_q(raw_q)
+      k_norm = attn.norm_k(raw_k)
+      q_h = _unflatten_heads(q_norm, heads)
+      k_h = _unflatten_heads(k_norm, heads)
+      v_h = _unflatten_heads(raw_v, heads)
+      q_rope, k_rope = attn._apply_rope(q_h, k_h, rotary_emb)
+      ref_attn_out = attn.attention_op.apply_attention(q_rope, k_rope, v_h, attention_mask=None)
+      ref_out = attn.proj_attn(ref_attn_out)
+
+      np.testing.assert_allclose(
+          np.array(out, dtype=np.float32),
+          np.array(ref_out, dtype=np.float32),
+          atol=0.08,
+          rtol=1e-2,
+      )
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_wan_model(self):
