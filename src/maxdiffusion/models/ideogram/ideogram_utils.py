@@ -1,4 +1,20 @@
-# pylint: disable=missing-module-docstring, missing-function-docstring, too-many-positional-arguments, consider-using-dict-items, unused-argument, unspecified-encoding
+"""
+Copyright 2025 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
+# pylint: disable=missing-function-docstring, too-many-positional-arguments, consider-using-dict-items, unused-argument, unspecified-encoding
 import json
 import re
 from typing import Optional
@@ -110,6 +126,29 @@ def _tuple_str_to_int(tuple_key):
   return tuple(int(item) if item.isdigit() else item for item in tuple_key)
 
 
+def _expected_dtype(random_flax_state_dict, flax_key):
+  """dtype the initialized model expects for this leaf, or None if unknown."""
+  leaf = random_flax_state_dict.get(tuple(str(item) for item in flax_key))
+  if leaf is None:
+    return None
+  return getattr(leaf, "dtype", None) or getattr(getattr(leaf, "value", None), "dtype", None)
+
+
+def _cast_to_expected(flax_tensor, random_flax_state_dict, flax_key):
+  """Land the ported weight in the model's configured dtype.
+
+  Two things previously expanded an fp8 checkpoint 4x in HBM: `torch2jax`
+  round-trips fp8 through fp32, and the per-row dequantization below
+  (`tensor * scale`, with an fp32 scale) promotes bf16 back to fp32. Casting to
+  the dtype the initialized model actually declares -- i.e. `weights_dtype` from
+  base_ideogram.yml -- fixes both, and is a no-op when weights_dtype is float32.
+  """
+  expected = _expected_dtype(random_flax_state_dict, flax_key)
+  if expected is not None and flax_tensor.dtype != expected:
+    return flax_tensor.astype(expected)
+  return flax_tensor
+
+
 def load_sharded_checkpoint(pretrained_model_name_or_path, subfolder, device, filename=None):
   tensors = {}
 
@@ -181,7 +220,9 @@ def get_key_and_value(pt_tuple_key, tensor, flax_state_dict, random_flax_state_d
       # Map transformer_blocks.N -> layers.index
       pt_tuple_key = ("layers", str(block_index)) + pt_tuple_key[2:]
 
-  flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict, scan_layers)
+  flax_key, flax_tensor = rename_key_and_reshape_tensor(
+      pt_tuple_key, tensor, random_flax_state_dict, scan_layers, allow_direct_match=True
+  )
   flax_key_final = []
   for k in flax_key:
     if isinstance(k, str) and k.isdigit():
@@ -242,6 +283,7 @@ def load_transformer_weights(
           pt_tuple_key, tensor, flax_state_dict, random_flax_state_dict, scan_layers, num_layers
       )
 
+      flax_tensor = _cast_to_expected(flax_tensor, random_flax_state_dict, flax_key)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)
@@ -279,9 +321,12 @@ def load_vae_weights(
       renamed_pt_key = pt_key
       pt_tuple_key = tuple(renamed_pt_key.split("."))
 
-      flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, random_flax_state_dict)
+      flax_key, flax_tensor = rename_key_and_reshape_tensor(
+          pt_tuple_key, tensor, random_flax_state_dict, allow_direct_match=True
+      )
 
       flax_key = _tuple_str_to_int(flax_key)
+      flax_tensor = _cast_to_expected(flax_tensor, random_flax_state_dict, flax_key)
       flax_state_dict[flax_key] = jax.device_put(jnp.asarray(flax_tensor), device=cpu)
 
     validate_flax_state_dict(eval_shapes, flax_state_dict)

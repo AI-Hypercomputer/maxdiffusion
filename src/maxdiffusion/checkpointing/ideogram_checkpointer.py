@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import json
+import dataclasses
 import jax
 import numpy as np
 from typing import Optional, Tuple
@@ -25,6 +25,17 @@ import orbax.checkpoint as ocp
 from etils import epath
 
 IDEOGRAM_CHECKPOINT = "IDEOGRAM_CHECKPOINT"
+# The unconditional branch is a separate checkpoint (asymmetric CFG), so it
+# needs its own item. IdeogramPipeline.from_checkpoint reads this key.
+UNCONDITIONAL_STATE_KEY = "unconditional_ideogram_state"
+
+
+def _config_to_json(config) -> dict:
+  """Ideogram4Config as a JSON-safe dict (dtype fields are not serializable)."""
+  return {
+      k: (str(v) if not isinstance(v, (int, float, str, bool, list, type(None))) else v)
+      for k, v in dataclasses.asdict(config).items()
+  }
 
 
 class IdeogramCheckpointer:
@@ -55,23 +66,31 @@ class IdeogramCheckpointer:
         return None, None
     max_logging.log(f"Loading Ideogram checkpoint from step {step}")
     metadatas = self.checkpoint_manager.item_metadata(step)
-    transformer_metadata = metadatas.ideogram_state
-    abstract_tree_structure_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, transformer_metadata)
-    params_restore = ocp.args.PyTreeRestore(
-        restore_args=jax.tree.map(
-            lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
-            abstract_tree_structure_params,
-        )
-    )
+
+    def _params_restore(metadata):
+      abstract_tree_structure_params = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, metadata)
+      return ocp.args.PyTreeRestore(
+          restore_args=jax.tree.map(
+              lambda _: ocp.RestoreArgs(restore_type=np.ndarray),
+              abstract_tree_structure_params,
+          )
+      )
 
     max_logging.log("Restoring Ideogram checkpoint")
+    # Ideogram uses asymmetric CFG: the conditional and unconditional branches
+    # are genuinely different checkpoints, so both must round-trip.
+    restore_items = {
+        "ideogram_state": _params_restore(metadatas.ideogram_state),
+        "ideogram_config": ocp.args.JsonRestore(),
+    }
+    uncond_metadata = getattr(metadatas, UNCONDITIONAL_STATE_KEY, None)
+    if uncond_metadata is not None:
+      restore_items[UNCONDITIONAL_STATE_KEY] = _params_restore(uncond_metadata)
+
     restored_checkpoint = self.checkpoint_manager.restore(
         directory=epath.Path(self.config.checkpoint_dir),
         step=step,
-        args=ocp.args.Composite(
-            ideogram_state=params_restore,
-            ideogram_config=ocp.args.JsonRestore(),
-        ),
+        args=ocp.args.Composite(**restore_items),
     )
     max_logging.log(f"restored checkpoint {restored_checkpoint.keys()}")
     max_logging.log(f"restored checkpoint ideogram_state {restored_checkpoint.ideogram_state.keys()}")
@@ -95,18 +114,23 @@ class IdeogramCheckpointer:
 
     return pipeline, opt_state, step
 
-  def save_checkpoint(self, train_step, pipeline: IdeogramPipeline, train_states: dict):
-    """Saves the training state and model configurations."""
+  def save_checkpoint(self, train_step, pipeline: IdeogramPipeline, train_states: dict, unconditional_states: dict = None):
+    """Saves the training state and model configurations.
 
-    def config_to_json(model_or_config):
-      return json.loads(model_or_config.to_json_string())
-
+    ``train_states`` is the conditional branch. ``unconditional_states``, if
+    given, is saved under ``unconditional_ideogram_state`` -- without it a
+    restored pipeline has no unconditional weights and ``from_checkpoint``
+    raises.
+    """
     max_logging.log(f"Saving checkpoint for step {train_step}")
+    # IdeogramPipeline holds `conditional_transformer`/`unconditional_transformer`;
+    # there is no `pipeline.transformer`. Persist the dataclass config instead.
     items = {
-        "ideogram_config": ocp.args.JsonSave(config_to_json(pipeline.transformer)),
+        "ideogram_config": ocp.args.JsonSave(_config_to_json(pipeline.conditional_transformer.config)),
+        "ideogram_state": ocp.args.PyTreeSave(train_states),
     }
-
-    items["ideogram_state"] = ocp.args.PyTreeSave(train_states)
+    if unconditional_states is not None:
+      items[UNCONDITIONAL_STATE_KEY] = ocp.args.PyTreeSave(unconditional_states)
 
     # Save the checkpoint
     self.checkpoint_manager.save(train_step, args=ocp.args.Composite(**items))

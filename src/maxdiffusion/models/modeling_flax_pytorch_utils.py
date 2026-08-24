@@ -60,12 +60,15 @@ def torch2jax(torch_tensor: torch.Tensor) -> Array:
   is_bfloat16 = torch_tensor.dtype == torch.bfloat16
   is_float8 = torch_tensor.dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
   if is_bfloat16 or is_float8:
-    # upcast the tensor to fp32
+    # numpy has no bfloat16/float8, so round-trip through fp32 and land the jax
+    # array back in bf16 below rather than leaving it expanded to fp32.
     torch_tensor = torch_tensor.float()
     if is_float8:
       is_bfloat16 = True
 
-  if torch.device.type != "cpu":
+  # NOTE: this was `torch.device.type`, i.e. the property object on the class,
+  # which is never == "cpu" -- so the move always ran. Use the tensor's device.
+  if torch_tensor.device.type != "cpu":
     torch_tensor = torch_tensor.to("cpu")
 
   numpy_value = torch_tensor.numpy()
@@ -89,8 +92,17 @@ def rename_key(key):
 
 # Adapted from https://github.com/huggingface/transformers/blob/c603c80f46881ae18b2ca50770ef65fa4033eacd/src/transformers/modeling_flax_pytorch_utils.py#L69
 # and https://github.com/patil-suraj/stable-diffusion-jax/blob/main/stable_diffusion_jax/convert_diffusers_to_jax.py
-def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dict, scan_layers=False):
-  """Rename PT weight names to corresponding Flax weight names and reshape tensor if necessary"""
+def rename_key_and_reshape_tensor(
+    pt_tuple_key, pt_tensor, random_flax_state_dict, scan_layers=False, allow_direct_match=False
+):
+  """Rename PT weight names to corresponding Flax weight names and reshape tensor if necessary
+
+  ``allow_direct_match`` opts a caller into returning a torch key verbatim when
+  it already matches a flax key, skipping the linear-layer transpose below. Only
+  Ideogram needs this (its nnx modules are named exactly like the torch ones);
+  it is off by default because enabling it globally would silently drop the
+  ``.T`` for any other model whose names happen to collide.
+  """
   # conv norm or layer norm
   renamed_pt_tuple_key = pt_tuple_key[:-1] + ("scale",)
 
@@ -154,8 +166,8 @@ def rename_key_and_reshape_tensor(pt_tuple_key, pt_tensor, random_flax_state_dic
     pt_tensor = pt_tensor.transpose(2, 3, 4, 1, 0)
     return renamed_pt_tuple_key, pt_tensor
 
-  # direct match
-  if pt_tuple_key in random_flax_state_dict:
+  # direct match (opt-in; see allow_direct_match in the docstring)
+  if allow_direct_match and pt_tuple_key in random_flax_state_dict:
     return pt_tuple_key, pt_tensor
 
   # linear layer

@@ -1,3 +1,19 @@
+"""
+Copyright 2025 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
 from __future__ import annotations
 
 import warnings
@@ -186,11 +202,14 @@ class Fp8Linear(nn.Module):
       out_features: int,
       bias: bool,
       compute_dtype: torch.dtype,
+      cache_dequantized: bool = True,
   ) -> None:
     super().__init__()
     self.in_features = in_features
     self.out_features = out_features
     self.compute_dtype = compute_dtype
+    self.cache_dequantized = cache_dequantized
+    self._dequantized: torch.Tensor | None = None
     self.register_buffer(
         "weight",
         torch.empty(out_features, in_features, dtype=FP8_WEIGHT_DTYPE),
@@ -201,10 +220,27 @@ class Fp8Linear(nn.Module):
     else:
       self.bias = None
 
+  def _dequantize(self, dtype: torch.dtype) -> torch.Tensor:
+    return self.weight.to(dtype) * self.weight_scale.to(dtype).unsqueeze(1)
+
   def forward(self, x: torch.Tensor) -> torch.Tensor:
-    w = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype).unsqueeze(1)
+    # Without caching this rematerializes the full weight tensor on *every*
+    # forward -- for an ~8B encoder that is a fresh bf16 copy of every weight
+    # per call. Cache it on first use; the fp8 buffer is kept so the checkpoint
+    # can still be re-saved, at the cost of holding both copies in host RAM.
+    if self.cache_dequantized:
+      if self._dequantized is None or self._dequantized.dtype != x.dtype:
+        self._dequantized = self._dequantize(x.dtype)
+      w = self._dequantized
+    else:
+      w = self._dequantize(x.dtype)
     bias = self.bias.to(x.dtype) if self.bias is not None else None
     return F.linear(x, w, bias)
+
+  def _apply(self, *args, **kwargs):
+    # Any device/dtype move invalidates the cache.
+    self._dequantized = None
+    return super()._apply(*args, **kwargs)
 
 
 def swap_linears_to_fp8(
