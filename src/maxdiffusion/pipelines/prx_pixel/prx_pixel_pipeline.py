@@ -185,13 +185,18 @@ class FlaxPRXPixelPipeline:
       latents = latents + dt * v_t
 
     # 5. Direct Postprocessing (No VAE)
-    if output_type == "raw" or output_type == "latents":
+    if output_type in ["raw", "latents"]:
       return latents
 
-    # Denormalize [-1, 1] to [0, 255] RGB PIL Image
+    # Denormalize [-1, 1] to [0, 1]
     images_np = np.asarray(latents)
-    images_np = (images_np.clip(-1.0, 1.0) + 1.0) * 127.5
-    images_np = np.transpose(images_np.astype(np.uint8), (0, 2, 3, 1))
+    images_np = np.clip(images_np / 2.0 + 0.5, 0.0, 1.0)
+    images_np = np.transpose(images_np, (0, 2, 3, 1))
 
-    pil_images = [Image.fromarray(images_np[i]) for i in range(batch_size)]
+    if output_type == "np":
+      return images_np
+
+    # Quantize to [0, 255] uint8 RGB PIL Images
+    images_uint8 = (images_np * 255.0).round().astype(np.uint8)
+    pil_images = [Image.fromarray(images_uint8[i]) for i in range(batch_size)]
     return pil_images
