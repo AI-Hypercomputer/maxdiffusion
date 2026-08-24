@@ -17,8 +17,11 @@ from jax import Array
 from typing import Optional, List, Union, Tuple
 from einops import rearrange
 import torch.nn.functional as F
-from maxdiffusion.models.ltx_video.autoencoders.vae_torchax import TorchaxCausalVideoAutoencoder
-from transformers import (FlaxT5EncoderModel, AutoTokenizer)
+from transformers import AutoTokenizer
+try:
+  from transformers import FlaxT5EncoderModel
+except ImportError:
+  FlaxT5EncoderModel = None
 from torchax import interop
 from torchax import default_env
 from dataclasses import dataclass

@@ -20,8 +20,11 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
-from packaging import version
-from transformers import CLIPTokenizer, FlaxCLIPTextModel
+from transformers import CLIPTokenizer
+try:
+  from transformers import FlaxCLIPTextModel
+except ImportError:
+  FlaxCLIPTextModel = None
 
 from ...models import FlaxAutoencoderKL, FlaxUNet2DConditionModel
 from ...schedulers import (

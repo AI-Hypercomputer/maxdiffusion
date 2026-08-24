@@ -32,7 +32,13 @@ from maxdiffusion import (
     max_logging,
 )
 
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, CLIPTextConfig, FlaxCLIPTextModelWithProjection)
+from transformers import CLIPTokenizer
+try:
+  from transformers import FlaxCLIPTextModel, CLIPTextConfig, FlaxCLIPTextModelWithProjection
+except ImportError:
+  FlaxCLIPTextModel = None
+  CLIPTextConfig = None
+  FlaxCLIPTextModelWithProjection = None
 
 from maxdiffusion.checkpointing.checkpointing_utils import (
     create_orbax_checkpoint_manager,

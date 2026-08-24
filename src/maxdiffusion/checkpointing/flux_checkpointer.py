@@ -30,7 +30,12 @@ from maxdiffusion import (
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 from ..pipelines.flux.flux_pipeline import FluxPipeline
 
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)
+from transformers import CLIPTokenizer, AutoTokenizer
+try:
+  from transformers import FlaxCLIPTextModel, FlaxT5EncoderModel
+except ImportError:
+  FlaxCLIPTextModel = None
+  FlaxT5EncoderModel = None
 
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from maxdiffusion.models.flux.util import load_flow_model

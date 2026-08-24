@@ -27,8 +27,13 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import jax.numpy as jnp
 import flax.linen as nn
 from chex import Array
-from flax.linen import partitioning as nn_partitioning
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
+from transformers import CLIPTokenizer, AutoTokenizer
+try:
+  from transformers import FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel
+except ImportError:
+  FlaxCLIPTextModel = None
+  T5EncoderModel = None
+  FlaxT5EncoderModel = None
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging, max_utils
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel

@@ -17,8 +17,11 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-from flax.core.frozen_dict import FrozenDict
-from transformers import CLIPConfig, FlaxPreTrainedModel
+try:
+  from transformers import CLIPConfig, FlaxPreTrainedModel
+except ImportError:
+  CLIPConfig = None
+  FlaxPreTrainedModel = object
 
 try:
   from transformers.models.clip.modeling_flax_clip import FlaxCLIPVisionModule

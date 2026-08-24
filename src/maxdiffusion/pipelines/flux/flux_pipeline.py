@@ -18,7 +18,12 @@ from typing import List, Optional, Union, Callable
 import jax
 import jax.numpy as jnp
 import math
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)
+from transformers import CLIPTokenizer, AutoTokenizer
+try:
+  from transformers import FlaxCLIPTextModel, FlaxT5EncoderModel
+except ImportError:
+  FlaxCLIPTextModel = None
+  FlaxT5EncoderModel = None
 from einops import rearrange
 from jax.typing import DTypeLike
 from chex import Array
