@@ -233,6 +233,7 @@ class ApproximateGELU(nnx.Module):
       weights_dtype: jnp.dtype = jnp.float32,
       precision: jax.lax.Precision = None,
   ):
+    self.precision = precision
     self.proj = nnx.Linear(
         rngs=rngs,
         in_features=dim_in,
@@ -253,8 +254,7 @@ class ApproximateGELU(nnx.Module):
 
   def __call__(self, x: jax.Array) -> jax.Array:
     with jax.named_scope("gelu"):
-      x = self.proj(x)
-    return nnx.gelu(x)
+      return nnx.gelu(self.proj(x))
 
 
 class WanFeedForward(nnx.Module):
@@ -280,6 +280,7 @@ class WanFeedForward(nnx.Module):
     dim_out = dim_out if dim_out is not None else dim
 
     self.enable_jax_named_scopes = enable_jax_named_scopes
+    self.precision = precision
     self.act_fn = nnx.data(None)
     if activation_fn == "gelu-approximate":
       self.act_fn = ApproximateGELU(
@@ -322,12 +323,13 @@ class WanFeedForward(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
-    hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+    hidden_states = self.act_fn(hidden_states)
     hidden_states = checkpoint_name(hidden_states, "ffn_activation")
     if self.drop_out.rate > 0:
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     with jax.named_scope("proj_out"):
-      return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
+      hidden_states = self.proj_out(hidden_states)
+    return hidden_states
 
 
 class WanTransformerBlock(nnx.Module):
@@ -484,9 +486,9 @@ class WanTransformerBlock(nnx.Module):
       # 1. Self-attention
       with self.conditional_named_scope("self_attn"):
         with self.conditional_named_scope("self_attn_norm"):
-          norm_hidden_states = (self.norm1(hidden_states.astype(jnp.float32)) * (1 + scale_msa) + shift_msa).astype(
-              hidden_states.dtype
-          )
+          from maxdiffusion.kernels.fused_producers import fused_ln_adaln
+
+          norm_hidden_states = fused_ln_adaln(hidden_states, scale_msa, shift_msa, eps=self.norm1.layer_norm.epsilon)
         with self.conditional_named_scope("self_attn_attn"):
           attn_output = self.attn1(
               hidden_states=norm_hidden_states,
@@ -496,12 +498,14 @@ class WanTransformerBlock(nnx.Module):
               rngs=rngs,
           )
         with self.conditional_named_scope("self_attn_residual"):
-          hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
+          hidden_states = (hidden_states.astype(jnp.float32) + attn_output.astype(jnp.float32) * gate_msa).astype(
+              hidden_states.dtype
+          )
 
       # 2. Cross-attention
       with self.conditional_named_scope("cross_attn"):
         with self.conditional_named_scope("cross_attn_norm"):
-          norm_hidden_states = self.norm2(hidden_states.astype(jnp.float32)).astype(hidden_states.dtype)
+          norm_hidden_states = self.norm2(hidden_states)
         with self.conditional_named_scope("cross_attn_attn"):
           attn_output = self.attn2(
               hidden_states=norm_hidden_states,
@@ -512,14 +516,14 @@ class WanTransformerBlock(nnx.Module):
               cached_kv=cached_kv,
           )
         with self.conditional_named_scope("cross_attn_residual"):
-          hidden_states = hidden_states + attn_output
+          hidden_states = (hidden_states.astype(jnp.float32) + attn_output.astype(jnp.float32)).astype(hidden_states.dtype)
 
       # 3. Feed-forward
       with self.conditional_named_scope("mlp"):
         with self.conditional_named_scope("mlp_norm"):
-          norm_hidden_states = (self.norm3(hidden_states.astype(jnp.float32)) * (1 + c_scale_msa) + c_shift_msa).astype(
-              hidden_states.dtype
-          )
+          from maxdiffusion.kernels.fused_producers import fused_ln_adaln
+
+          norm_hidden_states = fused_ln_adaln(hidden_states, c_scale_msa, c_shift_msa, eps=self.norm3.layer_norm.epsilon)
         with self.conditional_named_scope("mlp_ffn"):
           ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
         with self.conditional_named_scope("mlp_residual"):
@@ -934,7 +938,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       scale = scale.squeeze(2)  # [B, sl, dim]
     else:
       shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
-    hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
+    from maxdiffusion.kernels.fused_producers import fused_ln_adaln
+
+    hidden_states = fused_ln_adaln(hidden_states, scale, shift, eps=self.norm_out.layer_norm.epsilon)
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)
 

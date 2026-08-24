@@ -35,6 +35,7 @@ set -u
 MODEL=${1:-22}
 STEPS=${2:-40}
 PROMPT=${3:-""}
+shift $(($# > 3 ? 3 : $#))
 
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &> /dev/null && pwd)"
 cd "$PROJECT_ROOT" || exit 1
@@ -42,38 +43,57 @@ export PYTHONPATH="$PROJECT_ROOT/src:${PYTHONPATH:-}"
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export JAX_DEFAULT_MATMUL_PRECISION=bfloat16
 export TORCHINDUCTOR_FX_GRAPH_CACHE=1
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 
 CACHE_ROOT=${WAN_CACHE_ROOT:-$HOME/.cache/maxdiffusion_wan}
-OUTPUT_DIR=${OUTPUT_DIR:-/tmp/wan_out}
-mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" "$OUTPUT_DIR"
+OUTPUT_DIR=${OUTPUT_DIR:-$HOME/maxdiffusion_wan_output}
+export TMPDIR=${TMPDIR:-$CACHE_ROOT/tmp}
+mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" "$OUTPUT_DIR" "$TMPDIR"
 
-# Tuned collective/scheduler flag set for v7 (from the PR #430 2D-ring
-# baseline). One line: libtpu stops parsing at a literal backslash.
-export LIBTPU_INIT_ARGS="--xla_tpu_spmd_rng_bit_generator_unsafe=true --xla_tpu_enable_dot_strength_reduction=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=true --xla_enable_async_collective_permute=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true --xla_tpu_scoped_vmem_limit_kib=65536 --xla_tpu_enable_async_all_to_all=true --xla_tpu_enable_all_experimental_scheduler_features=true --xla_tpu_enable_scheduler_memory_pressure_tracking=true --xla_tpu_host_transfer_overlap_limit=24 --xla_tpu_aggressive_opt_barrier_removal=ENABLED --xla_lhs_prioritize_async_depth_over_stall=ENABLED --xla_should_allow_loop_variant_parameter_in_chain=ENABLED --xla_should_add_loop_invariant_op_in_chain=ENABLED --xla_tpu_enable_ici_ag_pipelining=true --xla_max_concurrent_host_send_recv=100 --xla_tpu_scheduler_percent_shared_memory_limit=100 --xla_latency_hiding_scheduler_rerun=2 --xla_tpu_use_minor_sharding_for_major_trivial_input=true --xla_tpu_relayout_group_size_threshold_for_reduce_scatter=1 --xla_tpu_enable_latency_hiding_scheduler=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_enable_megacore_fusion=true --xla_tpu_megacore_fusion_allow_ags=true --xla_tpu_use_single_sparse_core_for_all_gather_offload=true --xla_tpu_sparse_core_all_gather_latency_multiplier=1 --xla_tpu_sparse_core_reduce_scatter_latency_multiplier=3 --xla_tpu_enable_sparse_core_collective_aggregator=true --xla_tpu_enable_sparse_core_offload_queuing_in_lhs=true --xla_tpu_enable_sparse_core_reduce_scatter_v2=true --xla_tpu_enable_sparse_core_collective_offload_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_2d_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_all_reduce=true --xla_tpu_enable_sparse_core_collective_offload_reduce_scatter=true --xla_tpu_enable_sparse_core_collective_offload_3d_all_gather=true --xla_tpu_enable_concurrent_sparse_core_offloading=true --xla_tpu_assign_all_reduce_scatter_layout=true"
-# Timings only compare across runs passing the same extra flags.
-export LIBTPU_INIT_ARGS="${LIBTPU_INIT_ARGS} ${EXTRA_LIBTPU:-}"
+# Tuned collective/scheduler flag set for TPU.
+# One line: libtpu stops parsing at a literal backslash.
+DEFAULT_LIBTPU="--xla_tpu_spmd_rng_bit_generator_unsafe=true --xla_tpu_enable_dot_strength_reduction=true --xla_enable_async_collective_permute=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true --xla_tpu_scoped_vmem_limit_kib=65536 --xla_tpu_enable_async_all_to_all=true --xla_tpu_enable_all_experimental_scheduler_features=true --xla_tpu_enable_scheduler_memory_pressure_tracking=true --xla_tpu_host_transfer_overlap_limit=24 --xla_tpu_aggressive_opt_barrier_removal=ENABLED --xla_lhs_prioritize_async_depth_over_stall=ENABLED --xla_should_allow_loop_variant_parameter_in_chain=ENABLED --xla_should_add_loop_invariant_op_in_chain=ENABLED --xla_tpu_enable_ici_ag_pipelining=true --xla_max_concurrent_host_send_recv=100 --xla_tpu_scheduler_percent_shared_memory_limit=100 --xla_latency_hiding_scheduler_rerun=2 --xla_tpu_use_minor_sharding_for_major_trivial_input=true --xla_tpu_relayout_group_size_threshold_for_reduce_scatter=1 --xla_tpu_enable_latency_hiding_scheduler=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_enable_megacore_fusion=true --xla_tpu_megacore_fusion_allow_ags=true --xla_tpu_use_single_sparse_core_for_all_gather_offload=true --xla_tpu_sparse_core_all_gather_latency_multiplier=1 --xla_tpu_sparse_core_reduce_scatter_latency_multiplier=3 --xla_tpu_enable_sparse_core_collective_aggregator=true --xla_tpu_enable_sparse_core_offload_queuing_in_lhs=true --xla_tpu_enable_sparse_core_reduce_scatter_v2=true --xla_tpu_enable_sparse_core_collective_offload_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_2d_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_all_reduce=true --xla_tpu_enable_sparse_core_collective_offload_reduce_scatter=true --xla_tpu_enable_sparse_core_collective_offload_3d_all_gather=true --xla_tpu_enable_concurrent_sparse_core_offloading=true --xla_tpu_assign_all_reduce_scatter_layout=true"
+export LIBTPU_INIT_ARGS="${DEFAULT_LIBTPU} ${EXTRA_LIBTPU:-}"
 
-# fixed-m on by default: faster, and covered by tests/ring_fixed_m_test.py.
-if [ "${FIXEDM:-1}" = "1" ]; then
-  ATTENTION=ulysses_ring_custom_fixed_m
-  BQ=6400; BKV=2048
-else
-  ATTENTION=ulysses_ring_custom
-  BQ=9472; BKV=1024
+# Attention selection
+if [ -z "${ATTENTION:-}" ]; then
+  if [ "${FIXEDM:-1}" = "1" ]; then
+    ATTENTION="ulysses_custom_fixed_m"
+  else
+    ATTENTION="ulysses_custom"
+  fi
 fi
+
+if [ "$ATTENTION" = "ulysses_custom_fixed_m" ] || [ "$ATTENTION" = "ulysses_custom_fixed_m_per_q_block" ] || [ "$ATTENTION" = "ulysses_custom" ]; then
+  DEFAULT_U=4
+  DEFAULT_BQ=6400
+  DEFAULT_BKV=1024
+elif [ "${FIXEDM:-1}" = "1" ]; then
+  DEFAULT_U=2
+  DEFAULT_BQ=6400
+  DEFAULT_BKV=2048
+else
+  DEFAULT_U=2
+  DEFAULT_BQ=9472
+  DEFAULT_BKV=1024
+fi
+
+ULYSSES_SHARDS=${ULYSSES_SHARDS:-$DEFAULT_U}
+BQ=${BQ:-$DEFAULT_BQ}
+BKV=${BKV:-$DEFAULT_BKV}
 
 if [ "$MODEL" = "21" ]; then
   CONFIG=src/maxdiffusion/configs/base_wan_14b.yml
-  GUIDANCE_ARGS=""
+  GUIDANCE_ARGS=()
 else
   CONFIG=src/maxdiffusion/configs/base_wan_27b.yml
-  GUIDANCE_ARGS="guidance_scale_low=3.0 guidance_scale_high=4.0"
+  GUIDANCE_ARGS=(guidance_scale_low=3.0 guidance_scale_high=4.0)
 fi
 
 PROMPT_ARG=()
 [ -n "$PROMPT" ] && PROMPT_ARG=("prompt=$PROMPT")
 RUN_NAME="wan${MODEL}_fast_$(date +%m%d-%H%M%S)"
-echo "== ${ATTENTION} | tile ${BQ}/${BKV} | ${STEPS} steps"
+echo "== ${ATTENTION} | U=${ULYSSES_SHARDS} | tile ${BQ}/${BKV} | ${STEPS} steps"
 
 # libtpu's XLA:CPU AOT feature-mismatch log is cosmetic and ignores every
 # log-level env var; filter just that message from stderr.
@@ -83,25 +103,26 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   jax_cache_dir="$CACHE_ROOT/jax" \
   aot_cache_dir="$CACHE_ROOT/aot_wan$MODEL" \
   converted_weights_dir="$CACHE_ROOT/converted" \
-  attention=$ATTENTION \
-  ulysses_shards=2 \
+  attention="$ATTENTION" \
+  ulysses_shards="$ULYSSES_SHARDS" \
   ici_data_parallelism=2 ici_fsdp_parallelism=1 \
   ici_context_parallelism=4 ici_tensor_parallelism=1 \
   per_device_batch_size=0.125 \
   num_inference_steps="$STEPS" num_frames=81 width=1280 height=720 \
   weights_dtype=bfloat16 activations_dtype=bfloat16 \
-  vae_spatial=4 vae_decode_chunk=-1 \
+  vae_spatial=8 vae_decode_chunk="${VAE_DECODE_CHUNK:-1}" \
   vae_weights_dtype=bfloat16 vae_dtype=bfloat16 \
   text_encoder_dtype=bfloat16 compile_text_encoder="${COMPILE_TE:-false}" use_batched_text_encoder=false \
-  use_base2_exp=true use_experimental_scheduler=true \
-  fps=16 $GUIDANCE_ARGS \
+  use_kv_cache=true use_base2_exp=true use_experimental_scheduler=true \
+  fps=16 "${GUIDANCE_ARGS[@]}" \
+  seed="${SEED:-12345}" \
   flash_block_sizes="{\"block_q\":$BQ,\"block_kv\":$BKV,\"block_kv_compute\":$BKV,\"block_kv_compute_in\":1024,\"heads_per_tile\":1,\"vmem_limit_bytes\":67108864,\"block_q_dkv\":$BQ,\"block_kv_dkv\":$BKV,\"block_kv_dkv_compute\":$BKV}" \
   "${PROMPT_ARG[@]}" \
+  "$@" \
   2> >(grep -vE --line-buffered 'cpu_aot_loader|machine type for execution' >&2)
 
-mp4=$(ls -t wan_output_*.mp4 2>/dev/null | head -1)
+mp4=$(ls -t "$OUTPUT_DIR"/${RUN_NAME}*.mp4 "$OUTPUT_DIR"/wan_output_*.mp4 2>/dev/null | head -1)
 if [ -n "$mp4" ]; then
-  mv "$mp4" "$OUTPUT_DIR/${RUN_NAME}.mp4"
   echo ""
-  echo "=== video saved: $OUTPUT_DIR/${RUN_NAME}.mp4 ==="
+  echo "=== video saved: $mp4 ==="
 fi
