@@ -121,6 +121,7 @@ class FlaxPRXPixelPipeline:
       generator: Optional[jax.Array] = None,
       latents: Optional[jnp.ndarray] = None,
       output_type: str = "pil",
+      callback_on_step_end: Optional[Any] = None,
   ) -> Union[List[Image.Image], jnp.ndarray]:
     """Generates images directly in pixel space."""
     if isinstance(prompt, str):
@@ -138,25 +139,23 @@ class FlaxPRXPixelPipeline:
       if generator is None:
         generator = jax.random.PRNGKey(42)
       raw_noise = 2.0 * jax.random.normal(generator, shape=(batch_size, 3, height, width), dtype=jnp.float32)
-      latents = raw_noise
+      latents = raw_noise.astype(self.dtype)
     else:
-      latents = latents.astype(jnp.float32)
+      latents = latents.astype(self.dtype)
 
     # 3. Setup Flow Matching Scheduler Timesteps
-    sigmas_np = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
-    shift = 3.0
-    sigmas_np = shift * sigmas_np / (1.0 + (shift - 1.0) * sigmas_np)
-    sigmas = jnp.asarray(np.concatenate([sigmas_np, [0.0]]).astype(np.float32))
-    timesteps = sigmas[:-1] * 1000.0
+    scheduler_state = self.scheduler.set_timesteps(self.scheduler.create_state(), num_inference_steps)
+    timesteps = scheduler_state.timesteps
+    sigmas = jnp.concatenate([scheduler_state.sigmas, jnp.zeros(1)])
 
     # 4. Denoising Loop
     for i, t in enumerate(timesteps):
       t_cont = (t.astype(jnp.float32) / 1000.0).reshape((1,))
       if do_cfg:
-        latents_in = jnp.concatenate([latents, latents], axis=0).astype(self.dtype)
+        latents_in = jnp.concatenate([latents, latents], axis=0)
         t_cont_in = jnp.broadcast_to(t_cont, (2 * batch_size,))
       else:
-        latents_in = latents.astype(self.dtype)
+        latents_in = latents
         t_cont_in = jnp.broadcast_to(t_cont, (batch_size,))
 
       # Predict clean image x0
@@ -176,20 +175,21 @@ class FlaxPRXPixelPipeline:
 
       # Convert x0_hat to flow velocity: v_t = (x_t - x0_hat) / max(t/1000, 0.05)
       t_norm = jnp.maximum(t.astype(jnp.float32) / 1000.0, 0.05)
-      v_t = (latents - x0_hat.astype(jnp.float32)) / t_norm
+      v_t = (latents.astype(jnp.float32) - x0_hat.astype(jnp.float32)) / t_norm
 
-      # Flow Match Euler step: x_{t-dt} = x_t + dt * v_t
-      sigma = sigmas[i]
-      sigma_next = sigmas[i + 1]
-      dt = sigma_next - sigma
-      latents = latents + dt * v_t
+      # Flow Match Euler step: x_{t-dt} = x_t + dt * v_t (upcast to float32, then cast back to bfloat16)
+      dt = sigmas[i + 1] - sigmas[i]
+      latents = (latents.astype(jnp.float32) + dt * v_t).astype(self.dtype)
+
+      if callback_on_step_end is not None:
+        callback_on_step_end(self, i, t, {"latents": latents})
 
     # 5. Direct Postprocessing (No VAE)
     if output_type in ["raw", "latents"]:
       return latents
 
     # Denormalize [-1, 1] to [0, 1]
-    images_np = np.asarray(latents)
+    images_np = np.asarray(latents.astype(jnp.float32))
     images_np = np.clip(images_np / 2.0 + 0.5, 0.0, 1.0)
     images_np = np.transpose(images_np, (0, 2, 3, 1))
 
