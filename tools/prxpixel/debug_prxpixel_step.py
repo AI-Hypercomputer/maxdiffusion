@@ -46,13 +46,13 @@ def main():
   # ---------------------------------------------------------------------------
   # 1. PyTorch Step 0 Execution
   # ---------------------------------------------------------------------------
-  pipe_pt = PRXPipeline.from_pretrained(SNAPSHOT_DIR, transformer=None, torch_dtype=torch.bfloat16)
-  pipe_pt.transformer = build_pytorch_transformer_model(SNAPSHOT_DIR, dtype=torch.bfloat16)
+  from diffusers import PRXPixelPipeline
+  pipe_pt = PRXPixelPipeline.from_pretrained(SNAPSHOT_DIR, torch_dtype=torch.bfloat16)
   pipe_pt.text_encoder = pipe_pt.text_encoder.to(torch.bfloat16).to("cpu")
   pipe_pt.transformer = pipe_pt.transformer.to(torch.bfloat16).to("cpu")
 
   torch.manual_seed(42)
-  latents_pt = torch.randn((1, 3, H, W), dtype=torch.bfloat16, device="cpu")
+  latents_pt = 2.0 * torch.randn((1, 3, H, W), dtype=torch.bfloat16, device="cpu")
 
   # Encode prompt in PyTorch
   with torch.no_grad():
@@ -69,7 +69,7 @@ def main():
 
     latents_in_pt = torch.cat([latents_pt, latents_pt], dim=0)
 
-    noise_pred_pt = pipe_pt.transformer(
+    x0_pred_pt = pipe_pt.transformer(
         hidden_states=latents_in_pt,
         timestep=t_cont_pt,
         encoder_hidden_states=ca_embed_pt,
@@ -77,10 +77,13 @@ def main():
         return_dict=False,
     )[0]
 
-    noise_uncond_pt, noise_text_pt = noise_pred_pt.chunk(2, dim=0)
-    pred_cfg_pt = noise_uncond_pt + guidance_scale * (noise_text_pt - noise_uncond_pt)
+    x0_uncond_pt, x0_text_pt = x0_pred_pt.chunk(2, dim=0)
+    x0_cfg_pt = x0_uncond_pt + guidance_scale * (x0_text_pt - x0_uncond_pt)
 
-    latents_next_pt = pipe_pt.scheduler.step(pred_cfg_pt, t_0, latents_pt).prev_sample
+    t_x = torch.clamp(t_0.float() / pipe_pt.scheduler.config.num_train_timesteps, min=0.05)
+    v_t_pt = (latents_pt - x0_cfg_pt) / t_x
+
+    latents_next_pt = pipe_pt.scheduler.step(v_t_pt, t_0, latents_pt).prev_sample
 
   # ---------------------------------------------------------------------------
   # 2. JAX Step 0 Execution
@@ -104,18 +107,21 @@ def main():
   latents_in_jax = jnp.concatenate([latents_jax, latents_jax], axis=0).astype(jnp.bfloat16)
   t_cont_in_jax = jnp.broadcast_to(t_cont_jax, (2,))
 
-  pred_jax = pipe_jax.transformer(
+  pred_x0_jax = pipe_jax.transformer(
       hidden_states=latents_in_jax,
       timestep=t_cont_in_jax,
       encoder_hidden_states=prompt_embeds_jax,
       attention_mask=attention_mask_jax,
   )
 
-  pred_uncond_jax, pred_cond_jax = jnp.split(pred_jax, 2, axis=0)
-  pred_cfg_jax = pred_uncond_jax + guidance_scale * (pred_cond_jax - pred_uncond_jax)
+  x0_uncond_jax, x0_cond_jax = jnp.split(pred_x0_jax, 2, axis=0)
+  x0_cfg_jax = x0_uncond_jax + guidance_scale * (x0_cond_jax - x0_uncond_jax)
+
+  t_norm_jax = jnp.maximum(t_0_jax.astype(jnp.float32) / 1000.0, 0.05)
+  v_t_jax = (latents_jax - x0_cfg_jax.astype(jnp.float32)) / t_norm_jax
 
   dt_jax = sigmas_jax[1] - sigmas_jax[0]
-  latents_next_jax = latents_jax + dt_jax * pred_cfg_jax.astype(jnp.float32)
+  latents_next_jax = latents_jax + dt_jax * v_t_jax
 
   # ---------------------------------------------------------------------------
   # 3. Compare Every Tensor
@@ -124,9 +130,10 @@ def main():
       ("prompt_embeds (ca_embed)", prompt_embeds_jax.astype(jnp.float32), ca_embed_pt.float()),
       ("attention_mask (ca_mask)", attention_mask_jax, ca_mask_pt),
       ("latents_in", latents_in_jax.astype(jnp.float32), latents_in_pt.float()),
-      ("noise_uncond (raw)", pred_uncond_jax.astype(jnp.float32), noise_uncond_pt.float()),
-      ("noise_text (raw)", pred_cond_jax.astype(jnp.float32), noise_text_pt.float()),
-      ("pred_cfg", pred_cfg_jax.astype(jnp.float32), pred_cfg_pt.float()),
+      ("x0_uncond (raw)", x0_uncond_jax.astype(jnp.float32), x0_uncond_pt.float()),
+      ("x0_text (raw)", x0_cond_jax.astype(jnp.float32), x0_text_pt.float()),
+      ("x0_cfg", x0_cfg_jax.astype(jnp.float32), x0_cfg_pt.float()),
+      ("velocity v_t", v_t_jax, v_t_pt.float()),
       ("latents_step_1 (x_1)", latents_next_jax, latents_next_pt.float()),
   ]
 

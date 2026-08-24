@@ -50,8 +50,10 @@ class PRXPixelCheckpointer:
     max_logging.log(f"Loading PRXPixel from: {model_path} (dtype={dtype})...")
 
     # 1. Tokenizer
-    tok_path = os.path.join(model_path, "tokenizer") if os.path.exists(os.path.join(model_path, "tokenizer")) else model_path
-    tokenizer = AutoTokenizer.from_pretrained(tok_path, subfolder="tokenizer" if not os.path.exists(os.path.join(model_path, "tokenizer")) else None)
+    if os.path.exists(os.path.join(model_path, "tokenizer")):
+      tokenizer = AutoTokenizer.from_pretrained(os.path.join(model_path, "tokenizer"))
+    else:
+      tokenizer = AutoTokenizer.from_pretrained(model_path, subfolder="tokenizer")
 
     # 2. Qwen3-VL Text Encoder
     qwen_config = FlaxQwen3Config(

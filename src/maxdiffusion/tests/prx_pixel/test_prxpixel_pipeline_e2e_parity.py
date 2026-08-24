@@ -26,7 +26,7 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 import jax
 import jax.numpy as jnp
 
-from diffusers import PRXPipeline
+from diffusers import PRXPixelPipeline
 from maxdiffusion.checkpointing.prx_pixel_checkpointer import PRXPixelCheckpointer
 
 SNAPSHOT_DIR = os.path.expanduser("~/.cache/huggingface/hub/models--Photoroom--prxpixel-t2i/snapshots/bcd5e63f072257a220c5d0ba039c97657398b1c2")
@@ -53,25 +53,22 @@ class TestPRXPixelPipelineE2EParity(unittest.TestCase):
     cfg = 4.5
 
     print("\n" + "=" * 80)
-    print("🚀 [STEP 1/2] Running PyTorch Diffusers Reference Pipeline...")
+    print("🚀 [STEP 1/2] Running PyTorch Diffusers PRXPixelPipeline...")
     print("=" * 80)
 
-    from tools.prxpixel.dump_prxpixel_reference import build_pytorch_transformer_model
-    pipe_pt = PRXPipeline.from_pretrained(
+    pipe_pt = PRXPixelPipeline.from_pretrained(
         SNAPSHOT_DIR,
-        transformer=None,
         torch_dtype=torch.bfloat16,
     )
-    pipe_pt.transformer = build_pytorch_transformer_model(SNAPSHOT_DIR, dtype=torch.bfloat16)
     pipe_pt.text_encoder = pipe_pt.text_encoder.to(torch.bfloat16).to("cpu")
     pipe_pt.transformer = pipe_pt.transformer.to(torch.bfloat16).to("cpu")
 
-    # Generate initial deterministic noise tensor on CPU
+    # Generate initial deterministic noise tensor on CPU with 2.0x noise scale
     torch.manual_seed(42)
-    initial_noise_pt = torch.randn((1, 3, H, W), dtype=torch.bfloat16, device="cpu")
+    initial_noise_pt = 2.0 * torch.randn((1, 3, H, W), dtype=torch.bfloat16, device="cpu")
 
     with torch.no_grad():
-      out_pt_raw = pipe_pt(
+      out_pt = pipe_pt(
           prompt=prompt,
           negative_prompt=neg_prompt,
           height=H,
@@ -80,12 +77,8 @@ class TestPRXPixelPipelineE2EParity(unittest.TestCase):
           guidance_scale=cfg,
           latents=initial_noise_pt,
           use_resolution_binning=False,
-          output_type="pt",
+          output_type="pil",
       ).images[0]
-      pt_np = out_pt_raw.float().cpu().numpy()
-      pt_np = (np.clip(pt_np, -1.0, 1.0) + 1.0) * 127.5
-      pt_np = np.transpose(pt_np.astype(np.uint8), (1, 2, 0))
-      out_pt = Image.fromarray(pt_np)
 
     pt_img_path = os.path.join(OUTPUT_DIR, "diffusers_pt_output.png")
     out_pt.save(pt_img_path)

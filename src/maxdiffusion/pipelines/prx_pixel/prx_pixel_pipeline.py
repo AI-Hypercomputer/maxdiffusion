@@ -36,101 +36,11 @@ from maxdiffusion.models.qwen3_flax import FlaxQwen3Config, NNXFlaxQwen3Model
 from maxdiffusion.schedulers.scheduling_flow_match_flax import FlaxFlowMatchScheduler
 
 
-import re
-import urllib.parse as ul
-
-BAD_PUNCT_REGEX = re.compile(
-    r"["
-    + "#®•©™&@·º½¾¿¡§~"
-    + r"\)"
-    + r"\("
-    + r"\]"
-    + r"\["
-    + r"\}"
-    + r"\{"
-    + r"\|"
-    + r"\\"
-    + r"\/"
-    + r"\*"
-    + r"]{1,}"
-)
-REGEX2 = re.compile(r"(?:\-|\_)")
-
-
-def clean_prompt(text: str) -> str:
-  """Clean text using exact PRX / DeepFloyd text processing logic."""
-  text = str(text)
-  text = ul.unquote_plus(text)
-  text = text.strip().lower()
-  text = re.sub("<person>", "person", text)
-
-  # Remove urls
-  text = re.sub(
-      r"\b((?:https?|www):(?:\/{1,3}|[a-zA-Z0-9%])|[a-zA-Z0-9.\-]+[.](?:com|co|ru|net|org|edu|gov|it)[\w/-]*\b\/?(?!@))",
-      "",
-      text,
-  )
-
-  text = re.sub(r"@[\w\d]+\b", "", text)
-  text = re.sub(r"[\u31c0-\u31ef]+", "", text)
-  text = re.sub(r"[\u31f0-\u31ff]+", "", text)
-  text = re.sub(r"[\u3200-\u32ff]+", "", text)
-  text = re.sub(r"[\u3300-\u33ff]+", "", text)
-  text = re.sub(r"[\u3400-\u4dbf]+", "", text)
-  text = re.sub(r"[\u4dc0-\u4dff]+", "", text)
-  text = re.sub(r"[\u4e00-\u9fff]+", "", text)
-
-  text = re.sub(
-      r"[\u002D\u058A\u05BE\u1400\u1806\u2010-\u2015\u2E17\u2E1A\u2E3A\u2E3B\u2E40\u301C\u3030\u30A0\uFE31\uFE32\uFE58\uFE63\uFF0D]+",
-      "-",
-      text,
-  )
-
-  text = re.sub(r"[`´«»" "¨]", '"', text)
-  text = re.sub(r"['']", "'", text)
-  text = re.sub(r"&quot;?", "", text)
-  text = re.sub(r"&amp", "", text)
-  text = re.sub(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", " ", text)
-  text = re.sub(r"\d:\d\d\s+$", "", text)
-  text = re.sub(r"\\n", " ", text)
-  text = re.sub(r"#\d{1,3}\b", "", text)
-  text = re.sub(r"#\d{5,}\b", "", text)
-  text = re.sub(r"\b\d{6,}\b", "", text)
-  text = re.sub(r"[\S]+\.(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)", "", text)
-
-  text = re.sub(r"[\"\']{2,}", r'"', text)
-  text = re.sub(r"[\.]{2,}", r" ", text)
-  text = re.sub(BAD_PUNCT_REGEX, r" ", text)
-  text = re.sub(r"\s+\.\s+", r" ", text)
-
-  if len(re.findall(REGEX2, text)) > 3:
-    text = re.sub(REGEX2, " ", text)
-
-  text = ftfy.fix_text(text)
-  text = html.unescape(html.unescape(text))
-  text = text.strip()
-
-  text = re.sub(r"\b[a-zA-Z]{1,3}\d{3,15}\b", "", text)
-  text = re.sub(r"\b[a-zA-Z]+\d+[a-zA-Z]+\b", "", text)
-  text = re.sub(r"\b\d+[a-zA-Z]+\d+\b", "", text)
-  text = re.sub(r"(worldwide\s+)?(free\s+)?shipping", "", text)
-  text = re.sub(r"(free\s)?download(\sfree)?", "", text)
-  text = re.sub(r"\bclick\b\s(?:for|on)\s\w+", "", text)
-  text = re.sub(r"\b(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)(\simage[s]?)?", "", text)
-  text = re.sub(r"\bpage\s+\d+\b", "", text)
-  text = re.sub(r"\b\d*[a-zA-Z]+\d+[a-zA-Z]+\d+[a-zA-Z\d]*\b", r" ", text)
-  text = re.sub(r"\b\d+\.?\d*[xх×]\d+\.?\d*\b", "", text)
-
-  text = re.sub(r"\b\s+\:\s+", r": ", text)
-  text = re.sub(r"(\D[,\./])\b", r"\1 ", text)
-  text = re.sub(r"\s+", " ", text)
-
-  text = text.strip()
-  text = re.sub(r"^[\"\']([\w\W]+)[\"\']$", r"\1", text)
-  text = re.sub(r"^[\'\_,\-\:;]", r"", text)
-  text = re.sub(r"[\'\_,\-\:\-\+]$", r"", text)
-  text = re.sub(r"^\.\S+$", "", text)
-  return text.strip()
+def clean_prompt(prompt: str) -> str:
+  """Exact prompt preprocessing for PRXPixel."""
+  prompt = ftfy.fix_text(prompt)
+  prompt = html.unescape(html.unescape(prompt))
+  return prompt.strip()
 
 
 class FlaxPRXPixelPipeline:
@@ -223,11 +133,11 @@ class FlaxPRXPixelPipeline:
         prompt, negative_prompt=negative_prompt, do_classifier_free_guidance=do_cfg
     )
 
-    # 2. Prepare initial noise latents
+    # 2. Prepare initial noise latents (PRXPixel initial scale is 2.0 * epsilon)
     if latents is None:
       if generator is None:
         generator = jax.random.PRNGKey(42)
-      raw_noise = jax.random.normal(generator, shape=(batch_size, 3, height, width), dtype=jnp.float32)
+      raw_noise = 2.0 * jax.random.normal(generator, shape=(batch_size, 3, height, width), dtype=jnp.float32)
       latents = raw_noise
     else:
       latents = latents.astype(jnp.float32)
@@ -249,25 +159,30 @@ class FlaxPRXPixelPipeline:
         latents_in = latents.astype(self.dtype)
         t_cont_in = jnp.broadcast_to(t_cont, (batch_size,))
 
-      # Predict x0
-      pred = self.transformer(
+      # Predict clean image x0
+      pred_x0 = self.transformer(
           hidden_states=latents_in,
           timestep=t_cont_in,
           encoder_hidden_states=prompt_embeds,
           attention_mask=attention_mask,
       )
 
+      # CFG in x0-space
       if do_cfg:
-        pred_uncond, pred_cond = jnp.split(pred, 2, axis=0)
-        model_output = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
+        x0_uncond, x0_cond = jnp.split(pred_x0, 2, axis=0)
+        x0_hat = x0_uncond + guidance_scale * (x0_cond - x0_uncond)
       else:
-        model_output = pred
+        x0_hat = pred_x0
 
-      # Flow Match Euler update
+      # Convert x0_hat to flow velocity: v_t = (x_t - x0_hat) / max(t/1000, 0.05)
+      t_norm = jnp.maximum(t.astype(jnp.float32) / 1000.0, 0.05)
+      v_t = (latents - x0_hat.astype(jnp.float32)) / t_norm
+
+      # Flow Match Euler step: x_{t-dt} = x_t + dt * v_t
       sigma = sigmas[i]
       sigma_next = sigmas[i + 1]
       dt = sigma_next - sigma
-      latents = latents + dt * model_output.astype(jnp.float32)
+      latents = latents + dt * v_t
 
     # 5. Direct Postprocessing (No VAE)
     if output_type == "raw" or output_type == "latents":

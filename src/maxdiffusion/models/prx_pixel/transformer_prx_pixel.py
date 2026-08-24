@@ -482,8 +482,10 @@ class NNXPRXPixelTransformer2DModel(nnx.Module):
     img_ids = get_image_ids_flax(b, h, w, patch_size=self.config.patch_size)
     pe = self.pe_embedder(img_ids)
 
-    # 4. Conditioning vector = Timestep
-    vec = self._compute_timestep_embedding(timestep)
+    # 4. Conditioning vector = Timestep + Resolution
+    t_emb = self._compute_timestep_embedding(timestep)
+    res_emb = self.resolution_embedder(h, w, b)
+    vec = t_emb + res_emb
 
     # 5. Transformer Blocks
     for block in self.blocks:
