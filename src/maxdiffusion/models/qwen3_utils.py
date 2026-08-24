@@ -31,13 +31,7 @@ from maxdiffusion.models.qwen3_flax import FlaxQwen3Config
 
 
 def qwen3_flax_key_to_pytorch_key(path: Tuple[str, ...]) -> Tuple[str, bool]:
-  """Return the PyTorch key feeding a Flax param path, and whether it transposes.
-
-  Handles both module layouts: NNX nests its blocks in an `nnx.List`, giving
-  ('layers', 0, ...), while Linen names them flatly, giving ('layers_0', ...).
-  Every Flax `.kernel` is a torch `nn.Linear` weight and needs a transpose;
-  norm scales and the embedding table do not.
-  """
+  """Return the primary PyTorch key feeding a Flax param path, and whether it transposes."""
   if path[0] == "embed_tokens":
     return "model.embed_tokens.weight", False
   if path[0] == "norm":
@@ -49,6 +43,22 @@ def qwen3_flax_key_to_pytorch_key(path: Tuple[str, ...]) -> Tuple[str, bool]:
   else:
     raise KeyError(f"Unknown Qwen3 Flax parameter path `{path}`.")
   return f"model.layers.{layer_index}." + ".".join(inner[:-1]) + ".weight", path[-1] == "kernel"
+
+
+def qwen3_flax_key_to_candidate_pytorch_keys(path: Tuple[str, ...]) -> Tuple[list[str], bool]:
+  """Return candidate PyTorch keys (with and without model. prefix), and whether it transposes."""
+  if path[0] == "embed_tokens":
+    return ["model.embed_tokens.weight", "embed_tokens.weight"], False
+  if path[0] == "norm":
+    return ["model.norm.weight", "norm.weight"], False
+  if path[0] == "layers":
+    layer_index, inner = path[1], path[2:]
+  elif path[0].startswith("layers_"):
+    layer_index, inner = path[0].split("_")[1], path[1:]
+  else:
+    raise KeyError(f"Unknown Qwen3 Flax parameter path `{path}`.")
+  suffix = f"layers.{layer_index}." + ".".join(inner[:-1]) + ".weight"
+  return [f"model.{suffix}", suffix], path[-1] == "kernel"
 
 
 def load_qwen3_weights(
@@ -80,8 +90,9 @@ def load_qwen3_weights(
   expected = flatten_dict(eval_shapes)
   sources = {}
   for path in expected:
-    source_key, transpose = qwen3_flax_key_to_pytorch_key(path)
-    sources[source_key] = (path, transpose)
+    candidate_keys, transpose = qwen3_flax_key_to_candidate_pytorch_keys(path)
+    for c_key in candidate_keys:
+      sources[c_key] = (path, transpose)
 
   converted = {}
   cpu = jax.local_devices(backend=device)[0]

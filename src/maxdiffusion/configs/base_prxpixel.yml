@@ -1,0 +1,40 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+model_name: "prx_pixel"
+pretrained_model_name_or_path: "Photoroom/prxpixel-t2i"
+revision: "bcd5e63f072257a220c5d0ba039c97657398b1c2"
+
+# Model architecture
+hidden_size: 3584
+num_heads: 28
+head_dim: 128
+depth: 24
+mlp_ratio: 3.5
+patch_size: 16
+in_channels: 3
+context_in_dim: 2048
+
+# Scheduler
+num_train_timesteps: 1000
+num_inference_steps: 28
+guidance_scale: 4.5
+shift: 3.0
+
+# Resolution
+height: 1024
+width: 1024
+
+# Precision
+dtype: "bfloat16"
