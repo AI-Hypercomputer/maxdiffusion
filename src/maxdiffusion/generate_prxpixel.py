@@ -59,9 +59,12 @@ def main():
 
   rng = jax.random.PRNGKey(args.seed)
 
-  print("\n🎨 Generating image in pixel space...")
-  t_gen_start = time.perf_counter()
-  images = pipeline(
+  # ---------------------------------------------------------------------------
+  # Pass 1: Compilation & Warmup Run
+  # ---------------------------------------------------------------------------
+  print("\n🎨 [PASS 1/2] Running Compilation & Warmup Pass...")
+  t_pass1_start = time.perf_counter()
+  images_warmup = pipeline(
       prompt=args.prompt,
       negative_prompt=args.negative_prompt,
       height=args.height,
@@ -70,11 +73,48 @@ def main():
       guidance_scale=args.guidance_scale,
       generator=rng,
   )
-  gen_time = time.perf_counter() - t_gen_start
-  print(f"⏱️ Inference Denoising Time: {gen_time:.2f}s")
+  pass1_time = time.perf_counter() - t_pass1_start
+  print(f"⏱️ Pass 1 (Compilation + Execution) Time: {pass1_time:.2f}s")
 
-  images[0].save(args.output_file)
-  print(f"✅ Image saved successfully to: {args.output_file}")
+  out_dir = os.path.dirname(args.output_file) or "."
+  out_name = os.path.basename(args.output_file)
+  warmup_out = os.path.join(out_dir, f"warmup_{out_name}")
+  images_warmup[0].save(warmup_out)
+  print(f"✅ Warmup image saved to: {warmup_out}")
+
+  # ---------------------------------------------------------------------------
+  # Pass 2: Warmed-Up Steady-State Run
+  # ---------------------------------------------------------------------------
+  print("\n🎨 [PASS 2/2] Running Warmed-Up Steady-State Inference...")
+  t_pass2_start = time.perf_counter()
+  images_steady = pipeline(
+      prompt=args.prompt,
+      negative_prompt=args.negative_prompt,
+      height=args.height,
+      width=args.width,
+      num_inference_steps=args.num_inference_steps,
+      guidance_scale=args.guidance_scale,
+      generator=rng,
+  )
+  pass2_time = time.perf_counter() - t_pass2_start
+  per_step_ms = (pass2_time / args.num_inference_steps) * 1000.0
+
+  images_steady[0].save(args.output_file)
+  print(f"✅ Steady-state image saved to: {args.output_file}")
+
+  # ---------------------------------------------------------------------------
+  # Performance Summary
+  # ---------------------------------------------------------------------------
+  print("\n" + "=" * 80)
+  print("📊 PRXPIXEL LATENCY & PERFORMANCE BENCHMARK:")
+  print(f"  • Model Load & Placement Time:  {load_time:.2f}s")
+  print(f"  • Pass 1 (Compile + Warmup):     {pass1_time:.2f}s")
+  print(f"  • Pass 2 (Steady-State Latency): {pass2_time:.2f}s")
+  print(f"  • Per-Step Latency:              {per_step_ms:.1f} ms/step")
+  print(f"  • Resolution:                    {args.height}x{args.width}")
+  print(f"  • Inference Steps:               {args.num_inference_steps}")
+  print(f"  • Dtype:                         {args.dtype}")
+  print("=" * 80)
 
 
 if __name__ == "__main__":
