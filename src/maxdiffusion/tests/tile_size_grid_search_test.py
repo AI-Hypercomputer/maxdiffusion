@@ -86,10 +86,21 @@ class CandidateTest(unittest.TestCase):
     self.assertEqual(bqs[0], 9472)
     self.assertTrue(all(b % VPU_LANE == 0 for b in bqs))
 
+  def test_bkv_ceiling_is_per_family_and_measured(self):
+    # Measured at 64 MB, bq=9472: external tops out at 1152, internal at 1408.
+    # The old single-fraction model capped BOTH at 1024, hiding the internal
+    # kernel's optimum (9472/1408) -- worth 3-12% e2e. See report/internal_perm.
+    self.assertEqual(vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB, family="external"), 1152)
+    self.assertEqual(vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB, family="internal"), 1408)
+    self.assertGreater(
+        vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB, family="internal"),
+        vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB, family="external"),
+    )
+
   def test_bkv_largest_fits_includes_winner(self):
     ceil = vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB)
-    bkvs = bkv_candidates(RING_SEQ, k=3, max_block=ceil)
-    self.assertIn(1024, bkvs)  # the measured optimum, largest 256-mult that fits at bq=9472
+    bkvs = bkv_candidates(RING_SEQ, k=4, max_block=ceil)
+    self.assertIn(1024, bkvs)  # still offered: 1024 beats 1152 in all 13 measured configs
 
   def test_smart_grid_pairs_winner(self):
     pairs = smart_grid(RING_SEQ, RING_SEQ, vmem_bytes=VMEM_64MB, dtype_bytes=4)
@@ -153,9 +164,15 @@ class OrchestratorTest(unittest.TestCase):
     self.assertIsNone(mean_ms)
 
   def test_smart_search_picks_measured_winner(self):
+    # Expectation updated when the VMEM ceiling was corrected. The mock's cost
+    # model rewards fewer KV blocks (0.9 * n_kv) and caps the compute bonus at
+    # min(cmp, 1024), so 1280 genuinely beats 1024 under its own physics -- the
+    # old assertion only held because the 0.65-fraction ceiling never OFFERED
+    # anything above 1024. It was testing the cap, not the search.
     res = grid_search(_MockRingBench(), mode="smart", iters=10, log=lambda *a, **k: None)
     self.assertIsNotNone(res.best)
-    self.assertEqual((res.best.bq, res.best.bkv), (9472, 1024))
+    self.assertEqual(res.best.bq, 9472)
+    self.assertGreaterEqual(res.best.bkv, 1024)
 
   def test_oom_configs_pruned_not_raised(self):
     # a tiny VMEM budget OOMs the big pairs; search must still return (or None), never raise.

@@ -230,6 +230,9 @@ class _HyperParameters:
         "ulysses_ring_custom",
         "ulysses_ring_custom_fixed_m",
         "ulysses_ring_custom_bidir",
+        "ulysses_ring_custom_iperm",
+        "ulysses_ring_custom_iperm_fixed_m",
+        "ulysses_ring_custom_iperm_fixed_m_nocond",
     }
     if attention in ulysses_ring_attentions and raw_keys.get("ulysses_shards", -1) <= 0:
       raise ValueError(f"{attention} requires ulysses_shards to be set from config or command line.")
