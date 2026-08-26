@@ -28,6 +28,7 @@ from maxdiffusion import wan_runtime_options
 from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
+from maxdiffusion.kernels import internal_ring_attention as internal_ring_kernel_mod
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from maxdiffusion.kernels.fused_producers import fused_rmsnorm_rope
 from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import (
@@ -1874,6 +1875,8 @@ def _ulysses_ring_custom_attention(
     use_experimental_scheduler: bool = False,
     bidirectional: bool = False,
     use_fixed_m: bool = False,
+    fixed_m_uncond: bool = False,
+    internal_perm: bool = False,
     ulysses_attention_chunks: int = 1,
     per_q_block: bool = True,
     kv_heads: int | None = None,
@@ -1897,6 +1900,8 @@ def _ulysses_ring_custom_attention(
         f"got context_shards={num_context_shards} and ulysses_shards={num_ulysses_shards}."
     )
   num_ring_shards = num_context_shards // num_ulysses_shards
+  if internal_perm and bidirectional:
+    raise NotImplementedError("internal-permutation ring does not implement the bidirectional schedule.")
 
   # K-centering for ring variants: `use_k_centering` is resolved by the caller
   # with `resolve_k_centering(..., ring=True)`, so "auto" is OFF regardless of R.
@@ -2093,7 +2098,71 @@ def _ulysses_ring_custom_attention(
 
     # (2b) Ring: Cross-chip ppermute schedule with custom ring kernel
     else:
-      if use_fixed_m:
+      if internal_perm:
+        # (2c) Permutation INSIDE the kernel: one pallas_call for the whole ring,
+        # the hop is a remote DMA between neighbours' VMEM. No ppermute, no
+        # per-hop (m, l, o) merge in XLA, and no vmap -- the batch axis is a grid
+        # dimension because the kernel owns semaphores and a collective_id.
+        #
+        # This path consumes the SAME pre-a2a reductions the external ring uses
+        # (`_ring_fixed_m_norms_pre_a2a`); it needs no metadata of its own. The
+        # ring-global `mk` that #478 broadcasts per hop is exactly what a single
+        # pinned m requires, so the two designs want the same number.
+        iperm_mk = None
+        if use_fixed_m:
+          # One launch spans every shard, so N is the whole ring's KV length and
+          # the bound must cover keys this rank never holds. Derive C and the
+          # gate from the PADDED length: that only shrinks C, which is the
+          # conservative direction for the fp32 overflow ceiling, and it keeps
+          # the gate strictly tighter than `all_fixed_global`.
+          eff_kv_len = key_seq_len * num_ring_shards
+          iperm_recenter, iperm_bound = custom_splash.get_fixed_m_constants(eff_kv_len, is_ring=True)
+          # Reduce the (batch, ...) metadata to the (heads,) the un-vmapped
+          # kernel takes. Max over batch and over Q blocks: a single m is pinned
+          # for the whole grid, so it must dominate every row it will shift.
+          qn_head_sq = qn_dev.max(axis=0) if qn_dev.ndim == 2 else qn_dev.max(axis=(0, 2))
+          mk_head_sq = mk_all_sq.max(axis=(0, 1))
+          qn_head = jnp.sqrt(qn_head_sq)
+          mk_head = jnp.sqrt(mk_head_sq)
+          iperm_fixed = jnp.all(qn_head * mk_head <= iperm_bound) & v_ok
+          iperm_mk = jnp.stack([mk_head, jnp.ones_like(mk_head)])
+
+        def _mk_internal(fixed, recenter=None):
+          return internal_ring_kernel_mod.make_internal_ring_attention(
+              block_sizes=bsizes,
+              orig_q_seq_len=query_seq_len,
+              orig_kv_seq_len=key_seq_len,
+              ring_axis=ring_axis,
+              ring_size=num_ring_shards,
+              axis_names=internal_mesh.axis_names,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=fixed,
+              fixed_m_recenter=recenter,
+          )
+
+        if not use_fixed_m:
+          attention_output = _mk_internal(False)(query, key, value)
+        elif fixed_m_uncond:
+          # MEASUREMENT VARIANT. Skips the lax.cond and always takes the fixed
+          # branch, to isolate the conditional's cost from fixed-m's own. Safe
+          # only while the gate actually holds -- `iperm_fixed` is computed above
+          # and asserted post hoc by comparing this variant's output against the
+          # guarded one (a failed gate shows up as visibly wrong output, not
+          # subtly wrong). Not for production.
+          del iperm_fixed
+          attention_output = _mk_internal(True, iperm_recenter)(query, key, value, iperm_mk)
+        else:
+          # The predicate is device-uniform along the RING (every input to it is
+          # already pmax/pmin-reduced over the ring axis), so all ranks take the
+          # same branch and the two pallas_calls stay in step.
+          attention_output = jax.lax.cond(
+              iperm_fixed,
+              lambda: _mk_internal(True, iperm_recenter)(query, key, value, iperm_mk),
+              lambda: _mk_internal(False)(query, key, value),
+          )
+      elif use_fixed_m:
         ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
             block_sizes=bsizes,
             orig_q_seq_len=query_seq_len,
@@ -2394,6 +2463,90 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
       kv_heads=context.get("kv_heads", None),
       qk_prescaled=qk_prescaled,
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm")
+def ulysses_ring_custom_iperm_kernel(q, k, v, context):
+  """INTERNAL-permutation variant of ulysses_ring_custom: the ring hop is a
+  remote DMA issued from inside the Pallas kernel (one launch for the whole
+  ring, accumulator never leaves VMEM) instead of an XLA `lax.ppermute` plus a
+  per-hop online-softmax merge. Same USP split as ulysses_ring_custom; U=1
+  gives a pure 1D internal ring."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm_fixed_m")
+def ulysses_ring_custom_iperm_fixed_m_kernel(q, k, v, context):
+  """Internal-permutation ring + Cauchy-Schwarz fixed m. Simpler than the
+  external ring's fixed-m: one kernel spans every shard and the accumulator
+  stays in VMEM, so a single pinned bound is exact for the whole ring -- no
+  per-hop gate, no LSE merge, no rotating norms."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      use_fixed_m=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm_fixed_m_nocond")
+def ulysses_ring_custom_iperm_fixed_m_nocond_kernel(q, k, v, context):
+  """Measurement-only twin of `ulysses_ring_custom_iperm_fixed_m` with the
+  eligibility `lax.cond` removed, to separate the conditional's cost (a
+  [H, S, D] copy between branch buffers) from fixed-m's own kernel win."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      use_fixed_m=True,
+      fixed_m_uncond=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
 
@@ -3523,6 +3676,9 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_ring_custom_fixed_m",
         "ulysses_ring_custom_fixed_m_per_q_block",
         "ulysses_ring_custom_bidir",
+        "ulysses_ring_custom_iperm",
+        "ulysses_ring_custom_iperm_fixed_m",
+        "ulysses_ring_custom_iperm_fixed_m_nocond",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
         "ulysses_custom_fixed_m_per_q_block",
