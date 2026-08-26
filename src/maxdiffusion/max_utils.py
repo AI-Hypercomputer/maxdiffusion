@@ -615,14 +615,15 @@ def value_or_none(flash_block_sizes, key):
 
 @dataclasses.dataclass(frozen=True)
 class CustomFlashBlockSizes:
-  """Hashable carrier for the custom splash kernel's block sizes.
+  """Hashable carrier for splash-kernel block sizes across code paths.
 
   The JAX `splash_attention_kernel.BlockSizes` is frozen + slotted and only has
-  fields for block_q/block_kv/block_kv_compute — it silently drops
-  block_kv_compute_in, heads_per_tile, and vmem_limit_bytes, which the custom
-  kernel needs. A plain dict would carry them but is unhashable (it ends up in
-  nnx's static graphdef, which jit requires to be hashable). This frozen
-  dataclass is hashable and is read via getattr in wrap_ulysses_attention.
+  fields for block_q/block_kv/block_kv_compute — it silently drops the extra
+  fields the custom (`block_kv_compute_in`) and tokamax-ring
+  (`block_*_dkv`, `heads_per_tile`, `vmem_limit_bytes`, ...) paths need. A plain
+  dict would carry them but is unhashable (it ends up in nnx's static graphdef,
+  which jit requires to be hashable). This frozen dataclass is hashable and is
+  read via getattr; each path fills only the fields it uses (rest stay None).
   """
 
   block_q: int | None = None
@@ -631,6 +632,13 @@ class CustomFlashBlockSizes:
   block_kv_compute_in: int | None = None
   heads_per_tile: int | None = None
   vmem_limit_bytes: int | None = None
+  # Tokamax-ring extras (fused backward blocks); unused by the custom path.
+  block_q_dkv: int | None = None
+  block_kv_dkv: int | None = None
+  block_kv_dkv_compute: int | None = None
+  block_q_dq: int | None = None
+  block_kv_dq: int | None = None
+  use_fused_bwd_kernel: bool | None = None
 
 
 def get_flash_block_sizes(config):
@@ -638,6 +646,7 @@ def get_flash_block_sizes(config):
   flash_block_sizes = None
   if len(config.flash_block_sizes.keys()) > 0:
     attention_is_tokamax = "tokamax" in config.attention or config.attention == "ulysses_ring"
+    attention_uses_tokamax_ring = config.attention in ("tokamax_ring", "ulysses_ring")
     user_block_sizes: Dict[str, int] = config.flash_block_sizes
     # The custom splash kernel reads flash_block_sizes via getattr and needs
     # fields the JAX BlockSizes dataclass cannot hold. Return a frozen, hashable
@@ -648,6 +657,20 @@ def get_flash_block_sizes(config):
           block_kv=user_block_sizes.get("block_kv"),
           block_kv_compute=user_block_sizes.get("block_kv_compute"),
           block_kv_compute_in=user_block_sizes.get("block_kv_compute_in"),
+          heads_per_tile=user_block_sizes.get("heads_per_tile"),
+          vmem_limit_bytes=user_block_sizes.get("vmem_limit_bytes"),
+      )
+    if attention_uses_tokamax_ring and "heads_per_tile" in user_block_sizes:
+      return CustomFlashBlockSizes(
+          block_q=user_block_sizes.get("block_q_dkv", user_block_sizes["block_kv"]),
+          block_kv=user_block_sizes["block_kv"],
+          block_kv_compute=user_block_sizes["block_kv_compute"],
+          block_q_dkv=user_block_sizes["block_q_dkv"],
+          block_kv_dkv=user_block_sizes["block_kv_dkv"],
+          block_kv_dkv_compute=user_block_sizes["block_kv_dkv_compute"],
+          block_q_dq=None,
+          block_kv_dq=None,
+          use_fused_bwd_kernel=True,
           heads_per_tile=user_block_sizes.get("heads_per_tile"),
           vmem_limit_bytes=user_block_sizes.get("vmem_limit_bytes"),
       )
