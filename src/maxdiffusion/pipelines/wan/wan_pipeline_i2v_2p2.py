@@ -149,6 +149,11 @@ class WanPipelineI2V_2_2(WanPipeline):
       num_videos_per_prompt: int = 1,
       trace: Optional[dict] = None,
   ) -> Tuple[jax.Array, jax.Array, Optional[jax.Array]]:
+    """Prepares latents and condition for I2V inference.
+
+    Note: num_videos_per_prompt is kept for backwards compatibility; repetition
+    is driven by batch_size.
+    """
     if hasattr(image, "detach"):
       image = image.detach().cpu().numpy()
     image = jnp.array(image)
@@ -157,6 +162,23 @@ class WanPipelineI2V_2_2(WanPipeline):
       if hasattr(last_image, "detach"):
         last_image = last_image.detach().cpu().numpy()
       last_image = jnp.array(last_image)
+
+    if batch_size % image.shape[0] != 0:
+      raise ValueError(f"Batch size ({batch_size}) must be divisible by image batch size ({image.shape[0]}).")
+
+    if last_image is not None:
+      if batch_size % last_image.shape[0] != 0:
+        raise ValueError(f"Batch size ({batch_size}) must be divisible by last_image batch size ({last_image.shape[0]}).")
+      if image.shape[0] > 1 and last_image.shape[0] > 1 and image.shape[0] != last_image.shape[0]:
+        raise ValueError(
+            f"image batch size ({image.shape[0]}) and last_image batch size ({last_image.shape[0]}) must match when"
+            " both are greater than 1."
+        )
+      if last_image.shape[0] < batch_size:
+        last_image = jnp.repeat(last_image, batch_size // last_image.shape[0], axis=0)
+
+    if image.shape[0] < batch_size:
+      image = jnp.repeat(image, batch_size // image.shape[0], axis=0)
 
     num_channels_latents = self.vae.z_dim
     num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
