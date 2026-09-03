@@ -17,6 +17,7 @@ imageio
 jax
 jaxlib
 jaxopt
+libtpu>=0.0.42.1
 Jinja2
 opencv-python-headless
 optax
