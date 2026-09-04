@@ -54,6 +54,11 @@ class LTX2NNXLoraLoader(LoRABaseMixin):
       max_logging.log("No LoRA weight name provided; skipping LoRA load.")
       return pipeline
 
+    lora_key = (lora_model_path, transformer_weight_name)
+    if self._check_and_record_lora(lora_key):
+      max_logging.log(f"WARNING: LoRA '{lora_model_path}' already merged — skipping to avoid double-application.")
+      return pipeline
+
     h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=transformer_weight_name, **kwargs)
     transformer_state_dict = {}
     connector_state_dict = {}

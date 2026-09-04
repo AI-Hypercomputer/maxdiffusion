@@ -24,6 +24,17 @@ class LoRABaseMixin:
   _lora_lodable_modules = []
   num_fused_loras = 0
 
+  def __init__(self):
+    self._fused_lora_keys = set()
+
+  def _check_and_record_lora(self, lora_key):
+    """Return True if this LoRA was already merged (duplicate). Records it otherwise."""
+    if lora_key in self._fused_lora_keys:
+      return True
+    self._fused_lora_keys.add(lora_key)
+    self.num_fused_loras += 1
+    return False
+
   def load_lora_weights(self, **kwargs):
     raise NotImplementedError("`load_lora_weights()` is not implemented.")
 
