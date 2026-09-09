@@ -130,7 +130,9 @@ def _tensorboard_writer_worker(writer, config):
     metrics, step = data
     if jax.process_index() == 0:
       for metric_name in metrics.get("scalar", []):
-        writer.add_scalar(metric_name, np.array(metrics["scalar"][metric_name]), step)
+        val = np.array(metrics["scalar"][metric_name])
+        metric_step = metrics.get("steps", {}).get(metric_name, step)
+        writer.add_scalar(metric_name, val, metric_step)
       for metric_name in metrics.get("scalars", []):
         writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
 
@@ -198,7 +200,9 @@ def write_metrics_to_tensorboard(writer, metrics, step, config):
     )
   if jax.process_index() == 0:
     for metric_name in metrics.get("scalar", []):
-      writer.add_scalar(metric_name, np.array(metrics["scalar"][metric_name]), step)
+      val = np.array(metrics["scalar"][metric_name])
+      metric_step = metrics.get("steps", {}).get(metric_name, step)
+      writer.add_scalar(metric_name, val, metric_step)
     for metric_name in metrics.get("scalars", []):
       writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
 
