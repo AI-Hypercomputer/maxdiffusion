@@ -27,9 +27,16 @@ import flax
 
 
 def train(config):
-  from maxdiffusion.trainers.wan_trainer import WanTrainer
+  from maxdiffusion.common_types import WAN2_2
 
-  trainer = WanTrainer(config)
+  if getattr(config, "model_name", "") == WAN2_2:
+    from maxdiffusion.trainers.wan_trainer_2_2 import WanTrainer2_2
+
+    trainer = WanTrainer2_2(config)
+  else:
+    from maxdiffusion.trainers.wan_trainer import WanTrainer
+
+    trainer = WanTrainer(config)
   trainer.start_training()
 
 
