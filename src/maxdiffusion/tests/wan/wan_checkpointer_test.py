@@ -387,7 +387,8 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
-    self.assertEqual(opt_state["learning_rate"], 0.001)
+    self.assertEqual(opt_state["low_noise_transformer"]["learning_rate"], 0.001)
+    self.assertIsNone(opt_state["high_noise_transformer"])
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
@@ -429,7 +430,8 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
-    self.assertEqual(opt_state["learning_rate"], 0.002)
+    self.assertIsNone(opt_state["low_noise_transformer"])
+    self.assertEqual(opt_state["high_noise_transformer"]["learning_rate"], 0.002)
     self.assertEqual(step, 1)
 
 
@@ -758,9 +760,10 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    # Should prioritize low_noise_transformer's optimizer state
+    # Should preserve both low_noise_transformer and high_noise_transformer optimizer states
     self.assertIsNotNone(opt_state)
-    self.assertEqual(opt_state["learning_rate"], 0.001)
+    self.assertEqual(opt_state["low_noise_transformer"]["learning_rate"], 0.001)
+    self.assertEqual(opt_state["high_noise_transformer"]["learning_rate"], 0.002)
 
 
 if __name__ == "__main__":

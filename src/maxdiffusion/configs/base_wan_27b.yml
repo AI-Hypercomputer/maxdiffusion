@@ -409,6 +409,12 @@ num_inference_steps: 40
 fps: 16
 save_final_checkpoint: False
 
+# Staging directory for downloading pretrained weights from Google Cloud Storage (gs://)
+# prior to loading into device memory. Note: On Cloud TPU VMs with limited root disk/tmpfs,
+# ensure this directory resides on a persistent disk or large volume to avoid ENOSPC.
+# Differs from pretrained_model_name_or_path which specifies the remote/local model URI.
+checkpoint_save_location: "/tmp"
+
 # SDXL Lightning parameters
 lightning_from_pt: True
 # Empty or "ByteDance/SDXL-Lightning" to enable lightning.
