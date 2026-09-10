@@ -97,6 +97,8 @@ class _HyperParameters:
   def __init__(self, argv: list[str], **kwargs):
     with open(argv[1], "r", encoding="utf-8") as yaml_file:
       raw_data_from_yaml = yaml.safe_load(yaml_file)
+    if "prompt_file" not in raw_data_from_yaml:
+      raw_data_from_yaml["prompt_file"] = ""
     raw_data_from_cmd_line = self._load_kwargs(argv)
 
     for k in raw_data_from_cmd_line:
@@ -206,6 +208,8 @@ class _HyperParameters:
       raw_keys["names_which_can_be_offloaded"] = []
     if "offload_encoders" not in raw_keys:
       raw_keys["offload_encoders"] = False
+    if "prompt_file" not in raw_keys:
+      raw_keys["prompt_file"] = ""
 
     raw_keys["weights_dtype"] = jax.numpy.dtype(raw_keys["weights_dtype"])
     raw_keys["activations_dtype"] = jax.numpy.dtype(raw_keys["activations_dtype"])

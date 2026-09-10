@@ -212,7 +212,8 @@ class Profiler:
 
 
 def initialize_summary_writer(config):
-  return writer.SummaryWriter(config.tensorboard_dir) if jax.process_index() == 0 else None
+  tensorboard_dir = getattr(config, "tensorboard_dir", "")
+  return writer.SummaryWriter(tensorboard_dir) if (tensorboard_dir and jax.process_index() == 0) else None
 
 
 def close_summary_writer(summary_writer):
@@ -344,6 +345,94 @@ def save_images(config, images):
   return paths
 
 
+def get_gcs_output_path(config) -> str:
+  """Returns the GCS target directory path if output_dir or base_output_directory starts with gs://."""
+  output_dir = getattr(config, "output_dir", "") or ""
+  base_output_dir = getattr(config, "base_output_directory", "") or ""
+  gcs_root = (
+      output_dir if output_dir.startswith("gs://") else (base_output_dir if base_output_dir.startswith("gs://") else "")
+  )
+  if not gcs_root:
+    return ""
+  run_name = getattr(config, "run_name", "") or ""
+  return os.path.join(gcs_root, run_name) if run_name else gcs_root
+
+
+def load_prompts(prompt_file_path: str = "", default_prompt: str = "") -> list[str]:
+  """Loads prompts from a text file (separated by newline) or returns default prompt.
+
+  Supports local files, GCS URIs (gs://bucket/path/to/prompts.txt), and HTTP/HTTPS URLs.
+  Each line in the file is treated as a separate prompt. Empty lines, comments (lines starting
+  with '#'), and whitespace are stripped.
+  """
+  no_prompts_error = "No prompts found. Both prompt_file_path and default_prompt are empty."
+  if not prompt_file_path:
+    if default_prompt:
+      return [default_prompt]
+    raise ValueError(no_prompts_error)
+
+  prompt_file_path = prompt_file_path.strip()
+  if not prompt_file_path:
+    if default_prompt:
+      return [default_prompt]
+    raise ValueError(no_prompts_error)
+
+  max_logging.log(f"Loading prompts from file: {prompt_file_path}")
+  raw_lines = []
+
+  if prompt_file_path.startswith("gs://"):
+    try:
+      bucket_name, prefix_name = parse_gcs_bucket_and_prefix(prompt_file_path)
+      storage_client = storage.Client()
+      bucket = storage_client.bucket(bucket_name)
+      blob = bucket.blob(prefix_name)
+      content = blob.download_as_text()
+      raw_lines = content.splitlines()
+    except Exception as e:
+      max_logging.log(f"Error loading prompts from GCS path '{prompt_file_path}': {e}")
+      raise
+  elif prompt_file_path.startswith("http://") or prompt_file_path.startswith("https://"):
+    try:
+      import requests
+
+      response = requests.get(prompt_file_path, timeout=30)
+      response.raise_for_status()
+      raw_lines = response.text.splitlines()
+    except Exception as e:
+      max_logging.log(f"Error downloading prompts from URL '{prompt_file_path}': {e}")
+      raise
+  else:
+    if not os.path.isfile(prompt_file_path):
+      raise FileNotFoundError(f"Prompt file not found at local path: {prompt_file_path}")
+    with open(prompt_file_path, "r", encoding="utf-8") as f:
+      raw_lines = f.readlines()
+
+  prompts = [line.strip() for line in raw_lines if line.strip() and not line.strip().startswith("#")]
+  if not prompts:
+    if default_prompt:
+      max_logging.log(f"Warning: Prompt file '{prompt_file_path}' was empty. Falling back to default prompt.")
+      return [default_prompt]
+    raise ValueError(f"Prompt file '{prompt_file_path}' contains no valid non-empty prompts.")
+
+  max_logging.log(f"Successfully loaded {len(prompts)} prompt(s) from {prompt_file_path}")
+  return prompts
+
+
+def chunk_and_pad(items: list, batch_size: int):
+  """Yields (start_index, padded_chunk, actual_len) in batches of batch_size.
+
+  If the last chunk is smaller than batch_size, it is padded by repeating
+  the last item until its length equals batch_size.
+  """
+  if batch_size <= 0:
+    raise ValueError(f"batch_size must be positive, got {batch_size}")
+  for i in range(0, len(items), batch_size):
+    chunk = items[i : i + batch_size]
+    actual_len = len(chunk)
+    padded_chunk = chunk + [chunk[-1]] * (batch_size - actual_len) if actual_len < batch_size else chunk
+    yield i, padded_chunk, actual_len
+
+
 def upload_file_to_gcs(output_dir: str, file_path: str, subdir: str = ""):
   """Uploads one generated file to {output_dir}/{subdir}/, logging failures.
 
@@ -354,7 +443,7 @@ def upload_file_to_gcs(output_dir: str, file_path: str, subdir: str = ""):
     parts = path_without_scheme.split("/", 1)
     bucket_name = parts[0]
     folder_name = parts[1] if len(parts) > 1 else ""
-    destination_blob_name = os.path.join(folder_name, subdir, os.path.basename(file_path))
+    destination_blob_name = os.path.normpath(os.path.join(folder_name, subdir, os.path.basename(file_path))).lstrip("/")
 
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)

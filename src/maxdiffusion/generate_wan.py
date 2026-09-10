@@ -122,25 +122,47 @@ def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps
 
 def inference_generate_video(config, pipeline, filename_prefix=""):
   s0 = time.perf_counter()
-  prompt = [config.prompt] * config.global_batch_size_to_train_on
-  negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
+  prompt_file = getattr(config, "prompt_file", "")
+  prompts = max_utils.load_prompts(prompt_file, default_prompt=config.prompt)
+  batch_size = config.global_batch_size_to_train_on
+  is_multi_prompt = len(prompts) > 1 or bool(prompt_file)
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width},"
-      f" frames: {config.num_frames}, video: {filename_prefix}"
+      f" frames: {config.num_frames}, total prompts: {len(prompts)}, video prefix: {filename_prefix}"
   )
 
-  videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+  gcs_output_path = max_utils.get_gcs_output_path(config)
+  saved_video_paths = []
 
-  max_logging.log(f"video {filename_prefix}, compile time: {(time.perf_counter() - s0)}")
-  for i in range(len(videos)):
-    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
-    if config.output_dir.startswith("gs://"):
-      max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
-      # Delete local files to avoid storing too manys videos
-      max_utils.delete_file(f"./{video_path}")
-  return
+  if not is_multi_prompt:
+    prompt = [prompts[0]] * batch_size
+    negative_prompt = [config.negative_prompt] * batch_size
+    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+    max_logging.log(f"video {filename_prefix}, generation time: {(time.perf_counter() - s0):.2f}s")
+    for i in range(len(videos)):
+      video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
+      export_to_video(videos[i], video_path, fps=config.fps)
+      saved_video_paths.append(video_path)
+      if gcs_output_path:
+        max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+        max_utils.delete_file(f"./{video_path}")
+  else:
+    for i, padded_chunk, actual_chunk_len in max_utils.chunk_and_pad(prompts, batch_size):
+      negative_prompt = [config.negative_prompt] * batch_size
+
+      videos = call_pipeline(config, pipeline, padded_chunk, negative_prompt)
+      for j in range(actual_chunk_len):
+        prompt_idx = i + j
+        video_path = f"{filename_prefix}wan_output_{config.seed}_{prompt_idx}.mp4"
+        export_to_video(videos[j], video_path, fps=config.fps)
+        saved_video_paths.append(video_path)
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+          max_utils.delete_file(f"./{video_path}")
+    max_logging.log(f"all videos {filename_prefix}, total generation time: {(time.perf_counter() - s0):.2f}s")
+
+  return saved_video_paths
 
 
 def maybe_tune_block_sizes(config):
@@ -305,13 +327,18 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   original_enable_profiler = config.enable_profiler if "enable_profiler" in config.get_keys() else False
   config.get_keys()["enable_profiler"] = False
 
+  prompt_file = getattr(config, "prompt_file", "")
+  prompts = max_utils.load_prompts(prompt_file, default_prompt=config.prompt)
+  batch_size = config.global_batch_size_to_train_on
+  is_multi_prompt = len(prompts) > 1 or bool(prompt_file)
+
   # Using global_batch_size_to_train_on so not to create more config variables
-  prompt = [config.prompt] * config.global_batch_size_to_train_on
-  negative_prompt = [config.negative_prompt] * config.global_batch_size_to_train_on
+  warmup_prompt = [prompts[0]] * batch_size
+  warmup_negative_prompt = [config.negative_prompt] * batch_size
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width},"
-      f" frames: {config.num_frames}"
+      f" frames: {config.num_frames}, total prompts: {len(prompts)}"
   )
   # Warmup with 2 denoising steps instead of a full run: step 0 runs the
   # high-noise transformer and step 1 crosses the boundary to the low-noise
@@ -325,7 +352,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   # the warmup pays compile time only, never real denoise compute. The
   # returned videos are garbage by design and are discarded below.
   with aot_cache.warmup_mode():
-    videos = call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=warmup_steps)
+    videos = call_pipeline(config, pipeline, warmup_prompt, warmup_negative_prompt, num_inference_steps=warmup_steps)
   if isinstance(videos, tuple):
     videos, warmup_trace = videos
     warmup_str = ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items())
@@ -343,6 +370,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
+  max_logging.log(f"total prompts to generate: {len(prompts)}")
   max_logging.log("============================================================")
 
   compile_time = time.perf_counter() - s0
@@ -351,25 +379,47 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
 
   s0 = time.perf_counter()
-  outputs = call_pipeline(config, pipeline, prompt, negative_prompt)
-  if isinstance(outputs, tuple):
-    videos, trace = outputs
-  else:
-    videos = outputs
-    trace = {}
-  generation_time = time.perf_counter() - s0
   saved_video_path = []
-  for i in range(len(videos)):
-    video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-    export_to_video(videos[i], video_path, fps=config.fps)
-    saved_video_path.append(video_path)
-    if config.output_dir.startswith("gs://"):
-      max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
+  gcs_output_path = max_utils.get_gcs_output_path(config)
+
+  if not is_multi_prompt:
+    prompt = [prompts[0]] * batch_size
+    negative_prompt = [config.negative_prompt] * batch_size
+    outputs = call_pipeline(config, pipeline, prompt, negative_prompt)
+    if isinstance(outputs, tuple):
+      videos, trace = outputs
+    else:
+      videos = outputs
+      trace = {}
+    for i in range(len(videos)):
+      video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
+      export_to_video(videos[i], video_path, fps=config.fps)
+      saved_video_path.append(video_path)
+      if gcs_output_path:
+        max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+  else:
+    trace = {}
+    for i, padded_chunk, actual_chunk_len in max_utils.chunk_and_pad(prompts, batch_size):
+      negative_prompt = [config.negative_prompt] * batch_size
+
+      outputs = call_pipeline(config, pipeline, padded_chunk, negative_prompt)
+      if isinstance(outputs, tuple):
+        videos, trace = outputs
+      else:
+        videos = outputs
+      for j in range(actual_chunk_len):
+        prompt_idx = i + j
+        video_path = f"{filename_prefix}wan_output_{config.seed}_{prompt_idx}.mp4"
+        export_to_video(videos[j], video_path, fps=config.fps)
+        saved_video_path.append(video_path)
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+
+  generation_time = time.perf_counter() - s0
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)
-    num_devices = jax.device_count()
-    num_videos = num_devices * config.per_device_batch_size
+    num_videos = len(saved_video_path)
     if num_videos > 0:
       generation_time_per_video = generation_time / num_videos
       writer.add_scalar(
@@ -414,7 +464,9 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     os.environ["XLA_FLAGS"] = f"{xla_flags} {new_flags}"
     max_logging.log(f"Injected XLA_FLAGS for profiling: {new_flags}")
 
-    videos = call_pipeline(config, pipeline, prompt, negative_prompt)
+    profiler_prompt = [prompts[0]] * batch_size
+    profiler_negative_prompt = [config.negative_prompt] * batch_size
+    videos = call_pipeline(config, pipeline, profiler_prompt, profiler_negative_prompt)
     if isinstance(videos, tuple):
       videos = videos[0]
     generation_time_with_profiler = time.perf_counter() - s0

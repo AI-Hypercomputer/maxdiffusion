@@ -302,12 +302,17 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   s0 = time.perf_counter()
 
-  # Using global_batch_size_to_train_on to map prompts
-  prompt = getattr(config, "prompt", "A cat playing piano")
-  prompt = [prompt] * getattr(config, "global_batch_size_to_train_on", 1)
+  # Load prompts from prompt_file or default prompt
+  prompt_file = getattr(config, "prompt_file", "")
+  default_prompt = getattr(config, "prompt", "A cat playing piano")
+  prompts = max_utils.load_prompts(prompt_file, default_prompt=default_prompt)
+  batch_size = getattr(config, "global_batch_size_to_train_on", 1)
+  is_multi_prompt = len(prompts) > 1 or bool(prompt_file)
 
-  negative_prompt = getattr(config, "negative_prompt", "")
-  negative_prompt = [negative_prompt] * getattr(config, "global_batch_size_to_train_on", 1)
+  # Using global_batch_size_to_train_on to map prompts
+  warmup_prompt = [prompts[0]] * batch_size
+  negative_prompt_str = getattr(config, "negative_prompt", "")
+  warmup_negative_prompt = [negative_prompt_str] * batch_size
 
   max_logging.log(
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width}, frames: {config.num_frames}"
@@ -322,6 +327,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   max_logging.log(f"hardware: {jax.devices()[0].platform}")
   max_logging.log(f"number of devices: {jax.device_count()}")
   max_logging.log(f"per_device_batch_size: {config.per_device_batch_size}")
+  max_logging.log(f"total prompts to generate: {len(prompts)}")
   max_logging.log("============================================================")
 
   original_enable_profiler = config.get_keys().get("enable_profiler", False)
@@ -368,7 +374,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   max_logging.log(f"🚀 Starting warmup compilation pass ({warmup_steps} steps)...")
   with aot_cache.warmup_mode():
-    _ = call_pipeline(config, pipeline, prompt, negative_prompt)
+    _ = call_pipeline(config, pipeline, warmup_prompt, warmup_negative_prompt)
 
   aot_cache.save_pending()
   config.get_keys()["num_inference_steps"] = original_num_steps
@@ -384,24 +390,6 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   s0 = time.perf_counter()
   max_logging.log("🚀 Starting actual full-length generation pass...")
-  out = call_pipeline(config, pipeline, prompt, negative_prompt)
-  generation_time = time.perf_counter() - s0
-  max_logging.log(f"generation_time: {generation_time}")
-  if writer and jax.process_index() == 0:
-    writer.add_scalar("inference/generation_time", generation_time, global_step=0)
-    num_devices = jax.device_count()
-    num_videos = num_devices * config.per_device_batch_size
-    if num_videos > 0:
-      generation_time_per_video = generation_time / num_videos
-      writer.add_scalar("inference/generation_time_per_video", generation_time_per_video, global_step=0)
-      max_logging.log(f"generation time per video: {generation_time_per_video}")
-    else:
-      max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
-
-  # out should have .frames and .audio
-  videos = out.frames if hasattr(out, "frames") else out[0]
-  audios = out.audio if hasattr(out, "audio") else None
-
   saved_video_path = []
   audio_sample_rate = (
       getattr(pipeline.vocoder.config, "output_sampling_rate", 24000)
@@ -409,28 +397,65 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       else 24000
   )
   fps = getattr(config, "fps", 24)
+  audio_format = getattr(config, "audio_format", "s16")
+  model_name = getattr(config, "model_name", "ltx2") or "ltx2"
+  model_name_prefix = model_name.replace(".", "_")
+  gcs_output_path = max_utils.get_gcs_output_path(config)
 
-  # Export videos
-  for i in range(len(videos)):
-    model_name = getattr(config, "model_name", "ltx2") or "ltx2"
-    model_name_prefix = model_name.replace(".", "_")
-    video_path = f"{filename_prefix}{model_name_prefix}_output_{getattr(config, 'seed', 0)}_{i}.mp4"
-    audio_i = audios[i] if audios is not None else None
+  if not is_multi_prompt:
+    prompt = [prompts[0]] * batch_size
+    negative_prompt = [negative_prompt_str] * batch_size
+    out = call_pipeline(config, pipeline, prompt, negative_prompt)
+    videos = out.frames if hasattr(out, "frames") else out[0]
+    audios = out.audio if hasattr(out, "audio") else None
+    for i in range(len(videos)):
+      video_path = f"{filename_prefix}{model_name_prefix}_output_{getattr(config, 'seed', 0)}_{i}.mp4"
+      audio_i = audios[i] if audios is not None else None
+      export_to_video_with_audio(
+          video=videos[i],
+          fps=fps,
+          audio=audio_i,
+          audio_sample_rate=audio_sample_rate,
+          output_path=video_path,
+          audio_format=audio_format,
+      )
+      saved_video_path.append(video_path)
+      if gcs_output_path:
+        max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+  else:
+    for i, padded_chunk, actual_chunk_len in max_utils.chunk_and_pad(prompts, batch_size):
+      negative_prompt = [negative_prompt_str] * batch_size
 
-    audio_format = getattr(config, "audio_format", "s16")
+      out = call_pipeline(config, pipeline, padded_chunk, negative_prompt)
+      videos = out.frames if hasattr(out, "frames") else out[0]
+      audios = out.audio if hasattr(out, "audio") else None
+      for j in range(actual_chunk_len):
+        prompt_idx = i + j
+        video_path = f"{filename_prefix}{model_name_prefix}_output_{getattr(config, 'seed', 0)}_{prompt_idx}.mp4"
+        audio_j = audios[j] if audios is not None else None
+        export_to_video_with_audio(
+            video=videos[j],
+            fps=fps,
+            audio=audio_j,
+            audio_sample_rate=audio_sample_rate,
+            output_path=video_path,
+            audio_format=audio_format,
+        )
+        saved_video_path.append(video_path)
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
 
-    export_to_video_with_audio(
-        video=videos[i],
-        fps=fps,
-        audio=audio_i,
-        audio_sample_rate=audio_sample_rate,
-        output_path=video_path,
-        audio_format=audio_format,
-    )
-
-    saved_video_path.append(video_path)
-    if config.output_dir.startswith("gs://"):
-      max_utils.upload_file_to_gcs(os.path.join(config.output_dir, config.run_name), video_path, subdir="videos")
+  generation_time = time.perf_counter() - s0
+  max_logging.log(f"generation_time: {generation_time}")
+  if writer and jax.process_index() == 0:
+    writer.add_scalar("inference/generation_time", generation_time, global_step=0)
+    num_videos = len(saved_video_path)
+    if num_videos > 0:
+      generation_time_per_video = generation_time / num_videos
+      writer.add_scalar("inference/generation_time_per_video", generation_time_per_video, global_step=0)
+      max_logging.log(f"generation time per video: {generation_time_per_video}")
+    else:
+      max_logging.log("Warning: Number of videos is zero, cannot calculate generation_time_per_video.")
 
   timing_str = (
       f"\n{'=' * 50}\n"
@@ -481,8 +506,11 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     config.get_keys()["enable_ml_diagnostics"] = False
     config.get_keys()["num_inference_steps"] = profiling_steps
 
+    profiler_prompt = [prompts[0]] * batch_size
+    profiler_negative_prompt = [negative_prompt_str] * batch_size
+
     max_logging.log(f"🚀 Warmup for profiling pass ({profiling_steps} steps)...")
-    _ = call_pipeline(config, pipeline, prompt, negative_prompt)
+    _ = call_pipeline(config, pipeline, profiler_prompt, profiler_negative_prompt)
 
     config.get_keys()["enable_profiler"] = original_enable_profiler
     config.get_keys()["enable_ml_diagnostics"] = original_enable_mld
@@ -491,7 +519,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
     profiler = max_utils.Profiler(config, session_name=f"denoise_profile_{profiling_steps}_steps")
     profiler.start()
 
-    _ = call_pipeline(config, pipeline, prompt, negative_prompt)
+    _ = call_pipeline(config, pipeline, profiler_prompt, profiler_negative_prompt)
 
     profiler.stop()
 

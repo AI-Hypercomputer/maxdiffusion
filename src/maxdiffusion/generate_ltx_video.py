@@ -180,11 +180,16 @@ def run(config):
   width_padded = ((config.width - 1) // 32 + 1) * 32
   num_frames_padded = ((config.num_frames - 2) // 8 + 1) * 8 + 1
   padding = calculate_padding(config.height, config.width, height_padded, width_padded)
-  prompt_enhancement_words_threshold = config.prompt_enhancement_words_threshold
-  prompt_word_count = len(config.prompt.split())
-  enhance_prompt = prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
+  prompt_file = getattr(config, "prompt_file", "")
+  prompts = max_utils.load_prompts(prompt_file, default_prompt=config.prompt)
+  gcs_output_path = max_utils.get_gcs_output_path(config)
+  prompt_enhancement_words_threshold = getattr(config, "prompt_enhancement_words_threshold", 0)
+  any_enhance_prompt = any(
+      prompt_enhancement_words_threshold > 0 and len(prompt.split()) < prompt_enhancement_words_threshold
+      for prompt in prompts
+  )
 
-  pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=enhance_prompt)
+  pipeline = LTXVideoPipeline.from_pretrained(config, enhance_prompt=any_enhance_prompt)
   if config.pipeline_type == "multi-scale":
     pipeline = LTXMultiScalePipeline(pipeline)
   conditioning_media_paths = config.conditioning_media_paths if isinstance(config.conditioning_media_paths, List) else None
@@ -206,60 +211,71 @@ def run(config):
       else None
   )
 
-  s0 = time.perf_counter()
-  images = pipeline(
-      height=height_padded,
-      width=width_padded,
-      num_frames=num_frames_padded,
-      is_video=True,
-      output_type="pt",
-      config=config,
-      enhance_prompt=enhance_prompt,
-      conditioning_items=conditioning_items,
-      seed=config.seed,
-  )
-  max_logging.log(f"Compile time: {time.perf_counter() - s0:.1f}s.")
+  for prompt_idx, current_prompt in enumerate(prompts):
+    prompt_word_count = len(current_prompt.split())
+    enhance_prompt = (
+        prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
+    )
 
-  (pad_left, pad_right, pad_top, pad_bottom) = padding
-  pad_bottom = -pad_bottom
-  pad_right = -pad_right
-  if pad_bottom == 0:
-    pad_bottom = images.shape[3]
-  if pad_right == 0:
-    pad_right = images.shape[4]
-  images = images[:, :, : config.num_frames, pad_top:pad_bottom, pad_left:pad_right]
-  output_dir = Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
-  output_dir.mkdir(parents=True, exist_ok=True)
+    s0 = time.perf_counter()
+    images = pipeline(
+        prompt=current_prompt,
+        height=height_padded,
+        width=width_padded,
+        num_frames=num_frames_padded,
+        is_video=True,
+        output_type="pt",
+        config=config,
+        enhance_prompt=enhance_prompt,
+        conditioning_items=conditioning_items,
+        seed=config.seed,
+    )
+    max_logging.log(f"Prompt [{prompt_idx + 1}/{len(prompts)}] Generation time: {time.perf_counter() - s0:.1f}s.")
 
-  for i in range(images.shape[0]):
-    # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
-    video_np = images[i].permute(1, 2, 3, 0).detach().float().numpy()
-    # Unnormalizing images to [0, 255] range
-    video_np = (video_np * 255).astype(np.uint8)
-    fps = config.frame_rate
-    height, width = video_np.shape[1:3]
-    # In case a single image is generated
-    if video_np.shape[0] == 1:
-      output_filename = get_unique_filename(
-          f"image_output_{i}",
-          ".png",
-          prompt=config.prompt,
-          resolution=(height, width, config.num_frames),
-          dir=output_dir,
-      )
-      imageio.imwrite(output_filename, video_np[0])
-    else:
-      output_filename = get_unique_filename(
-          f"video_output_{i}",
-          ".mp4",
-          prompt=config.prompt,
-          resolution=(height, width, config.num_frames),
-          dir=output_dir,
-      )
-      # Write video
-      with imageio.get_writer(output_filename, fps=fps) as video:
-        for frame in video_np:
-          video.append_data(frame)
+    (pad_left, pad_right, pad_top, pad_bottom) = padding
+    pad_bottom = -pad_bottom
+    pad_right = -pad_right
+    if pad_bottom == 0:
+      pad_bottom = images.shape[3]
+    if pad_right == 0:
+      pad_right = images.shape[4]
+    images = images[:, :, : config.num_frames, pad_top:pad_bottom, pad_left:pad_right]
+    output_dir = Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for i in range(images.shape[0]):
+      # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
+      video_np = images[i].permute(1, 2, 3, 0).detach().float().numpy()
+      # Unnormalizing images to [0, 255] range
+      video_np = (video_np * 255).astype(np.uint8)
+      fps = config.frame_rate
+      height, width = video_np.shape[1:3]
+      # In case a single image is generated
+      if video_np.shape[0] == 1:
+        output_filename = get_unique_filename(
+            f"image_output_{prompt_idx}_{i}" if len(prompts) > 1 else f"image_output_{i}",
+            ".png",
+            prompt=current_prompt,
+            resolution=(height, width, config.num_frames),
+            dir=output_dir,
+        )
+        imageio.imwrite(output_filename, video_np[0])
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, str(output_filename), subdir="images")
+      else:
+        output_filename = get_unique_filename(
+            f"video_output_{prompt_idx}_{i}" if len(prompts) > 1 else f"video_output_{i}",
+            ".mp4",
+            prompt=current_prompt,
+            resolution=(height, width, config.num_frames),
+            dir=output_dir,
+        )
+        # Write video
+        with imageio.get_writer(output_filename, fps=fps) as video:
+          for frame in video_np:
+            video.append_data(frame)
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, str(output_filename), subdir="videos")
 
 
 def main(argv: Sequence[str]) -> None:

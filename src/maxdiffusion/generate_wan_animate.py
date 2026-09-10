@@ -107,12 +107,18 @@ def run(config):
     )
 
   animate_settings = _get_animate_inference_settings(config)
-  prompt = config.prompt
-  negative_prompt = config.negative_prompt if animate_settings["guidance_scale"] > 1.0 else None
+  prompt_file = getattr(config, "prompt_file", "")
+  prompts = max_utils.load_prompts(prompt_file, default_prompt=config.prompt)
+  batch_size = max(1, getattr(config, "global_batch_size_to_train_on", 1))
+  is_multi_prompt = len(prompts) > 1 or bool(prompt_file)
+
+  warmup_prompt = [prompts[0]] * batch_size
+  warmup_negative_prompt = [config.negative_prompt] * batch_size if animate_settings["guidance_scale"] > 1.0 else None
 
   max_logging.log(
       "Num steps: "
       f"{config.num_inference_steps}, height: {height}, width: {width}, frames: {num_frames}, "
+      f"total prompts: {len(prompts)}, "
       f"segment_frame_length: {animate_settings['segment_frame_length']}, "
       f"prev_segment_conditioning_frames: {animate_settings['prev_segment_conditioning_frames']}, "
       f"guidance_scale: {animate_settings['guidance_scale']}"
@@ -127,8 +133,8 @@ def run(config):
       face_video=face_video,
       background_video=background_video,
       mask_video=mask_video,
-      prompt=prompt,
-      negative_prompt=negative_prompt,
+      prompt=warmup_prompt,
+      negative_prompt=warmup_negative_prompt,
       height=height,
       width=width,
       segment_frame_length=animate_settings["segment_frame_length"],
@@ -145,35 +151,85 @@ def run(config):
     writer.add_scalar("inference/compile_time", compile_time, global_step=0)
 
   s0 = time.perf_counter()
-  videos = pipeline(
-      image=image,
-      pose_video=pose_video,
-      face_video=face_video,
-      background_video=background_video,
-      mask_video=mask_video,
-      prompt=prompt,
-      negative_prompt=negative_prompt,
-      height=height,
-      width=width,
-      segment_frame_length=animate_settings["segment_frame_length"],
-      prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
-      motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
-      guidance_scale=animate_settings["guidance_scale"],
-      num_inference_steps=config.num_inference_steps,
-      mode=mode,
-  )
+  filename_prefix = "animate_"
+  gcs_output_path = max_utils.get_gcs_output_path(config)
+  if not gcs_output_path:
+    os.makedirs(config.output_dir, exist_ok=True)
+  saved_video_paths = []
+
+  if not is_multi_prompt:
+    prompt = [prompts[0]] * batch_size
+    negative_prompt = [config.negative_prompt] * batch_size if animate_settings["guidance_scale"] > 1.0 else None
+    videos = pipeline(
+        image=image,
+        pose_video=pose_video,
+        face_video=face_video,
+        background_video=background_video,
+        mask_video=mask_video,
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=height,
+        width=width,
+        segment_frame_length=animate_settings["segment_frame_length"],
+        prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
+        motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
+        guidance_scale=animate_settings["guidance_scale"],
+        num_inference_steps=config.num_inference_steps,
+        mode=mode,
+    )
+    for i, video in enumerate(videos):
+      video_path = (
+          f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
+          if gcs_output_path
+          else os.path.join(config.output_dir, f"{filename_prefix}wan_output_{config.seed}_{i}.mp4")
+      )
+      export_to_video(video, video_path, fps=config.fps)
+      max_logging.log(f"Saved video to {video_path}")
+      saved_video_paths.append(video_path)
+      if gcs_output_path:
+        max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+  else:
+    for i, padded_chunk, actual_chunk_len in max_utils.chunk_and_pad(prompts, batch_size):
+      negative_prompt = [config.negative_prompt] * batch_size if animate_settings["guidance_scale"] > 1.0 else None
+      videos = pipeline(
+          image=image,
+          pose_video=pose_video,
+          face_video=face_video,
+          background_video=background_video,
+          mask_video=mask_video,
+          prompt=padded_chunk,
+          negative_prompt=negative_prompt,
+          height=height,
+          width=width,
+          segment_frame_length=animate_settings["segment_frame_length"],
+          prev_segment_conditioning_frames=animate_settings["prev_segment_conditioning_frames"],
+          motion_encode_batch_size=animate_settings["motion_encode_batch_size"],
+          guidance_scale=animate_settings["guidance_scale"],
+          num_inference_steps=config.num_inference_steps,
+          mode=mode,
+      )
+      for j in range(actual_chunk_len):
+        prompt_idx = i + j
+        video_path = (
+            f"{filename_prefix}wan_output_{config.seed}_{prompt_idx}.mp4"
+            if gcs_output_path
+            else os.path.join(config.output_dir, f"{filename_prefix}wan_output_{config.seed}_{prompt_idx}.mp4")
+        )
+        export_to_video(videos[j], video_path, fps=config.fps)
+        max_logging.log(f"Saved video to {video_path}")
+        saved_video_paths.append(video_path)
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
 
   generation_time = time.perf_counter() - s0
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)
-
-  filename_prefix = "animate_"
-  os.makedirs(config.output_dir, exist_ok=True)
-  for i, video in enumerate(videos):
-    video_path = os.path.join(config.output_dir, f"{filename_prefix}wan_output_{config.seed}_{i}.mp4")
-    export_to_video(video, video_path, fps=config.fps)
-    max_logging.log(f"Saved video to {video_path}")
+    num_videos = len(saved_video_paths)
+    if num_videos > 0:
+      generation_time_per_video = generation_time / num_videos
+      writer.add_scalar("inference/generation_time_per_video", generation_time_per_video, global_step=0)
+      max_logging.log(f"generation time per video: {generation_time_per_video}")
 
   if max_utils.profiler_enabled(config):
     s0 = time.perf_counter()
@@ -184,8 +240,8 @@ def run(config):
           face_video=face_video,
           background_video=background_video,
           mask_video=mask_video,
-          prompt=prompt,
-          negative_prompt=negative_prompt,
+          prompt=warmup_prompt,
+          negative_prompt=warmup_negative_prompt,
           height=height,
           width=width,
           segment_frame_length=animate_settings["segment_frame_length"],

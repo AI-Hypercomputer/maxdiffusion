@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import os
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -23,8 +24,11 @@ from jax.sharding import Mesh
 
 from .. import pyconfig
 from maxdiffusion.max_utils import (
+    chunk_and_pad,
     create_device_mesh,
     get_flash_block_sizes,
+    get_gcs_output_path,
+    load_prompts,
 )
 from maxdiffusion import (FlaxStableDiffusionXLPipeline, FlaxDDIMScheduler, FlaxDDPMScheduler, maxdiffusion_utils)
 
@@ -36,6 +40,125 @@ class MaxDiffusionUtilsTest(unittest.TestCase):
 
   def setUp(self):
     MaxDiffusionUtilsTest.dummy_data = {}
+
+  def test_load_prompts_raises_when_no_prompt_source_exists(self):
+    with self.assertRaisesRegex(ValueError, "No prompts found"):
+      load_prompts("", "")
+    with self.assertRaisesRegex(ValueError, "No prompts found"):
+      load_prompts("   ", "")
+
+  def test_load_prompts_fallback_to_default_prompt(self):
+    default_prompt = "A test default prompt"
+    self.assertEqual(load_prompts("", default_prompt=default_prompt), [default_prompt])
+    self.assertEqual(load_prompts("   ", default_prompt=default_prompt), [default_prompt])
+
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+      f.write("   \n\n\t  \n")
+      f_path = f.name
+    try:
+      self.assertEqual(load_prompts(f_path, default_prompt=default_prompt), [default_prompt])
+    finally:
+      os.unlink(f_path)
+
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+      f.write("# comment line 1\n  # comment line 2\n")
+      f_path = f.name
+    try:
+      self.assertEqual(load_prompts(f_path, default_prompt=default_prompt), [default_prompt])
+    finally:
+      os.unlink(f_path)
+
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+      f.write("   \n\n")
+      f_path = f.name
+    try:
+      with self.assertRaisesRegex(ValueError, "contains no valid non-empty prompts"):
+        load_prompts(f_path, default_prompt="")
+    finally:
+      os.unlink(f_path)
+
+  def test_load_prompts_from_file_with_comments_and_whitespace(self):
+    content = (
+        "# Benchmark Prompts\n"
+        "\n"
+        "  A cat playing piano in space  \n"
+        "# Another comment\n"
+        "   # Indented comment\n"
+        "A robot walking through a neon city\n"
+        "\n"
+        "A peaceful sunrise over mountains\n"
+    )
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+      f.write(content)
+      f_path = f.name
+    try:
+      prompts = load_prompts(f_path, default_prompt="fallback")
+      expected = [
+          "A cat playing piano in space",
+          "A robot walking through a neon city",
+          "A peaceful sunrise over mountains",
+      ]
+      self.assertEqual(prompts, expected)
+    finally:
+      os.unlink(f_path)
+
+  def test_load_prompts_file_not_found(self):
+    with self.assertRaises(FileNotFoundError):
+      load_prompts("non_existent_prompt_file_xyz.txt", default_prompt="fallback")
+
+  def test_get_gcs_output_path(self):
+    # output_dir starting with gs://
+    config = SimpleNamespace(output_dir="gs://bucket/test", run_name="exp1")
+    self.assertEqual(get_gcs_output_path(config), "gs://bucket/test/exp1")
+
+    # output_dir starting with gs:// without run_name
+    config = SimpleNamespace(output_dir="gs://bucket/test", run_name="")
+    self.assertEqual(get_gcs_output_path(config), "gs://bucket/test")
+
+    # output_dir starting with gs:// with run_name as None
+    config = SimpleNamespace(output_dir="gs://bucket/test", run_name=None)
+    self.assertEqual(get_gcs_output_path(config), "gs://bucket/test")
+
+    # output_dir local, base_output_directory starting with gs://
+    config = SimpleNamespace(output_dir="/tmp/test", base_output_directory="gs://bucket/base", run_name="exp2")
+    self.assertEqual(get_gcs_output_path(config), "gs://bucket/base/exp2")
+
+    # output_dir local, base_output_directory starting with gs://, no run_name
+    config = SimpleNamespace(output_dir="/tmp/test", base_output_directory="gs://bucket/base")
+    self.assertEqual(get_gcs_output_path(config), "gs://bucket/base")
+
+    # Non-GCS outputs
+    config = SimpleNamespace(output_dir="/tmp/test", base_output_directory="/tmp/base", run_name="exp3")
+    self.assertEqual(get_gcs_output_path(config), "")
+
+    # Defensive handling against None / missing attributes
+    config = SimpleNamespace(output_dir=None, base_output_directory=None, run_name=None)
+    self.assertEqual(get_gcs_output_path(config), "")
+    config = SimpleNamespace()
+    self.assertEqual(get_gcs_output_path(config), "")
+
+  def test_chunk_and_pad(self):
+    # Exact multiple
+    chunks = list(chunk_and_pad(["a", "b", "c", "d"], batch_size=2))
+    self.assertEqual(chunks, [(0, ["a", "b"], 2), (2, ["c", "d"], 2)])
+
+    # Tail batch requiring padding
+    chunks = list(chunk_and_pad(["a", "b", "c"], batch_size=2))
+    self.assertEqual(chunks, [(0, ["a", "b"], 2), (2, ["c", "c"], 1)])
+
+    # Single item with larger batch size
+    chunks = list(chunk_and_pad(["a"], batch_size=3))
+    self.assertEqual(chunks, [(0, ["a", "a", "a"], 1)])
+
+    # Empty items
+    chunks = list(chunk_and_pad([], batch_size=2))
+    self.assertEqual(chunks, [])
+
+    # Invalid batch_size
+    with self.assertRaises(ValueError):
+      list(chunk_and_pad(["a"], batch_size=0))
+    with self.assertRaises(ValueError):
+      list(chunk_and_pad(["a"], batch_size=-1))
 
   def test_get_dummy_wan_inputs_generates_latents_without_pipeline_prepare_latents(self):
     config = SimpleNamespace(height=64, width=80, num_frames=9, seed=0)
