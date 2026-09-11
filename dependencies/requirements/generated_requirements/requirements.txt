@@ -89,7 +89,7 @@ keras>=3.13.1
 kiwisolver>=1.4.9
 lazy-loader>=0.5
 libclang>=18.1.1
-libtpu>=0.0.34 ; platform_machine == 'x86_64' and sys_platform == 'linux'
+libtpu>=0.0.42.1 ; platform_machine == 'x86_64' and sys_platform == 'linux'
 markdown-it-py>=4.0.0
 markdown>=3.10.1
 markupsafe>=3.0.3

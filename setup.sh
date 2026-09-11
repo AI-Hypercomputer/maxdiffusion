@@ -161,8 +161,18 @@ elif [[ $MODE == "nightly" ]]; then
     python3 -m uv pip install --pre -U jax -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
     # Install jaxlib-nightly
     python3 -m uv pip install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
-    # Install libtpu-nightly
-    python3 -m uv pip install --pre -U libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+    # Install libtpu (clean up any conflicting libtpu_nightly if present)
+    python3 -m uv pip uninstall libtpu_nightly 2>/dev/null || true
+    if [[ -n "$LIBTPU_WHEEL_URL" ]]; then
+      echo "Installing custom libtpu from ${LIBTPU_WHEEL_URL}"
+      python3 -m uv pip install -U "${LIBTPU_WHEEL_URL}"
+    elif [[ -n "$LIBTPU_VERSION" ]]; then
+      echo "Installing libtpu version ${LIBTPU_VERSION}"
+      python3 -m uv pip install -U "libtpu==${LIBTPU_VERSION}"
+    else
+      echo "Installing verified libtpu (>=0.0.42.1)"
+      python3 -m uv pip install -U "libtpu>=0.0.42.1"
+    fi
   fi
   echo "Installing nightly tensorboard plugin profile"
   python3 -m uv pip install tbp-nightly --upgrade
