@@ -340,7 +340,11 @@ class BaseWanTrainer(abc.ABC):
             self._profiler.stop()
 
         train_utils.record_scalar_metrics(
-            train_metric, last_step_completion - start_step_time, per_device_tflops, learning_rate_scheduler(step)
+            train_metric,
+            last_step_completion - start_step_time,
+            per_device_tflops,
+            learning_rate_scheduler(step),
+            total_weights=num_model_parameters,
         )
         if self.config.write_metrics:
           train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
