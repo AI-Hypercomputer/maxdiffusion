@@ -51,10 +51,16 @@ class Wan2_1NNXLoraLoader(LoRABaseMixin):
       return lora_conversion_utils.translate_wan_nnx_path_to_diffusers_lora(nnx_path_str, scan_layers=scan_layers)
 
     if hasattr(pipeline, "transformer") and transformer_weight_name:
+      lora_key = self._lora_key(lora_model_path, transformer_weight_name, "transformer")
+      if self._is_lora_fused(pipeline, lora_key):
+        max_logging.log(f"WARNING: LoRA '{lora_model_path}' already merged; skipping to avoid double-application.")
+        return pipeline
+
       max_logging.log(f"Merging LoRA into transformer with rank={rank}")
       h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=transformer_weight_name, **kwargs)
       h_state_dict = lora_conversion_utils.preprocess_wan_lora_dict(h_state_dict)
       merge_fn(pipeline.transformer, h_state_dict, rank, scale, translate_fn, dtype=dtype)
+      self._record_lora_fused(pipeline, lora_key)
     else:
       max_logging.log("transformer not found or no weight name provided for LoRA.")
 
@@ -92,19 +98,29 @@ class Wan2_2NNXLoraLoader(LoRABaseMixin):
 
     # Handle high noise model
     if hasattr(pipeline, "high_noise_transformer") and high_noise_weight_name:
-      max_logging.log(f"Merging LoRA into high_noise_transformer with rank={rank}")
-      h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=high_noise_weight_name, **kwargs)
-      h_state_dict = lora_conversion_utils.preprocess_wan_lora_dict(h_state_dict)
-      merge_fn(pipeline.high_noise_transformer, h_state_dict, rank, scale, translate_fn, dtype=dtype)
+      high_key = self._lora_key(lora_model_path, high_noise_weight_name, "high_noise_transformer")
+      if self._is_lora_fused(pipeline, high_key):
+        max_logging.log(f"WARNING: LoRA '{lora_model_path}' already merged into high_noise_transformer; skipping.")
+      else:
+        max_logging.log(f"Merging LoRA into high_noise_transformer with rank={rank}")
+        h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=high_noise_weight_name, **kwargs)
+        h_state_dict = lora_conversion_utils.preprocess_wan_lora_dict(h_state_dict)
+        merge_fn(pipeline.high_noise_transformer, h_state_dict, rank, scale, translate_fn, dtype=dtype)
+        self._record_lora_fused(pipeline, high_key)
     else:
       max_logging.log("high_noise_transformer not found or no weight name provided for LoRA.")
 
     # Handle low noise model
     if hasattr(pipeline, "low_noise_transformer") and low_noise_weight_name:
-      max_logging.log(f"Merging LoRA into low_noise_transformer with rank={rank}")
-      l_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=low_noise_weight_name, **kwargs)
-      l_state_dict = lora_conversion_utils.preprocess_wan_lora_dict(l_state_dict)
-      merge_fn(pipeline.low_noise_transformer, l_state_dict, rank, scale, translate_fn, dtype=dtype)
+      low_key = self._lora_key(lora_model_path, low_noise_weight_name, "low_noise_transformer")
+      if self._is_lora_fused(pipeline, low_key):
+        max_logging.log(f"WARNING: LoRA '{lora_model_path}' already merged into low_noise_transformer; skipping.")
+      else:
+        max_logging.log(f"Merging LoRA into low_noise_transformer with rank={rank}")
+        l_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=low_noise_weight_name, **kwargs)
+        l_state_dict = lora_conversion_utils.preprocess_wan_lora_dict(l_state_dict)
+        merge_fn(pipeline.low_noise_transformer, l_state_dict, rank, scale, translate_fn, dtype=dtype)
+        self._record_lora_fused(pipeline, low_key)
     else:
       max_logging.log("low_noise_transformer not found or no weight name provided for LoRA.")
 
