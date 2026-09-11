@@ -19,6 +19,7 @@ jaxlib
 jaxopt
 libtpu>=0.0.42.1
 Jinja2
+nvidia-cuda-cccl>=13.1.115 ; sys_platform != 'darwin'
 opencv-python-headless
 optax
 orbax-checkpoint
