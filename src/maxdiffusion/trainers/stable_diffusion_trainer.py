@@ -177,6 +177,8 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
     text_encoder_state = train_states["text_encoder_state"]
 
     num_model_parameters = max_utils.calculate_num_params_from_pytree(unet_state.params)
+    if self.config.train_text_encoder:
+      num_model_parameters += max_utils.calculate_num_params_from_pytree(text_encoder_state.params)
 
     max_utils.add_text_to_summary_writer("number_model_parameters", str(num_model_parameters), writer)
     max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
@@ -217,7 +219,11 @@ class StableDiffusionTrainer(BaseStableDiffusionTrainer):
       new_time = datetime.datetime.now()
 
       train_utils.record_scalar_metrics(
-          train_metric, new_time - last_step_completion, self.per_device_tflops, unet_learning_rate_scheduler(step)
+          train_metric,
+          new_time - last_step_completion,
+          self.per_device_tflops,
+          unet_learning_rate_scheduler(step),
+          total_weights=num_model_parameters,
       )
       if self.config.write_metrics:
         train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)

@@ -441,7 +441,11 @@ class FluxTrainer(FluxCheckpointer):
       new_time = datetime.datetime.now()
 
       record_scalar_metrics(
-          train_metric, new_time - last_step_completion, self.per_device_tflops, unet_learning_rate_scheduler(step)
+          train_metric,
+          new_time - last_step_completion,
+          self.per_device_tflops,
+          unet_learning_rate_scheduler(step),
+          total_weights=num_model_parameters,
       )
       if self.config.write_metrics:
         write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)

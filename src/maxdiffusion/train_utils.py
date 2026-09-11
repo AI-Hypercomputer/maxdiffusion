@@ -77,30 +77,18 @@ def validate_train_config(config):
 
 
 try:
-  from google_cloud_mldiagnostics import metrics as mld_metrics, metric_types
+  from google_cloud_mldiagnostics import metrics as mld_metrics
 except ImportError:
   mld_metrics = None
-  metric_types = None
 
-
-if metric_types is not None:
-  _METRICS_TO_MANAGED = {
-      "learning/loss": metric_types.MetricType.LOSS,
-      "learning/current_learning_rate": metric_types.MetricType.LEARNING_RATE,
-      "learning/grad_norm": metric_types.MetricType.GRADIENT_NORM,
-      "learning/total_weights": metric_types.MetricType.TOTAL_WEIGHTS,
-      "perf/step_time_seconds": metric_types.MetricType.STEP_TIME,
-      "perf/per_device_tflops_per_sec": metric_types.MetricType.TFLOPS,
-  }
-else:
-  _METRICS_TO_MANAGED = {
-      "learning/loss": "loss",
-      "learning/current_learning_rate": "learning_rate",
-      "learning/grad_norm": "gradient_norm",
-      "learning/total_weights": "total_weights",
-      "perf/step_time_seconds": "step_time",
-      "perf/per_device_tflops_per_sec": "tflops",
-  }
+_METRICS_TO_MANAGED = {
+    "learning/loss": "loss",
+    "learning/current_learning_rate": "learning_rate",
+    "learning/grad_norm": "gradient_norm",
+    "learning/total_weights": "total_weights",
+    "perf/step_time_seconds": "step_time",
+    "perf/per_device_tflops_per_sec": "tflops",
+}
 
 
 def record_scalar_metrics(metrics, step_time_delta, per_device_tflops, lr, total_weights=None):

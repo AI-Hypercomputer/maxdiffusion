@@ -146,11 +146,13 @@ class MetricsTest(unittest.TestCase):
     mock_mld_metrics.record_metrics.assert_called_once()
     records = mock_mld_metrics.record_metrics.call_args[0][0]
 
-    # Verify records contain translated names and float values
+    # Verify records contain translated string names and float values
     record_dict = {r["metric_name"]: r["value"] for r in records}
-    self.assertAlmostEqual(record_dict[train_utils._METRICS_TO_MANAGED["learning/loss"]], 0.42, places=4)
-    self.assertAlmostEqual(record_dict[train_utils._METRICS_TO_MANAGED["learning/current_learning_rate"]], 0.0001, places=6)
-    self.assertAlmostEqual(record_dict[train_utils._METRICS_TO_MANAGED["learning/total_weights"]], 1000000.0, places=1)
+    self.assertAlmostEqual(record_dict["loss"], 0.42, places=4)
+    self.assertAlmostEqual(record_dict["learning_rate"], 0.0001, places=6)
+    self.assertAlmostEqual(record_dict["total_weights"], 1000000.0, places=1)
+    self.assertAlmostEqual(record_dict["step_time"], 1.0, places=4)
+    self.assertAlmostEqual(record_dict["tflops"], 50.0, places=4)
     self.assertAlmostEqual(record_dict["custom/accuracy"], 0.95, places=4)
 
   @patch("maxdiffusion.train_utils.mld_metrics")
