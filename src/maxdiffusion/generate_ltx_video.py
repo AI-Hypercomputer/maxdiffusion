@@ -213,9 +213,7 @@ def run(config):
 
   for prompt_idx, current_prompt in enumerate(prompts):
     prompt_word_count = len(current_prompt.split())
-    enhance_prompt = (
-        prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
-    )
+    enhance_prompt = prompt_enhancement_words_threshold > 0 and prompt_word_count < prompt_enhancement_words_threshold
 
     s0 = time.perf_counter()
     images = pipeline(
