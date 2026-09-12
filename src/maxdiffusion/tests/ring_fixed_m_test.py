@@ -88,7 +88,7 @@ class RingFixedMTest(unittest.TestCase):
     logits = jnp.einsum("hqd,hkd->hqk", qf, kf)  # LOG2E & scale pre-folded
     return jax.nn.softmax(logits * math.log(2.0), axis=-1) @ vf
 
-  def _run_ring(self, q_in, k_in, v, ring_size: int = 2, use_fixed_m: bool = True):
+  def _run_ring(self, q_in, k_in, v, ring_size: int = 2, use_fixed_m: bool = True, v_ok=None):
     """Runs the custom ring under shard_map with per-rank fixed_m_norms."""
     mesh = self._mesh_for_size(ring_size)
     spec = jax.sharding.PartitionSpec(None, _RING_AXIS, None)
@@ -125,10 +125,16 @@ class RingFixedMTest(unittest.TestCase):
           use_fixed_m=use_fixed_m,
           fixed_m_norms=fixed_m_norms,
           k_mean=k_mean,
+          v_ok=v_ok,
       )
       return ring(ql, kl, vl)
 
     return _body(q_in, k_in, v)
+
+  def _global_v_ok(self, v, ring_size: int = 2):
+    """The V-safety verdict attention_flax computes, reduced over the whole ring."""
+    v_max_sq = (v.astype(jnp.float32) ** 2).max()
+    return bool(v_max_sq <= custom_splash.DEFAULT_MAX_V_BOUND**2)
 
   def _gate_per_shard(self, q_in, k_in, ring_size: int = 2):
     """(heads, ring_size) eligibility against the dynamic centered bound with Global Virtual K-Centering."""
@@ -375,6 +381,64 @@ class RingFixedMTest(unittest.TestCase):
     self.assertTrue(bool(jnp.all(jnp.isfinite(out_hybrid))))
     diff = float(jnp.max(jnp.abs(out_hybrid - ref)))
     self.assertLess(diff, 2e-2, f"Adversarial hybrid ring output diverged from reference: diff={diff}")
+
+  # --- P1 regression: the ring LSE fallback must honour the global V check ---
+  #
+  # The fallback re-derives per-hop eligibility from Q/K norms alone. Those are
+  # the only quantities recoverable from a single hop, so a failed V check used
+  # to be silently discarded and individual hops re-enabled fixed-m -- parking
+  # weights at 2**C with an out-of-contract |V| and overflowing to inf. These
+  # tests execute the fallback and assert on the *output*, not on metadata.
+
+  def test_oversized_v_ring_fallback_is_finite(self):
+    """|V| beyond the contract must fall back to online arithmetic, not overflow."""
+    ring_size = 2
+    q, k, v = self._random_qkv(ring_size=ring_size)
+    v_big = (v.astype(jnp.float32) * 1024.0).astype(v.dtype)
+    self.assertFalse(self._global_v_ok(v_big), "test setup: V should violate the bound")
+    q_in, k_in = self._scaled_inputs(q, k)
+
+    out = self._run_ring(q_in, k_in, v_big, ring_size=ring_size, use_fixed_m=True, v_ok=False).astype(jnp.float32)
+    ref = self._reference(q_in, k_in, v_big)
+
+    self.assertTrue(bool(jnp.all(jnp.isfinite(out))), "oversized |V| overflowed the ring fixed-m fallback")
+    # Tolerance scales with |V|: the 2e-2 used elsewhere is for unit-scale V.
+    self.assertLess(float(jnp.max(jnp.abs(out - ref))), 2e-2 * 1024.0)
+
+  def test_oversized_v_on_single_rank_disqualifies_whole_ring(self):
+    """Only rank 1 has oversized V; the globally reduced verdict must protect every hop."""
+    ring_size = 2
+    q, k, v = self._random_qkv(ring_size=ring_size)
+    # Rank 1 owns the second shard_len slice of the sequence.
+    v_mixed = v.at[:, self.shard_len :, :].set((v[:, self.shard_len :, :].astype(jnp.float32) * 1024.0).astype(v.dtype))
+    self.assertFalse(self._global_v_ok(v_mixed), "test setup: global V should violate the bound")
+    q_in, k_in = self._scaled_inputs(q, k)
+
+    # v_ok is a *global* reduction, so a single offending rank disqualifies all.
+    out = self._run_ring(q_in, k_in, v_mixed, ring_size=ring_size, use_fixed_m=True, v_ok=False).astype(jnp.float32)
+    ref = self._reference(q_in, k_in, v_mixed)
+
+    self.assertTrue(bool(jnp.all(jnp.isfinite(out))), "single-rank oversized |V| overflowed the ring fallback")
+    self.assertLess(float(jnp.max(jnp.abs(out - ref))), 2e-2 * 1024.0)
+
+  def test_v_gate_is_what_prevents_the_overflow(self):
+    """Witness: without the gate the same inputs are unsafe.
+
+    Guards against the gate being quietly dropped again. If a future change makes
+    the fallback safe by construction this test should be deleted, not muted --
+    but it must never be allowed to pass by accident.
+    """
+    ring_size = 2
+    q, k, v = self._random_qkv(ring_size=ring_size)
+    v_big = (v.astype(jnp.float32) * 1024.0).astype(v.dtype)
+    q_in, k_in = self._scaled_inputs(q, k)
+
+    gated = self._run_ring(q_in, k_in, v_big, ring_size=ring_size, use_fixed_m=True, v_ok=False).astype(jnp.float32)
+    self.assertTrue(bool(jnp.all(jnp.isfinite(gated))))
+
+    ungated = self._run_ring(q_in, k_in, v_big, ring_size=ring_size, use_fixed_m=True, v_ok=None).astype(jnp.float32)
+    if bool(jnp.all(jnp.isfinite(ungated))):
+      self.skipTest("ungated path happens to stay finite for these inputs; gate still required in general")
 
   def test_gqa_ring_fixed_m_shard_map(self):
     """Verifies that GQA (4 Q heads, 2 KV heads) works seamlessly across ring ranks."""

@@ -868,6 +868,7 @@ def _custom_ring_attention_forward(
     pregathered_mk: bool = False,
     k_mean: jax.Array | None = None,
     uniform_fixed_m: bool | None = None,
+    v_ok: jax.Array | bool | None = None,
 ) -> jax.Array:
   """Forward-only ring attention using the custom dense splash kernel.
 
@@ -1018,9 +1019,15 @@ def _custom_ring_attention_forward(
     global_centered_bound_sq = global_centered_bound**2
     per_shard_bound_sq = per_shard_bound**2
 
+    # Global V-magnitude / dtype safety verdict. Unlike the Cauchy-Schwarz
+    # norm bounds this is NOT re-derivable from a single hop's Q/K, so it has
+    # to be carried in and applied to every eligibility decision below --
+    # including the per-hop ones in `fixed_body`.
+    v_gate = True if v_ok is None else v_ok
+
     if not per_q_block:
       bound_sq_1d = qn_max_sq * mk_global_sq
-      all_fixed_local = jnp.all(bound_sq_1d <= global_centered_bound_sq)
+      all_fixed_local = jnp.all(bound_sq_1d <= global_centered_bound_sq) & v_gate
       all_fixed_global = lax.pmin(all_fixed_local, ring_axis)
       m_base_1d = jnp.ceil(jnp.sqrt(bound_sq_1d)) - global_recenter
       m_base_expanded = jnp.broadcast_to(m_base_1d[:, None], (num_q_heads, num_q_blocks))
@@ -1031,7 +1038,7 @@ def _custom_ring_attention_forward(
       qn_blocks_sq = qn_max_sq
       bound_blocks_sq = qn_blocks_sq * mk_global_sq[:, None]
       fixed_ok_local = bound_blocks_sq <= global_centered_bound_sq  # pylint: disable=protected-access
-      all_fixed_local = jnp.all(fixed_ok_local)
+      all_fixed_local = jnp.all(fixed_ok_local) & v_gate
       all_fixed_global = lax.pmin(all_fixed_local, ring_axis)
       m_base = jnp.ceil(jnp.sqrt(bound_blocks_sq)) - global_recenter
       fixed_ok_expanded = jnp.ones_like(m_base)
@@ -1102,7 +1109,11 @@ def _custom_ring_attention_forward(
       # of ring rank (my_index - hop) mod R; its norms come from the local table.
       mk_h_sq = jax.lax.dynamic_index_in_dim(mk_all_sq, (my_ring_index - hop) % axis_size, keepdims=False)
       bound_hop_sq = qn_blocks_sq * mk_h_sq[:, None]
-      fixed_ok = (bound_hop_sq <= per_shard_bound_sq).astype(jnp.float32)  # pylint: disable=protected-access
+      # `v_gate` is load-bearing here. The Cauchy-Schwarz term is per-hop, but
+      # V-magnitude and dtype safety are global; recomputing eligibility from
+      # Q/K norms alone would re-enable fixed-m on this hop even when the
+      # caller's global V check already rejected it, overflowing to inf.
+      fixed_ok = ((bound_hop_sq <= per_shard_bound_sq) & v_gate).astype(jnp.float32)  # pylint: disable=protected-access
       m_base_hop = jnp.ceil(jnp.sqrt(bound_hop_sq)) - local_recenter
       mk_arr = jnp.stack([m_base_hop, fixed_ok], axis=0)
 
@@ -1220,12 +1231,18 @@ def make_custom_ring_attention(
     pregathered_mk: bool = False,
     k_mean: jax.Array | None = None,
     uniform_fixed_m: bool | None = None,
+    v_ok: jax.Array | bool | None = None,
 ):
   """Builds a forward-only ring-attention callable around the custom kernel.
 
   The returned function takes a single (un-batched) `(q, k, v)` triple of shape
   `(num_heads, seq, head_dim)` and optional per-batch `fixed_m_norms=(qn_max_sq, mk_h_sq)`
   and `k_mean` to be `jax.vmap`-ped over the batch axis inside the attention `shard_map`.
+
+  `v_ok` is a global (already cross-ring-reduced) scalar predicate asserting that
+  the value magnitudes and activation dtype are safe for fixed-m. It is closed
+  over rather than passed per call, since it is invariant across the batch.
+  Leaving it None preserves the previous behaviour of trusting the caller.
   """
   if use_fixed_m and not use_base2_exp:
     raise NotImplementedError(
@@ -1258,6 +1275,7 @@ def make_custom_ring_attention(
         pregathered_mk=pregathered_mk,
         k_mean=km,
         uniform_fixed_m=uniform_fixed_m,
+        v_ok=v_ok,
     )
 
   return _ring

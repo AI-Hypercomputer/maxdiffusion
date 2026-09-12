@@ -571,5 +571,59 @@ class CustomSplashFixedMTest(unittest.TestCase):
     self.assertTrue(bool(jnp.all(mk_arr_normal[:, 1] == 1.0)))
 
 
+class FixedMDtypeSafetyTest(unittest.TestCase):
+  """P2 regression: dtypes that cannot represent 2**C(N) must not use fixed-m.
+
+  Fixed-m parks the un-normalized softmax weights at up to 2**C(N), a range
+  derived against FP32's exponent. The kernel narrows them to the activation
+  dtype for the S@V matmul, so a dtype with a smaller exponent range overflows
+  to inf even when the FP32 bound analysis passes.
+
+  Backend-agnostic on purpose: this gate is pure Python/jnp, so it should be
+  enforced in CI even where no TPU is attached.
+  """
+
+  def test_float16_is_rejected(self):
+    recenter, _ = custom_splash.get_fixed_m_constants(4096, is_ring=False)
+    # C(4096) with |V| <= 256 is 107; float16 tops out at 2**16.
+    self.assertGreater(recenter, 16.0)
+    self.assertFalse(custom_splash.fixed_m_dtype_is_safe(jnp.float16, recenter))
+
+  def test_bfloat16_and_float32_are_accepted(self):
+    recenter, _ = custom_splash.get_fixed_m_constants(4096, is_ring=False)
+    self.assertTrue(custom_splash.fixed_m_dtype_is_safe(jnp.bfloat16, recenter))
+    self.assertTrue(custom_splash.fixed_m_dtype_is_safe(jnp.float32, recenter))
+
+  def test_gate_tracks_recenter_not_a_hardcoded_allowlist(self):
+    """A small enough C(N) is representable even in float16."""
+    self.assertTrue(custom_splash.fixed_m_dtype_is_safe(jnp.float16, 4.0))
+    self.assertFalse(custom_splash.fixed_m_dtype_is_safe(jnp.float16, 200.0))
+
+  def test_float16_query_disqualifies_fixed_m_metadata(self):
+    """The reviewer's case: fp16, N=4096, Q=K=0, |V|=1 previously reported all_fixed=True."""
+    from maxdiffusion.models.attention_flax import _compute_fixed_m_metadata
+
+    batch, num_heads, seq_len, dim, bq = 1, 2, 4096, 128, 512
+    q = jnp.zeros((batch, num_heads, seq_len, dim), dtype=jnp.float16)
+    k = jnp.zeros((batch, num_heads, seq_len, dim), dtype=jnp.float16)
+    v = jnp.full((batch, num_heads, seq_len, dim), 1.0, dtype=jnp.float16)
+
+    mk_arr, all_fixed = _compute_fixed_m_metadata(q, k, block_q=bq, value=v)
+    self.assertFalse(bool(all_fixed), "fp16 must not be eligible for fixed-m")
+    self.assertTrue(bool(jnp.all(mk_arr[:, 1] == 0.0)))
+
+  def test_bfloat16_same_case_remains_eligible(self):
+    """Control: the identical case in bf16 must still take the fast path."""
+    from maxdiffusion.models.attention_flax import _compute_fixed_m_metadata
+
+    batch, num_heads, seq_len, dim, bq = 1, 2, 4096, 128, 512
+    q = jnp.zeros((batch, num_heads, seq_len, dim), dtype=jnp.bfloat16)
+    k = jnp.zeros((batch, num_heads, seq_len, dim), dtype=jnp.bfloat16)
+    v = jnp.full((batch, num_heads, seq_len, dim), 1.0, dtype=jnp.bfloat16)
+
+    _, all_fixed = _compute_fixed_m_metadata(q, k, block_q=bq, value=v)
+    self.assertTrue(bool(all_fixed))
+
+
 if __name__ == "__main__":
   unittest.main()

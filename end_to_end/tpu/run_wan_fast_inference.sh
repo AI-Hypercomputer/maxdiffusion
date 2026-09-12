@@ -56,15 +56,29 @@ DEFAULT_LIBTPU="--xla_tpu_spmd_rng_bit_generator_unsafe=true --xla_tpu_enable_do
 export LIBTPU_INIT_ARGS="${DEFAULT_LIBTPU} ${EXTRA_LIBTPU:-}"
 
 # Attention selection
+#
+# Default is the 2D-ring per-q-block fixed-m kernel. Measured on v6e-8, 720p
+# 81f, 40 steps, 25 prompts, matched config (U=4, tile 6400/1024, kv cache on):
+#
+#   ulysses_ring_custom_fixed_m_per_q_block   3.4919 s/step   <- default
+#   ulysses_custom_fixed_m                    3.5338 s/step
+#   ulysses_custom_fixed_m_per_q_block        3.5328 s/step
+#
+# For reference, `main`'s kernel on its best recipe is 3.5274 s/step, i.e. the
+# per-head variant that used to be the default here is slightly SLOWER than
+# main; the win is specifically in the ring per-q-block path.
 if [ -z "${ATTENTION:-}" ]; then
   if [ "${FIXEDM:-1}" = "1" ]; then
-    ATTENTION="ulysses_custom_fixed_m"
+    ATTENTION="ulysses_ring_custom_fixed_m_per_q_block"
   else
     ATTENTION="ulysses_custom"
   fi
 fi
 
-if [ "$ATTENTION" = "ulysses_custom_fixed_m" ] || [ "$ATTENTION" = "ulysses_custom_fixed_m_per_q_block" ] || [ "$ATTENTION" = "ulysses_custom" ]; then
+if [ "$ATTENTION" = "ulysses_custom_fixed_m" ] ||
+   [ "$ATTENTION" = "ulysses_custom_fixed_m_per_q_block" ] ||
+   [ "$ATTENTION" = "ulysses_ring_custom_fixed_m_per_q_block" ] ||
+   [ "$ATTENTION" = "ulysses_custom" ]; then
   DEFAULT_U=4
   DEFAULT_BQ=6400
   DEFAULT_BKV=1024

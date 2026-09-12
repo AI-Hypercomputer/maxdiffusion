@@ -52,6 +52,33 @@ FP32_OUTPUT_HEADROOM_BITS = 8.0  # Assumes default activation |V| <= 2**FP32_OUT
 DEFAULT_MAX_V_BOUND = 256.0
 
 
+def fixed_m_dtype_is_safe(dtype, recenter: float) -> bool:
+  """Whether `dtype` can hold the fixed-m softmax weights without overflowing.
+
+  Fixed-m deliberately parks the un-normalized weights at up to `2**recenter`,
+  a range derived against FP32's exponent (see `get_fixed_m_constants`). The
+  kernel then narrows them to the activation dtype for the S@V matmul
+  (`s_curr.astype(q_ref.dtype)`), so a dtype with a *smaller exponent range*
+  silently overflows to inf even though the FP32 bound analysis passed.
+
+  bfloat16 and float32 both have 8-bit exponents (maxexp 128) and are safe for
+  every C(N) this module produces. float16 has a 5-bit exponent (maxexp 16) and
+  is not: at N=4096 with |V| <= 256, C(N) = 107 and 2**107 is far beyond
+  float16's 65504 ceiling. The fp8 formats fail for the same reason.
+
+  This is deliberately expressed in terms of the exponent range rather than an
+  allowlist so narrower formats are rejected automatically.
+
+  Args:
+    dtype: Activation dtype the kernel will narrow the weights to.
+    recenter: The fixed-m constant C(N) from `get_fixed_m_constants`.
+
+  Returns:
+    True if `2**recenter` is representable in `dtype`.
+  """
+  return float(jnp.finfo(jnp.dtype(dtype)).maxexp) > float(recenter)
+
+
 def get_fixed_m_constants(
     kv_seq_len: int,
     is_ring: bool = False,

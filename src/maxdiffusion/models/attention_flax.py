@@ -1463,8 +1463,13 @@ def _compute_fixed_m_metadata(
     q_heads_per_kv_head = num_q_heads // num_kv_heads
     mk_h_sq = jnp.repeat(mk_h_sq, q_heads_per_kv_head, axis=1)  # (batch, num_q_heads)
 
-  v_ok = 1.0
-  if value is not None:
+  # Fixed-m weights reach 2**recenter before being narrowed to the activation
+  # dtype for the S@V matmul. If that dtype's exponent range cannot hold them
+  # (fp16, fp8), the FP32 bound analysis is irrelevant -- the narrowing itself
+  # overflows to inf -- so disqualify every head up front.
+  dtype_safe = custom_splash.fixed_m_dtype_is_safe(query.dtype, recenter)
+  v_ok = 1.0 if dtype_safe else 0.0
+  if dtype_safe and value is not None:
     v_max_sq = (value.astype(jnp.float32) ** 2).max()
     v_ok = (v_max_sq <= (v_max_bound**2)).astype(jnp.float32)
 
@@ -1682,7 +1687,7 @@ def _ulysses_ring_custom_attention(
     else:
       if use_fixed_m:
         effective_kv_seq_len = key_seq_len * num_ring_shards
-        _, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=False)
+        global_recenter, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=False)
         global_centered_bound_sq = global_centered_bound**2
 
         # Pre-gather mk_dev across the ring to evaluate global eligibility outside vmap
@@ -1690,8 +1695,15 @@ def _ulysses_ring_custom_attention(
         mk_all_sq = jnp.swapaxes(mk_all_gathered, 0, 1)  # (batch, ring_size, heads)
         mk_global_sq = mk_all_sq.max(axis=1)  # (batch, heads)
 
+        # V-magnitude and dtype safety are properties of the *whole* distributed
+        # problem, not of any single hop. Both are reduced to one global scalar
+        # here and -- critically -- also handed to the kernels themselves: the
+        # LSE fallback re-derives per-hop eligibility from Q/K norms alone, so
+        # without this it would happily re-enable fixed-m on a hop after the
+        # global V check had already rejected it.
+        dtype_safe = custom_splash.fixed_m_dtype_is_safe(query.dtype, global_recenter)
         v_max_sq = (raw_value.astype(jnp.float32) ** 2).max()
-        v_ok = v_max_sq <= (custom_splash.DEFAULT_MAX_V_BOUND**2)
+        v_ok = (v_max_sq <= (custom_splash.DEFAULT_MAX_V_BOUND**2)) & dtype_safe
 
         if not per_q_block:
           bound_sq_1d = qn_dev * mk_global_sq
@@ -1717,6 +1729,7 @@ def _ulysses_ring_custom_attention(
             per_q_block=per_q_block,
             pregathered_mk=True,
             uniform_fixed_m=True,
+            v_ok=v_ok,
         )
         ring_kernel_lse = tokamax_ring_attention_kernel.make_custom_ring_attention(
             block_sizes=bsizes,
@@ -1732,6 +1745,7 @@ def _ulysses_ring_custom_attention(
             per_q_block=per_q_block,
             pregathered_mk=True,
             uniform_fixed_m=False,
+            v_ok=v_ok,
         )
 
         def _run_ring_accumulate(q, k, v, norms, km):
