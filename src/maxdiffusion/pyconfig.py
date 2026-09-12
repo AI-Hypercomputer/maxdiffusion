@@ -43,7 +43,7 @@ from maxdiffusion.common_types import (
 )
 
 _ALLOWED_MODEL_NAMES = {WAN2_1, WAN2_2, LTX2_VIDEO, LTX2_3, Z_IMAGE}
-_ALLOWED_TRAINING_MODEL_NAMES = {WAN2_1}
+_ALLOWED_TRAINING_MODEL_NAMES = {WAN2_1, WAN2_2}
 
 
 def _validate_model_name(model_name: str | None):
@@ -287,12 +287,17 @@ class _HyperParameters:
 
     # Orbax doesn't save the tokenizer params, instead it loads them from the pretrained_model_name_or_path
     raw_keys["tokenizer_model_name_or_path"] = raw_keys["pretrained_model_name_or_path"]
+    ckpt_save_loc = raw_keys.get("checkpoint_save_location", "/tmp")
     if "gs://" in raw_keys["pretrained_model_name_or_path"]:
-      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(raw_keys["pretrained_model_name_or_path"], "/tmp")
+      raw_keys["pretrained_model_name_or_path"] = max_utils.download_blobs(
+          raw_keys["pretrained_model_name_or_path"], ckpt_save_loc
+      )
     if "gs://" in raw_keys["unet_checkpoint"]:
-      raw_keys["unet_checkpoint"] = max_utils.download_blobs(raw_keys["unet_checkpoint"], "/tmp")
+      raw_keys["unet_checkpoint"] = max_utils.download_blobs(raw_keys["unet_checkpoint"], ckpt_save_loc)
     if "gs://" in raw_keys["tokenizer_model_name_or_path"]:
-      raw_keys["tokenizer_model_name_or_path"] = max_utils.download_blobs(raw_keys["tokenizer_model_name_or_path"], "/tmp")
+      raw_keys["tokenizer_model_name_or_path"] = max_utils.download_blobs(
+          raw_keys["tokenizer_model_name_or_path"], ckpt_save_loc
+      )
     if "gs://" in raw_keys["dataset_name"]:
       raw_keys["dataset_name"] = max_utils.download_blobs(raw_keys["dataset_name"], raw_keys["dataset_save_location"])
       raw_keys["dataset_save_location"] = raw_keys["dataset_name"]
