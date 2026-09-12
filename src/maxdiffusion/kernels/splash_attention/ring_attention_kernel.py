@@ -867,6 +867,7 @@ def _custom_ring_attention_forward(
     per_q_block: bool = False,
     pregathered_mk: bool = False,
     k_mean: jax.Array | None = None,
+    uniform_fixed_m: bool | None = None,
 ) -> jax.Array:
   """Forward-only ring attention using the custom dense splash kernel.
 
@@ -911,6 +912,11 @@ def _custom_ring_attention_forward(
   num_q_heads = q.shape[0]
   num_kv_heads = k.shape[0]
   head_dim_v = v.shape[-1]
+
+  if use_fixed_m and not use_base2_exp:
+    raise NotImplementedError(
+        "fixed-m softmax bounds are derived strictly for base-2 exponents. Please set use_base2_exp=True."
+    )
 
   if use_fixed_m and k_mean is None:
     # Compute global key mean across ring ranks automatically on real (unpadded) tokens if not provided
@@ -1145,7 +1151,12 @@ def _custom_ring_attention_forward(
         carry, _ = fixed_body(carry, hop, hop == ring_size - 1)
       return carry[0].astype(q.dtype)
 
-    return lax.cond(all_fixed_global, _accumulate_scan, _lse_scan, None)
+    if uniform_fixed_m is True:
+      return _accumulate_scan(None)
+    elif uniform_fixed_m is False:
+      return _lse_scan(None)
+    else:
+      return lax.cond(all_fixed_global, _accumulate_scan, _lse_scan, None)
 
   o_init = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
   l_init = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
@@ -1208,13 +1219,18 @@ def make_custom_ring_attention(
     per_q_block: bool = True,
     pregathered_mk: bool = False,
     k_mean: jax.Array | None = None,
+    uniform_fixed_m: bool | None = None,
 ):
   """Builds a forward-only ring-attention callable around the custom kernel.
 
   The returned function takes a single (un-batched) `(q, k, v)` triple of shape
-  `(num_heads, seq, head_dim)` and optional per-batch `fixed_m_norms=(qn_max, mk_h)`
+  `(num_heads, seq, head_dim)` and optional per-batch `fixed_m_norms=(qn_max_sq, mk_h_sq)`
   and `k_mean` to be `jax.vmap`-ped over the batch axis inside the attention `shard_map`.
   """
+  if use_fixed_m and not use_base2_exp:
+    raise NotImplementedError(
+        "fixed-m softmax bounds are derived strictly for base-2 exponents. Please set use_base2_exp=True."
+    )
   default_fixed_m_norms = fixed_m_norms
   default_k_mean = k_mean
 
@@ -1241,6 +1257,7 @@ def make_custom_ring_attention(
         per_q_block=per_q_block,
         pregathered_mk=pregathered_mk,
         k_mean=km,
+        uniform_fixed_m=uniform_fixed_m,
     )
 
   return _ring

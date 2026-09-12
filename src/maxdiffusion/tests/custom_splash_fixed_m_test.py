@@ -545,6 +545,31 @@ class CustomSplashFixedMTest(unittest.TestCase):
     self.assertEqual(mk_arr.shape, (batch, 2, num_q_heads, expected_blocks))
     self.assertTrue(bool(jnp.all(jnp.isfinite(mk_arr))))
 
+  def test_adversarial_v_magnitude_safely_disqualifies_fixed_m(self):
+    """Verifies that |V| > v_max_bound (e.g. V=512) disqualifies fixed-m gating to prevent FP32 overflow."""
+    from maxdiffusion.models.attention_flax import _compute_fixed_m_metadata
+
+    batch = 1
+    num_heads = 4
+    seq_len = 4096
+    dim = 64
+    bq = 512
+
+    q = jnp.zeros((batch, num_heads, seq_len, dim), dtype=jnp.bfloat16)
+    k = jnp.zeros((batch, num_heads, seq_len, dim), dtype=jnp.bfloat16)
+    v_overflow = jnp.full((batch, num_heads, seq_len, dim), 512.0, dtype=jnp.bfloat16)
+
+    # With adversarial V=512 (> 256 default bound), fixed_ok must be 0.0, safely falling back to online
+    mk_arr, all_fixed = _compute_fixed_m_metadata(q, k, block_q=bq, value=v_overflow)
+    self.assertFalse(bool(all_fixed))
+    self.assertTrue(bool(jnp.all(mk_arr[:, 1] == 0.0)))
+
+    # With normal V <= 256, fixed_ok should remain 1.0 (all eligible)
+    v_normal = jnp.full((batch, num_heads, seq_len, dim), 1.0, dtype=jnp.bfloat16)
+    mk_arr_normal, all_fixed_normal = _compute_fixed_m_metadata(q, k, block_q=bq, value=v_normal)
+    self.assertTrue(bool(all_fixed_normal))
+    self.assertTrue(bool(jnp.all(mk_arr_normal[:, 1] == 1.0)))
+
 
 if __name__ == "__main__":
   unittest.main()

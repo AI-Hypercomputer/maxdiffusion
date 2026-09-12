@@ -48,28 +48,46 @@ class _BlockSizes:
     self.block_kv_compute_in = block_kv_compute_in
 
 
-FP32_OUTPUT_HEADROOM_BITS = 8.0  # Assumes activation |V| <= 2**FP32_OUTPUT_HEADROOM_BITS = 256.0
+FP32_OUTPUT_HEADROOM_BITS = 8.0  # Assumes default activation |V| <= 2**FP32_OUTPUT_HEADROOM_BITS = 256.0
+DEFAULT_MAX_V_BOUND = 256.0
 
 
-def get_fixed_m_constants(kv_seq_len: int, is_ring: bool = False) -> tuple[float, float]:
+def get_fixed_m_constants(
+    kv_seq_len: int,
+    is_ring: bool = False,
+    v_max_bound: float = DEFAULT_MAX_V_BOUND,
+) -> tuple[float, float]:
   """Computes dynamic fixed-m constants C(N) and safe bounds based on KV sequence length.
 
-  Derivation:
-    1. Overflow Ceiling: C(N) = 127.0 - ceil(log2(N)) - FP32_OUTPUT_HEADROOM_BITS guarantees that:
-       - Denominator accumulator: l = sum_j 2^{z_j - m} <= N * 2^C(N) <= 2^{127 - 8} = 2^{119}
-       - Output accumulator: |o_d| = |sum_j V_{j,d} 2^{z_j - m}| <= V_max * N * 2^C(N) <= 2^{127} < 2^{128} (FP32 Max)
-       for any activation magnitude |V| <= 256.0 (2^8).
-    2. Subnormal Underflow Floor: Requiring the minimal shifted exponent to stay >= -125.0
-       (1 bit of safety margin above IEEE-754 normal floor -126.0):
-       - Ulysses (Centered, M >= 0): ceil(U) <= C(N) + 125.0 = W(N).
+  Mathematical Derivations:
+    1. Overflow Ceiling:
+       For a given upper bound on value activation magnitude |V| <= V_max:
+       output_headroom_bits = ceil(log2(V_max)).
+       The ceiling constant C(N) = 127.0 - ceil(log2(N)) - output_headroom_bits guarantees that:
+       - Denominator accumulator: l = sum_j 2^{z_j - m} <= N * 2^C(N) <= 2^{127 - headroom} < 2^{128}
+       - Numerator accumulator: |o_d| = |sum_j V_{j,d} 2^{z_j - m}| <= V_max * N * 2^C(N) <= 2^{127} < 2^{128}
+       preventing IEEE-754 FP32 overflow for all activations |V| <= V_max.
+
+    2. Subnormal Underflow Floor (Cauchy-Schwarz Proof):
+       Let U_i = max_i ||q_i|| * max_j ||k_j|| be the Cauchy-Schwarz bound on query-key inner products.
+       By Cauchy-Schwarz inequality, for all tokens j:
+         z_j = Q_i . K_j >= -||Q_i|| * ||K_j|| >= -U_i.
+       With the fixed-m base shift defined as m_i = ceil(U_i) - C(N):
+         z_j - m_i >= -U_i - (ceil(U_i) - C(N)) = C(N) - (U_i + ceil(U_i)).
+       To guarantee that no term underflows into the subnormal range (requiring minimal shifted exponent >= -125.0,
+       providing 1 bit of margin above IEEE-754 normal floor -126.0):
+       - Ulysses (Centered, M >= 0): logit centering guarantees row max >= 0, so ceil(U) <= C(N) + 125.0 = W(N).
        - Ring (Uncentered, M >= -U): U + ceil(U) <= W(N) => U <= floor(W(N) / 2).
+       If U_i <= floor(W(N) / 2), it is mathematically impossible to underflow below -125.0, even without K-centering!
   """
   if kv_seq_len is None or kv_seq_len <= 0:
     raise ValueError(f"kv_seq_len must be a positive integer to compute dynamic fixed-m constants, got {kv_seq_len=}")
+  if v_max_bound <= 0.0:
+    raise ValueError(f"v_max_bound must be a positive float, got {v_max_bound=}")
 
   fp32_max_exp = 128.0
   fp32_min_normal_exp = -126.0
-  output_headroom_bits = FP32_OUTPUT_HEADROOM_BITS
+  output_headroom_bits = float(max(0, math.ceil(math.log2(float(v_max_bound)))))
 
   max_accumulation_bits = float(math.ceil(math.log2(float(kv_seq_len))))
 

@@ -985,6 +985,7 @@ def _ulysses_attention(
             recenter=recenter,
             per_q_block=per_q_block,
             k_mean=k_mean,
+            value=value,
         )
 
       bsizes = custom_splash._BlockSizes(
@@ -1415,6 +1416,8 @@ def _compute_fixed_m_metadata(
     recenter: float | None = None,
     per_q_block: bool = True,
     k_mean: jax.Array | None = None,
+    value: jax.Array | None = None,
+    v_max_bound: float = 256.0,
 ) -> tuple[jax.Array, jax.Array]:
   """Computes Cauchy-Schwarz norm bounds and per-Q-block (or per-head) fixed-m metadata.
 
@@ -1427,6 +1430,9 @@ def _compute_fixed_m_metadata(
     per_q_block: If True, evaluates gating independently per query tile. If False,
       evaluates monolithic gating per head.
     k_mean: Optional mean key vector for Virtual K-centering, shape `(batch, local_heads, head_dim)`.
+    value: Optional value activation, shape `(batch, local_heads, kv_len, head_dim_v)`, used to
+      verify that |V| <= v_max_bound to guarantee against FP32 overflow.
+    v_max_bound: Maximum safe value magnitude (default 256.0).
 
   Returns:
     mk_arr: Gating metadata array of shape `(batch, 2, local_heads, num_q_blocks)`
@@ -1439,7 +1445,7 @@ def _compute_fixed_m_metadata(
   batch_size, num_q_heads, q_len, _ = query.shape
   num_kv_heads = key.shape[1]
   if safe_bound is None or recenter is None:
-    rec, bnd = custom_splash.get_fixed_m_constants(key.shape[2], is_ring=False)
+    rec, bnd = custom_splash.get_fixed_m_constants(key.shape[2], is_ring=False, v_max_bound=v_max_bound)
     if safe_bound is None:
       safe_bound = bnd
     if recenter is None:
@@ -1457,6 +1463,11 @@ def _compute_fixed_m_metadata(
     q_heads_per_kv_head = num_q_heads // num_kv_heads
     mk_h_sq = jnp.repeat(mk_h_sq, q_heads_per_kv_head, axis=1)  # (batch, num_q_heads)
 
+  v_ok = 1.0
+  if value is not None:
+    v_max_sq = (value.astype(jnp.float32) ** 2).max()
+    v_ok = (v_max_sq <= (v_max_bound**2)).astype(jnp.float32)
+
   num_q_blocks = q_len // block_q
   if per_q_block:
     norm_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1)  # (batch, num_q_heads, q_len)
@@ -1464,14 +1475,14 @@ def _compute_fixed_m_metadata(
         axis=-1
     )  # (batch, num_q_heads, num_q_blocks)
     bound_sq = qn_max_sq * mk_h_sq[:, :, None]
-    fixed_ok = (bound_sq <= safe_bound_sq).astype(jnp.float32)
+    fixed_ok = (bound_sq <= safe_bound_sq).astype(jnp.float32) * v_ok
     m_base = jnp.ceil(jnp.sqrt(bound_sq)) - recenter
     mk_arr = jnp.stack([m_base, fixed_ok], axis=1)  # (batch, 2, num_q_heads, num_q_blocks)
     all_fixed = jnp.all(fixed_ok > 0.5)
   else:
     qn_max_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1).max(axis=-1)  # (batch, num_q_heads)
     bound_sq_1d = qn_max_sq * mk_h_sq
-    fixed_ok_1d = (bound_sq_1d <= safe_bound_sq).astype(jnp.float32)
+    fixed_ok_1d = (bound_sq_1d <= safe_bound_sq).astype(jnp.float32) * v_ok
     m_base_1d = jnp.ceil(jnp.sqrt(bound_sq_1d)) - recenter
     m_base_expanded = jnp.broadcast_to(m_base_1d[:, :, None], (batch_size, num_q_heads, num_q_blocks))
     fixed_ok_expanded = jnp.broadcast_to(fixed_ok_1d[:, :, None], (batch_size, num_q_heads, num_q_blocks))
@@ -1589,7 +1600,14 @@ def _ulysses_ring_custom_attention(
       if num_ring_shards == 1:
         recenter, safe_bound = custom_splash.get_fixed_m_constants(actual_kv_seq_len, is_ring=False)
         mk_arr, all_fixed = _compute_fixed_m_metadata(
-            query, real_key, bq, safe_bound=safe_bound, recenter=recenter, per_q_block=per_q_block, k_mean=k_mean
+            query,
+            real_key,
+            bq,
+            safe_bound=safe_bound,
+            recenter=recenter,
+            per_q_block=per_q_block,
+            k_mean=k_mean,
+            value=raw_value,
         )
       else:
         batch_size, num_q_heads, q_seq, _ = query.shape
@@ -1662,23 +1680,89 @@ def _ulysses_ring_custom_attention(
 
     # (2b) Ring: Cross-chip ppermute schedule with custom ring kernel
     else:
-      ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
-          block_sizes=bsizes,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          ring_axis=ring_axis,
-          ring_size=num_ring_shards,
-          bidirectional=bidirectional,
-          use_fixed_m=use_fixed_m,
-          per_q_block=per_q_block,
-          pregathered_mk=False,
-      )
       if use_fixed_m:
-        attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0, (0, 0), 0))(query, key, value, (qn_dev, mk_dev), k_mean)
+        effective_kv_seq_len = key_seq_len * num_ring_shards
+        _, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=False)
+        global_centered_bound_sq = global_centered_bound**2
+
+        # Pre-gather mk_dev across the ring to evaluate global eligibility outside vmap
+        mk_all_gathered = jax.lax.all_gather(mk_dev, ring_axis)  # (ring_size, batch, heads)
+        mk_all_sq = jnp.swapaxes(mk_all_gathered, 0, 1)  # (batch, ring_size, heads)
+        mk_global_sq = mk_all_sq.max(axis=1)  # (batch, heads)
+
+        v_max_sq = (raw_value.astype(jnp.float32) ** 2).max()
+        v_ok = v_max_sq <= (custom_splash.DEFAULT_MAX_V_BOUND**2)
+
+        if not per_q_block:
+          bound_sq_1d = qn_dev * mk_global_sq
+          fixed_ok = (bound_sq_1d <= global_centered_bound_sq) & v_ok
+        else:
+          bound_blocks_sq = qn_dev * mk_global_sq[:, :, None]
+          fixed_ok = (bound_blocks_sq <= global_centered_bound_sq) & v_ok
+
+        all_fixed_local = jnp.all(fixed_ok)
+        all_fixed_global = jax.lax.pmin(all_fixed_local, ring_axis)
+
+        ring_kernel_accumulate = tokamax_ring_attention_kernel.make_custom_ring_attention(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            ring_axis=ring_axis,
+            ring_size=num_ring_shards,
+            bidirectional=bidirectional,
+            use_fixed_m=True,
+            per_q_block=per_q_block,
+            pregathered_mk=True,
+            uniform_fixed_m=True,
+        )
+        ring_kernel_lse = tokamax_ring_attention_kernel.make_custom_ring_attention(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            ring_axis=ring_axis,
+            ring_size=num_ring_shards,
+            bidirectional=bidirectional,
+            use_fixed_m=True,
+            per_q_block=per_q_block,
+            pregathered_mk=True,
+            uniform_fixed_m=False,
+        )
+
+        def _run_ring_accumulate(q, k, v, norms, km):
+          return jax.vmap(ring_kernel_accumulate, in_axes=(0, 0, 0, (0, 0), 0))(q, k, v, norms, km)
+
+        def _run_ring_lse(q, k, v, norms, km):
+          return jax.vmap(ring_kernel_lse, in_axes=(0, 0, 0, (0, 0), 0))(q, k, v, norms, km)
+
+        attention_output = jax.lax.cond(
+            all_fixed_global,
+            _run_ring_accumulate,
+            _run_ring_lse,
+            query,
+            key,
+            value,
+            (qn_dev, mk_all_sq),
+            k_mean,
+        )
       else:
+        ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            ring_axis=ring_axis,
+            ring_size=num_ring_shards,
+            bidirectional=bidirectional,
+            use_fixed_m=False,
+        )
         attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
 
     attention_output = attention_output[:, :, :context_q_seq_len, :kv_size].astype(query.dtype)
@@ -2979,47 +3063,21 @@ class FlaxWanAttention(nnx.Module):
       encoder_attention_mask = None
 
     if not is_i2v_cross_attention:
+      with jax.named_scope("query_proj"):
+        query_proj = self.query(hidden_states)
+
       if is_self_attention:
-        with jax.named_scope("qkv_proj"):
-          computation_dtype = self.query.dtype if self.query.dtype is not None else hidden_states.dtype
-          q_w = self.query.kernel[...].astype(computation_dtype)
-          k_w = self.key.kernel[...].astype(computation_dtype)
-          v_w = self.value.kernel[...].astype(computation_dtype)
-          qkv_w = jnp.concatenate([q_w, k_w, v_w], axis=-1)
-
-          if self.query.bias is not None and self.key.bias is not None and self.value.bias is not None:
-            q_b = self.query.bias[...].astype(computation_dtype)
-            k_b = self.key.bias[...].astype(computation_dtype)
-            v_b = self.value.bias[...].astype(computation_dtype)
-            qkv_b = jnp.concatenate([q_b, k_b, v_b], axis=-1)
-          else:
-            qkv_b = None
-
-          # Single fused GEMM: (B, S, D) @ (D, 3*D) -> (B, S, 3*D)
-          qkv = jax.lax.dot_general(
-              hidden_states.astype(computation_dtype),
-              qkv_w,
-              (((hidden_states.ndim - 1,), (0,)), ((), ())),
-              precision=self.precision,
-              preferred_element_type=computation_dtype,
-          )
-          if qkv_b is not None:
-            qkv = qkv + qkv_b
-
-          dim_q = self.heads * self.dim_head
-          dim_k = (self.kv_heads if hasattr(self, "kv_heads") and self.kv_heads is not None else self.heads) * self.dim_head
-          query_proj, key_proj, value_proj = jnp.split(qkv, [dim_q, dim_q + dim_k], axis=-1)
+        with jax.named_scope("key_proj"):
+          key_proj = self.key(hidden_states)
+        with jax.named_scope("value_proj"):
+          value_proj = self.value(hidden_states)
+      elif cached_kv is not None and "text" in cached_kv:
+        key_proj, value_proj = cached_kv["text"]
       else:
-        with jax.named_scope("query_proj"):
-          query_proj = self.query(hidden_states)
-
-        if cached_kv is not None and "text" in cached_kv:
-          key_proj, value_proj = cached_kv["text"]
-        else:
-          with jax.named_scope("key_proj"):
-            key_proj = self.key(encoder_hidden_states)
-          with jax.named_scope("value_proj"):
-            value_proj = self.value(encoder_hidden_states)
+        with jax.named_scope("key_proj"):
+          key_proj = self.key(encoder_hidden_states)
+        with jax.named_scope("value_proj"):
+          value_proj = self.value(encoder_hidden_states)
 
       if rotary_emb is not None and self.qk_norm and is_self_attention:
         from maxdiffusion.kernels.fused_producers import fused_rmsnorm_rope
