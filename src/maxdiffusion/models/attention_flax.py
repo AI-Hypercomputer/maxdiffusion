@@ -27,6 +27,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ke
 from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
+from maxdiffusion.kernels import internal_ring_attention as internal_ring_kernel_mod
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from einops import rearrange
 from .. import common_types, max_logging
@@ -1321,6 +1322,8 @@ def _ulysses_ring_custom_attention(
     use_experimental_scheduler: bool = False,
     bidirectional: bool = False,
     use_fixed_m: bool = False,
+    fixed_m_uncond: bool = False,
+    internal_perm: bool = False,
     ulysses_attention_chunks: int = 1,
 ) -> jax.Array:
   """Hybrid Ulysses + Ring (USP) with the CUSTOM splash kernel on main's mesh.
@@ -1355,6 +1358,8 @@ def _ulysses_ring_custom_attention(
         f"got context_shards={num_context_shards} and ulysses_shards={num_ulysses_shards}."
     )
   num_ring_shards = num_context_shards // num_ulysses_shards
+  if internal_perm and bidirectional:
+    raise NotImplementedError("internal-permutation ring does not implement the bidirectional schedule.")
 
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
   key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
@@ -1418,7 +1423,11 @@ def _ulysses_ring_custom_attention(
       # The accumulate-vs-LSE lax.cond predicate must be uniform along the RING
       # axis (every ppermute participant takes the same branch).
       qn_all = jax.lax.pmax(qn_local, (ring_axis, ulysses_axis))
-      mk_all = jax.lax.pmax(kn_local, ulysses_axis)
+      # The internal kernel pins ONE m for the whole ring, so its bound must
+      # cover keys held by every ring rank -- reduce over the ring axis too.
+      # (The external path deliberately keeps this per-shard and gathers it
+      # inside `_custom_ring_attention_forward`, which gates hop by hop.)
+      mk_all = jax.lax.pmax(kn_local, (ring_axis, ulysses_axis) if internal_perm else ulysses_axis)
       heads_per_dev = qn_all.shape[0] // num_ulysses_shards
       start_head = jax.lax.axis_index(ulysses_axis) * heads_per_dev
       fixed_m_norms = (
@@ -1491,20 +1500,77 @@ def _ulysses_ring_custom_attention(
       # (2b) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
       # bidirectional=True -> wrap-free schedule (streams K/V both directions one hop
       # at a time), for a non-wrapping ring axis. Selected by attention=ulysses_ring_custom_bidir.
-      ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
-          block_sizes=bsizes,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          ring_axis=ring_axis,
-          ring_size=num_ring_shards,
-          bidirectional=bidirectional,
-          use_fixed_m=use_fixed_m,
-          fixed_m_norms=fixed_m_norms,
-      )
-      attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
+      if internal_perm and use_fixed_m:
+        # (2c-fm) Internal ring + fixed m. The gate is device-uniform along the
+        # ring (qn is pmaxed over it and mk is the global bound), so every rank
+        # takes the same lax.cond branch and the two pallas_calls stay in step.
+        # Uniform (all-heads) gating rather than per-head dispatch: a two-body
+        # ragged last block is what trips the Mosaic scheduler cliff.
+        qn_max, mk_h = fixed_m_norms
+        all_fixed = jnp.all(qn_max * mk_h <= custom_splash._FIXED_M_RING_SAFE_BOUND)
+        mk_arr = jnp.stack([mk_h, jnp.ones_like(mk_h)])
+
+        def _mk_internal(fixed):
+          return internal_ring_kernel_mod.make_internal_ring_attention(
+              block_sizes=bsizes,
+              orig_q_seq_len=query_seq_len,
+              orig_kv_seq_len=key_seq_len,
+              ring_axis=ring_axis,
+              ring_size=num_ring_shards,
+              axis_names=internal_mesh.axis_names,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=fixed,
+          )
+
+        if fixed_m_uncond:
+          # MEASUREMENT VARIANT. Skips the lax.cond and always takes the fixed
+          # branch, to isolate the conditional's cost from fixed-m's own. Safe
+          # only while the gate actually holds -- `all_fixed` is computed above
+          # and its value is asserted post hoc by comparing this variant's output
+          # against the guarded one (if the gate ever failed, the output would be
+          # visibly wrong, not subtly so). Not for production.
+          del all_fixed
+          attention_output = _mk_internal(True)(query, key, value, mk_arr)
+        else:
+          attention_output = jax.lax.cond(
+              all_fixed,
+              lambda: _mk_internal(True)(query, key, value, mk_arr),
+              lambda: _mk_internal(False)(query, key, value, None),
+          )
+      elif internal_perm:
+        # (2c) Permutation INSIDE the kernel: one pallas_call for the whole ring,
+        # the hop is a remote DMA between neighbours' VMEM. No ppermute, no
+        # per-hop (m, l, o) merge in XLA, no vmap (the batch axis is a grid dim
+        # because the kernel owns semaphores and a collective_id).
+        ring_kernel = internal_ring_kernel_mod.make_internal_ring_attention(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            ring_axis=ring_axis,
+            ring_size=num_ring_shards,
+            axis_names=internal_mesh.axis_names,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+        )
+        attention_output = ring_kernel(query, key, value)
+      else:
+        ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            ring_axis=ring_axis,
+            ring_size=num_ring_shards,
+            bidirectional=bidirectional,
+            use_fixed_m=use_fixed_m,
+            fixed_m_norms=fixed_m_norms,
+        )
+        attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
     # (3) Ulysses all-to-all back: sequence -> heads, restoring the layout.
@@ -1697,6 +1763,90 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       ulysses_shards=context["ulysses_shards"],
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm")
+def ulysses_ring_custom_iperm_kernel(q, k, v, context):
+  """INTERNAL-permutation variant of ulysses_ring_custom: the ring hop is a
+  remote DMA issued from inside the Pallas kernel (one launch for the whole
+  ring, accumulator never leaves VMEM) instead of an XLA `lax.ppermute` plus a
+  per-hop online-softmax merge. Same USP split as ulysses_ring_custom; U=1
+  gives a pure 1D internal ring."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm_fixed_m")
+def ulysses_ring_custom_iperm_fixed_m_kernel(q, k, v, context):
+  """Internal-permutation ring + Cauchy-Schwarz fixed m. Simpler than the
+  external ring's fixed-m: one kernel spans every shard and the accumulator
+  stays in VMEM, so a single pinned bound is exact for the whole ring -- no
+  per-hop gate, no LSE merge, no rotating norms."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      use_fixed_m=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm_fixed_m_nocond")
+def ulysses_ring_custom_iperm_fixed_m_nocond_kernel(q, k, v, context):
+  """Measurement-only twin of `ulysses_ring_custom_iperm_fixed_m` with the
+  eligibility `lax.cond` removed, to separate the conditional's cost (a
+  [H, S, D] copy between branch buffers) from fixed-m's own kernel win."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      use_fixed_m=True,
+      fixed_m_uncond=True,
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
 
@@ -2470,6 +2620,9 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_ring_custom",
         "ulysses_ring_custom_fixed_m",
         "ulysses_ring_custom_bidir",
+        "ulysses_ring_custom_iperm",
+        "ulysses_ring_custom_iperm_fixed_m",
+        "ulysses_ring_custom_iperm_fixed_m_nocond",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
     )
@@ -2492,7 +2645,18 @@ class FlaxWanAttention(nnx.Module):
     elif attention_kernel in ("tokamax_ring", "tokamax_ring_custom", "ulysses_ring") and not is_self_attention:
       attention_kernel = "tokamax_flash"  # do not use ring attention for cross attention
     elif (
-        attention_kernel in ("ulysses_ring_custom", "ulysses_ring_custom_bidir", "ulysses_ring_custom_fixed_m")
+        attention_kernel
+        in (
+            "ulysses_ring_custom",
+            "ulysses_ring_custom_bidir",
+            "ulysses_ring_custom_fixed_m",
+            "ulysses_ring_custom_iperm",
+            "ulysses_ring_custom_iperm_fixed_m",
+            "ulysses_ring_custom_iperm_fixed_m_nocond",
+            "ulysses_ring_custom_iperm_fixed_m_nocond",
+            "ulysses_ring_custom_iperm_fixed_m",
+            "ulysses_ring_custom_iperm_fixed_m_nocond",
+        )
         and not is_self_attention
     ):
       attention_kernel = "ulysses_custom"  # plain ulysses (no ring) for cross attention

@@ -47,6 +47,9 @@ ULYSSES_RING_ATTENTION_KERNELS = frozenset({
     "ulysses_ring_custom",
     "ulysses_ring_custom_fixed_m",
     "ulysses_ring_custom_bidir",
+    "ulysses_ring_custom_iperm",
+    "ulysses_ring_custom_iperm_fixed_m",
+    "ulysses_ring_custom_iperm_fixed_m_nocond",
 })
 
 
@@ -132,21 +135,6 @@ def full_axis_candidates(
   return list(range(min_block, max_block + 1, step))
 
 
-def vmem_bq_ceiling(
-    bkv: int,
-    *,
-    vmem_bytes: int,
-    dtype_bytes: int = 4,
-    score_fraction: float = 0.65,
-    align: int = VPU_LANE,
-) -> int:
-  """Approx largest bq whose score tile [bq, bkv]*dtype_bytes fits VMEM (mirror of
-  `vmem_bkv_ceiling`).  Use a SMALL reference bkv so the fewest-tile BQ ladder isn't
-  over-constrained; big-bq x big-bkv corners are OOM-pruned by the orchestrator."""
-  budget = int(vmem_bytes * score_fraction)
-  return max(align, _floor_to(budget // (bkv * dtype_bytes), align))
-
-
 def bq_candidates(
     seq_len: int,
     *,
@@ -184,21 +172,172 @@ def bq_candidates(
   return sorted(set(out), reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# VMEM ceiling model.
+#
+# Replaces a single `score_tile <= vmem * score_fraction` fraction, which cannot
+# be right: VMEM also holds terms that scale with bq INDEPENDENTLY of bkv (the q
+# block double-buffered, the fp32 `o` accumulator, the output block). Proof --
+# two tiles with an identical score-tile product: 9472x1024 FITS, 18944x512 OOMs.
+# A one-term model gets tuned to the worst corner and under-caps everywhere else.
+#
+# Fit: `used/bq = a*(4*bkv) + b`, one (a, b) per family below -- they differ
+# because the external ring keeps fp32 online-softmax residual windows while
+# the internal-permutation kernel carries (m, l, o) in one VMEM scratch.
+# Measured: external OOMs at 9472/1280 (3/3 reps) where internal runs it.
+#
+# CAVEAT -- external + fixed-m. There the 1-block bench disagrees with e2e: dense
+# sweeps proposed tiles that measured WORSE end to end in 3/3 cases (1.570 vs
+# 1.547, 1.610 vs 1.528, 1.900 vs 1.898 s/step). A correct ceiling widens the
+# search space, and for that combination a wider space can surface a tile the
+# bench over-rates. Verify any fixed-m winner end to end before trusting it.
+_VMEM_FIT = {  # family -> (score scale a, per-bq bytes b)
+    "external": (0.973, 1989),
+    "internal": (0.982, 1295),
+}
+
+INTERNAL_PERM_KERNELS = frozenset({
+    "ulysses_ring_custom_iperm",
+    "ulysses_ring_custom_iperm_fixed_m",
+    "ulysses_ring_custom_iperm_fixed_m_nocond",
+})
+
+
+# Measured ceilings from the sweeps (~3,300 points), MIN across configs so the
+# search never proposes a tile that OOMs for some shape. Preferred over the
+# fit wherever the exact bq was swept -- a 2-term model provably cannot bracket
+# both ends (at bq=9472 internal needs b<=1226 to reach its true 1408 ceiling; at
+# bq=18944 it needs b>1367 to avoid over-capping -- contradictory), and the rung
+# that matters most, 9472, is exactly where the fit under-caps.
+#
+# NOTE: these are for a 64 MiB VMEM budget. They are scaled linearly for other
+# budgets, which is only approximate -- the per-bq term does not scale with the
+# score tile. For a different VMEM size the fit is used instead.
+_MEASURED_BKV_CEILING = {  # (family, bq) -> min ceiling across configs @64MB
+    "external": {
+        1024: 4096,
+        1280: 4096,
+        1536: 4096,
+        1792: 4096,
+        2048: 4096,
+        2304: 4096,
+        2560: 4096,
+        2816: 4096,
+        3072: 4096,
+        3328: 4096,
+        3584: 3968,
+        3840: 3840,
+        4096: 3328,
+        4352: 3200,
+        4608: 2944,
+        4864: 2816,
+        5376: 2560,
+        5632: 2304,
+        6144: 2048,
+        6400: 2048,
+        7168: 1664,
+        7680: 1536,
+        7936: 1536,
+        8192: 1408,
+        8448: 1408,
+        8704: 1280,
+        8960: 1280,
+        9472: 1152,
+        10240: 1024,
+        11008: 896,
+        11264: 896,
+        12032: 768,
+        12800: 768,
+        14080: 640,
+        14336: 512,
+        15360: 512,
+        15872: 512,
+        17152: 384,
+        18944: 256,
+        22272: 256,
+        25344: 256,
+    },
+    "internal": {
+        1024: 4096,
+        1280: 4096,
+        1536: 4096,
+        1792: 4096,
+        2048: 4096,
+        2304: 4096,
+        2560: 4096,
+        2816: 4096,
+        3072: 4096,
+        3328: 4096,
+        3584: 4096,
+        3840: 3968,
+        4096: 3456,
+        4352: 3328,
+        4608: 3072,
+        4864: 2944,
+        5376: 2688,
+        5632: 2432,
+        6144: 2304,
+        6400: 2176,
+        7168: 1920,
+        7680: 1664,
+        7936: 1664,
+        8704: 1536,
+        9472: 1408,
+        11264: 1024,
+        12800: 896,
+        14336: 768,
+        15872: 640,
+        18944: 384,
+    },
+}
+
+# The sweeps ran at the kernel's vmem_limit_bytes, which is 64 MiB (67,108,864),
+# NOT 64e6. Getting this wrong silently disables the table and falls back to the
+# fit -- caught by tile_size_grid_search_test.test_bkv_ceiling_is_per_family.
+_MEASURED_VMEM_BYTES = 64 * 1024 * 1024
+
+
+def vmem_family(attention: str) -> str:
+  """Which calibrated VMEM fit applies to this attention kernel."""
+  return "internal" if attention in INTERNAL_PERM_KERNELS else "external"
+
+
 def vmem_bkv_ceiling(
     bq: int,
     *,
     vmem_bytes: int,
     dtype_bytes: int = 4,
-    score_fraction: float = 0.65,
-    align: int = MXU_TILE,
+    align: int = VPU_LANE,
+    family: str = "external",
 ) -> int:
-  """Approx largest bkv_compute whose score tile [bq, bkv]*dtype_bytes fits the fraction
-  of VMEM left after the kernel's other resident tiles (ring fp32 residual windows, K/V,
-  Q, accumulators).  APPROXIMATE — OOM-pruning in the orchestrator is the real guard.
-  Default 0.65 fits the ulysses_ring_custom kernel (measured: bkv 1152 fits, 1280 OOMs
-  at bq=9472 / 64 MB)."""
-  budget = int(vmem_bytes * score_fraction)
-  return max(align, _floor_to(budget // (bq * dtype_bytes), align))
+  """Largest bkv that fits at this bq. Returns 0 when bq alone exhausts VMEM.
+
+  align defaults to VPU_LANE (128), not MXU_TILE: the measured optima include
+  1152, 1280 and 1408, none of which a 256-aligned ladder can express.
+  """
+  # Prefer the measured ceiling when this exact bq was swept at this VMEM size.
+  if abs(vmem_bytes - _MEASURED_VMEM_BYTES) < 512 * 1024:
+    hit = _MEASURED_BKV_CEILING.get(family, {}).get(bq)
+    if hit is not None:
+      return _floor_to(hit, align)
+  a, b = _VMEM_FIT[family]
+  per_row = vmem_bytes / max(bq, 1) - b
+  if per_row <= 0:
+    return 0
+  return max(0, _floor_to(int(per_row / (a * dtype_bytes)), align))
+
+
+def vmem_bq_ceiling(
+    bkv: int,
+    *,
+    vmem_bytes: int,
+    dtype_bytes: int = 4,
+    align: int = VPU_LANE,
+    family: str = "external",
+) -> int:
+  """Largest bq that fits at this bkv (inverse of `vmem_bkv_ceiling`)."""
+  a, b = _VMEM_FIT[family]
+  return max(align, _floor_to(int(vmem_bytes / (a * bkv * dtype_bytes + b)), align))
 
 
 def bkv_candidates(seq_len: int, *, k: int = 3, align: int = VPU_LANE, max_block: int) -> list[int]:
@@ -292,7 +431,7 @@ class BlockBenchmark:
     raise NotImplementedError
 
   def dtype_bytes(self) -> int:
-    return 2  # bf16 q/k/v; score tile is f32 (4) -> handled by score_fraction tuning
+    return 2  # bf16 q/k/v; the score tile is f32 (4) -> see _MEASURED_BKV_CEILING
 
   def run(
       self,
@@ -399,10 +538,10 @@ def smart_grid(
     vmem_bytes: int,
     dtype_bytes: int = 4,
     k_bq: int = 3,
-    k_bkv: int = 3,
+    k_bkv: int = 4,
     spread_bq: int = 2,
-    score_fraction: float = 0.65,
     min_bkv_ref: int = 1024,
+    family: str = "external",
 ) -> list[tuple[int, int]]:
   """Nested candidate pairs: BQ = VMEM-capped fewest-tile ladder + spread; then for EACH bq,
   BKV = largest-that-fits at that bq (so bkv is VMEM-correct for its partner, not globally).
@@ -413,21 +552,11 @@ def smart_grid(
   so the fewest-tile ladder starts at the single-tile end (which OOMs for a large per-shard seq)
   and the feasible moderate-BQ optimum (e.g. bq=9472 at seq 37800) falls in the ladder's gap.
   """
-  bq_cap = vmem_bq_ceiling(
-      min_bkv_ref,
-      vmem_bytes=vmem_bytes,
-      dtype_bytes=dtype_bytes,
-      score_fraction=score_fraction,
-  )
+  bq_cap = vmem_bq_ceiling(min_bkv_ref, vmem_bytes=vmem_bytes, dtype_bytes=dtype_bytes, family=family)
   bqs = bq_candidates(q_seq, k=k_bq, spread=spread_bq, max_block=bq_cap)
   pairs: list[tuple[int, int]] = []
   for bq in bqs:
-    bkv_cap = vmem_bkv_ceiling(
-        bq,
-        vmem_bytes=vmem_bytes,
-        dtype_bytes=dtype_bytes,
-        score_fraction=score_fraction,
-    )
+    bkv_cap = vmem_bkv_ceiling(bq, vmem_bytes=vmem_bytes, dtype_bytes=dtype_bytes, family=family)
     for bkv in bkv_candidates(kv_seq, k=k_bkv, max_block=bkv_cap):
       pairs.append((bq, bkv))
   return pairs
@@ -461,8 +590,11 @@ def grid_search(
   winner (lowest mean_ms among status=='ok').  `mode`: 'smart' (candidate ladders) | 'full'.
   """
   q_seq, kv_seq = bench.tiled_seq_lens()
+  # The VMEM fit is per kernel family (see `_VMEM_FIT`); read the attention name
+  # off the bench when it exposes one, else assume the external ring.
+  family = vmem_family(getattr(bench, "_attention", "") or "")
   if mode == "smart":
-    pairs = smart_grid(q_seq, kv_seq, vmem_bytes=bench.vmem_bytes(), dtype_bytes=4, k_bq=k, k_bkv=k)
+    pairs = smart_grid(q_seq, kv_seq, vmem_bytes=bench.vmem_bytes(), dtype_bytes=4, k_bq=k, k_bkv=max(k, 4), family=family)
   elif mode == "full":
     log(
         "Warning: tile_search mode is 'full', not 'smart' -- this is an exhaustive O(N^2) 2D BQ x BKV"
@@ -473,7 +605,10 @@ def grid_search(
   else:
     raise ValueError(f"mode must be 'smart' or 'full', got {mode!r}")
 
-  log(f"[tile-search] {bench.label}: q_seq={q_seq} kv_seq={kv_seq} mode={mode} " f"-> {len(pairs)} configs (iters={iters})")
+  log(
+      f"[tile-search] {bench.label}: q_seq={q_seq} kv_seq={kv_seq} mode={mode} "
+      f"family={family} -> {len(pairs)} configs (iters={iters})"
+  )
   results: list[BenchResult] = []
   for i, (bq, bkv) in enumerate(pairs, 1):
     if jax.process_count() > 1:
