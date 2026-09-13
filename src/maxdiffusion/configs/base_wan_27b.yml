@@ -90,9 +90,18 @@ attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cud
 #   CP4  (v7x-8):  ulysses_shards=2 (R=2), BQ=9472
 #   CP8  (v7x-8):  ulysses_shards=4 (R=2), BQ=9472
 #   CP16 (v7x-16): ulysses_shards=8 (R=2), BQ=9472
+#
+# WARNING: ulysses_shards only has an effect on the *ring* variants.
+#   - Setting U == CP gives R=1, which is a DEGENERATE ring: no KV is rotated
+#     and the result is mathematically identical to the non-ring
+#     ulysses_custom* kernel. Such a run must not be reported as a ring result.
+#     The attention layer logs a warning when this happens.
+#   - The non-ring ulysses/ulysses_custom* kernels always use the full context
+#     axis, so their Ulysses degree is fixed at CP. Passing a different
+#     ulysses_shards to them now raises instead of being silently ignored.
 use_base2_exp: True
 use_experimental_scheduler: True
-# For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
+# For attention=ulysses_ring*, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
 # For communication-compute overlap to be effective, enable the following XLA flags:

@@ -1,0 +1,4 @@
+{
+  "summary": "Corrected CPU-runnable regression test for the dot-product fallback layout bug. Fixes two errors in the first draft: the function returns [B, S, H*D] so outputs are now unflattened via reshape+swapaxes before comparison, and the reviewer's counterexample is now encoded correctly as seq=3 tokens with dim_head=1 (values [1,2,3] and [10,20,30] across tokens), which yields the expected [2,20] and the buggy [8,14]. Includes a reference-comparison test on random 4-D inputs, a 3-D/4-D equivalence test, and a GQA repeat test.",
+  "updatedAt": "2026-09-15T06:35:06.254781354Z"
+}

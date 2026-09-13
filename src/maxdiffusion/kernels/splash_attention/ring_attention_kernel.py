@@ -938,7 +938,7 @@ def _custom_ring_attention_forward(
   if use_fixed_m and k_mean is not None and k_mean.shape[-1] < q.shape[-1]:
     k_mean = jnp.pad(k_mean, ((0, 0), (0, q.shape[-1] - k_mean.shape[-1])))
 
-  global_recenter, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=False)
+  global_recenter, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=True)
   local_recenter, per_shard_bound = custom_splash.get_fixed_m_constants(orig_kv_seq_len, is_ring=True)
   if bidirectional:
     if perm is not None or (ring_size is not None and ring_size != axis_size):
