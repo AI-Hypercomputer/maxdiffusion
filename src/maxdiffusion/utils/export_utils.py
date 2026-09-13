@@ -212,21 +212,18 @@ def export_to_video(
   if output_video_path is None:
     output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-  if isinstance(video_frames, np.ndarray):
-    if video_frames.dtype != np.uint8:
-      video_frames = (video_frames * 255).astype(np.uint8)
-  elif isinstance(video_frames[0], np.ndarray):
-    video_frames = np.stack(video_frames)
-    if video_frames.dtype != np.uint8:
-      video_frames = (video_frames * 255).astype(np.uint8)
-  elif isinstance(video_frames[0], PIL.Image.Image):
+  if isinstance(video_frames, list) and len(video_frames) > 0 and isinstance(video_frames[0], PIL.Image.Image):
     video_frames = np.stack([np.asarray(frame) for frame in video_frames])
+  else:
+    video_frames = np.asarray(video_frames)
+    if video_frames.dtype != np.uint8:
+      video_frames = (video_frames * 255).clip(0, 255).astype(np.uint8)
 
   with imageio.get_writer(
       output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size
   ) as writer:
     for frame in video_frames:
-      writer.append_data(frame)
+      writer.append_data(np.asarray(frame))
 
   return output_video_path
 
