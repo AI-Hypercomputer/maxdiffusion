@@ -585,6 +585,7 @@ def run_inference_2_2_i2v(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
+          svg_step_index=step,
       )
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
 
@@ -681,6 +682,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=step,
         )
         noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
         ref_noise_pred = noise_pred
@@ -722,6 +724,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=step,
         )
         return jnp.transpose(out, (0, 2, 3, 4, 1))
 
@@ -853,6 +856,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache_cond,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask_cond,
+            svg_step_index=step,
         )
       else:
         # ── Full CFG step: doubled batch, store raw cond/uncond for cache ──
@@ -876,6 +880,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=step,
         )
 
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))  # BCFHW -> BFHWC
@@ -894,6 +899,7 @@ def run_inference_2_2_i2v(
         r_emb,
         mask_high,
         _,
+        svg_step_index,
     ) = operands
     return transformer_forward_pass(
         high_noise_graphdef,
@@ -908,6 +914,7 @@ def run_inference_2_2_i2v(
         kv_cache=kv_cache_high,
         rotary_emb=r_emb,
         encoder_attention_mask=mask_high,
+        svg_step_index=svg_step_index,
     )
 
   def low_noise_branch(operands):
@@ -921,6 +928,7 @@ def run_inference_2_2_i2v(
         r_emb,
         _,
         mask_low,
+        svg_step_index,
     ) = operands
     return transformer_forward_pass(
         low_noise_graphdef,
@@ -935,6 +943,7 @@ def run_inference_2_2_i2v(
         kv_cache=kv_cache_low,
         rotary_emb=r_emb,
         encoder_attention_mask=mask_low,
+        svg_step_index=svg_step_index,
     )
 
   if do_classifier_free_guidance:
@@ -979,6 +988,7 @@ def run_inference_2_2_i2v(
               rotary_emb,
               encoder_attention_mask_high,
               encoder_attention_mask_low,
+              current_scheduler_state.step_index,
           ),
       )
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
@@ -1023,6 +1033,7 @@ def run_inference_2_2_i2v(
         rotary_emb,
         encoder_attention_mask_high,
         encoder_attention_mask_low,
+        step,
     ))
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

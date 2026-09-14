@@ -422,6 +422,7 @@ def run_inference_2_1_i2v(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
+          svg_step_index=current_scheduler_state.step_index,
       )
 
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
@@ -481,6 +482,7 @@ def run_inference_2_1_i2v(
         kv_cache=kv_cache,
         rotary_emb=rotary_emb,
         encoder_attention_mask=encoder_attention_mask,
+        svg_step_index=step,
     )
     if use_magcache and do_cfg:
       noise_pred, residual_x_cur = outputs

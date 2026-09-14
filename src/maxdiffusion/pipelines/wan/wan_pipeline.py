@@ -56,7 +56,6 @@ except ModuleNotFoundError:
     FlaxCLIPVisionModel = None
 import PIL
 
-
 TORCH_DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
@@ -342,11 +341,43 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
+  high_density = float(getattr(config, "svg_high_noise_density", -1.0))
+  low_density = float(getattr(config, "svg_low_noise_density", -1.0))
+
+  if subfolder == "transformer" and high_density >= 0:
+    expert_density = high_density
+  elif subfolder == "transformer_2" and low_density >= 0:
+    expert_density = low_density
+  else:
+    expert_density = float(getattr(config, "svg_spatial_density", 0.25))
+
+  use_svg_for_expert = bool(getattr(config, "use_svg_attention", False)) and (expert_density < 1.0)
+
   wan_config["attention_config"] = {
       "use_base2_exp": config.use_base2_exp,
       "use_experimental_scheduler": config.use_experimental_scheduler,
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
       "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
+      "use_svg_attention": use_svg_for_expert,
+      "svg_implementation": getattr(config, "svg_implementation", "official_svg"),
+      "svg_spatial_density": expert_density,
+      "svg_sample_max_row": getattr(config, "svg_sample_max_row", 10000),
+      "svg_profile_query_count": getattr(config, "svg_profile_query_count", 64),
+      "svg_profile_seed": getattr(config, "svg_profile_seed", 0),
+      "svg_dense_layer_fraction": getattr(config, "svg_dense_layer_fraction", 0.0),
+      "svg_dense_timestep_fraction": getattr(config, "svg_dense_timestep_fraction", 0.0),
+      "svg_active_start_step": getattr(config, "svg_active_start_step", -1),
+      "svg_active_end_step": getattr(config, "svg_active_end_step", -1),
+      "svg_active_start_layer": getattr(config, "svg_active_start_layer", -1),
+      "svg_active_end_layer": getattr(config, "svg_active_end_layer", -1),
+      "svg_num_train_timesteps": getattr(config, "svg_num_train_timesteps", 1000),
+      "svg_num_layers": getattr(config, "svg_num_layers", wan_config.get("num_layers", 40)),
+      "svg_include_first_frame": getattr(config, "svg_include_first_frame", True),
+      "svg_global_stride": getattr(config, "svg_global_stride", 0),
+      "svg_global_offset": getattr(config, "svg_global_offset", 0),
+      "svg_high_noise_density": high_density,
+      "svg_low_noise_density": low_density,
+      "svg_flash_block_sizes": getattr(config, "svg_flash_block_sizes", None) or None,
   }
 
   # 2. eval_shape - will not use flops or create weights on device
@@ -1380,6 +1411,7 @@ def transformer_forward_pass(
     kv_cache=None,
     rotary_emb=None,
     encoder_attention_mask=None,
+    svg_step_index=None,
 ):
   if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
     latents = jnp.concatenate([latents, latents], axis=0)
@@ -1395,6 +1427,7 @@ def transformer_forward_pass(
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
+      svg_step_index=svg_step_index,
   )
 
   if return_residual:
@@ -1453,6 +1486,7 @@ def transformer_forward_pass_full_cfg(
     kv_cache=None,
     rotary_emb=None,
     encoder_attention_mask=None,
+    svg_step_index=None,
 ):
   """Full CFG forward pass.
 
@@ -1474,6 +1508,7 @@ def transformer_forward_pass_full_cfg(
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
+      svg_step_index=svg_step_index,
   )
   noise_cond = noise_pred[:bsz]
   noise_uncond = noise_pred[bsz:]
@@ -1498,6 +1533,7 @@ def transformer_forward_pass_cfg_cache(
     kv_cache=None,
     rotary_emb=None,
     encoder_attention_mask=None,
+    svg_step_index=None,
 ):
   """CFG-Cache forward pass with FFT frequency-domain compensation.
 
@@ -1526,6 +1562,7 @@ def transformer_forward_pass_cfg_cache(
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
+      svg_step_index=svg_step_index,
   )
 
   # FFT over spatial dims (H, W) — last 2 dims of [B, C, F, H, W]
