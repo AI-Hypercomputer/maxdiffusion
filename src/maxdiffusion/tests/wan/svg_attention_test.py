@@ -223,6 +223,26 @@ class SVGAttentionUnitTest(unittest.TestCase):
     exp2_weights /= jnp.sum(exp2_weights, axis=-1, keepdims=True)
     np.testing.assert_allclose(np.asarray(natural), np.asarray(exp2_weights), rtol=2e-6, atol=2e-6)
 
+  def test_inactive_static_step_with_traced_layer(self):
+    for step in (0, 40):
+
+      def active(layer):
+        result = svg_attention.is_svg_active(
+            step_index=step, layer_index=layer, start_step=11, end_step=40, start_layer=1, end_layer=40
+        )
+        self.assertIs(result, False)
+        return result
+
+      self.assertFalse(bool(jax.jit(active)(jnp.asarray(2))))
+
+    active = jax.jit(
+        lambda step, layer: svg_attention.is_svg_active(
+            step_index=step, layer_index=layer, start_step=11, end_step=40, start_layer=1, end_layer=40
+        )
+    )
+    self.assertTrue(bool(active(jnp.asarray(11), jnp.asarray(1))))
+    self.assertFalse(bool(active(jnp.asarray(10), jnp.asarray(1))))
+
   def test_10_step_scheduling_exact_counts(self):
     num_inference_steps = 40
     active_start_step = 12
@@ -412,6 +432,18 @@ class SVGAttentionUnitTest(unittest.TestCase):
         out_ref.astype(jnp.float32)
     )
     self.assertLess(float(rel_l2), 0.01)
+
+  def test_svg_cache_check_without_loaded_low_noise_transformer(self):
+    from unittest.mock import Mock
+    from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+
+    pipeline = WanPipeline2_2.__new__(WanPipeline2_2)
+    pipeline.use_svg_attention = False
+    pipeline.low_noise_transformer = None
+    pipeline._prepare_model_inputs = Mock(side_effect=RuntimeError("reached input preparation"))
+    with self.assertRaisesRegex(RuntimeError, "reached input preparation"):
+      pipeline(prompt="test")
+    pipeline._prepare_model_inputs.assert_called_once()
 
   def test_svg_cache_incompatibility_fail_closed(self):
     from types import SimpleNamespace

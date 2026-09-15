@@ -218,6 +218,8 @@ def is_svg_active(
   if explicit_schedule:
     if step_index is None or layer_index is None:
       raise ValueError("Explicit SVG schedules require both step_index and layer_index.")
+    if isinstance(step_index, Integral) and not start_step <= step_index < end_step:
+      return False
     if isinstance(layer_index, Integral) and not start_layer <= layer_index < end_layer:
       return False
     if isinstance(step_index, Integral) and isinstance(layer_index, Integral):

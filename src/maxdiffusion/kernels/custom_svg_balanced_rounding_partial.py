@@ -194,6 +194,8 @@ def make_padding_partial_from_table(
   def partial(q, k, v):
     heads, _, dq = q.shape
     dv = v.shape[-1]
+    if dv % NUM_SUBLANES:
+      raise NotImplementedError(f"head_dim_v={dv} must be divisible by {NUM_SUBLANES}")
 
     def qmap(h, qi, slot, *refs):
       del slot, refs

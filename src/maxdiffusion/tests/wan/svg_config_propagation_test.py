@@ -101,6 +101,20 @@ class SVGConfigPropagationTest(unittest.TestCase):
     self.assertTrue(m_low.blocks[0].attn1.use_svg_attention)
     self.assertEqual(m_low.blocks[0].attn1.svg_spatial_density, 0.20)
 
+    cfg.svg_high_noise_density = None
+    cfg.svg_low_noise_density = None
+    for subfolder in ("transformer", "transformer_2"):
+      fallback = create_sharded_logical_transformer(
+          devices_array=devices,
+          mesh=mesh,
+          rngs=nnx.Rngs(0),
+          config=cfg,
+          restored_checkpoint={"wan_config": dict(test_wan_config), "wan_state": {}},
+          subfolder=subfolder,
+      )
+      self.assertEqual(fallback.blocks[0].attn1.svg_spatial_density, 0.25)
+      self.assertTrue(fallback.blocks[0].attn1.use_svg_attention)
+
     cfg_dense = SimpleNamespace(
         use_svg_attention=False,
         precision="DEFAULT",

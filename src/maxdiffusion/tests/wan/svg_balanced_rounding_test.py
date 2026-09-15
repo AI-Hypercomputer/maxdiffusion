@@ -28,6 +28,7 @@ import pytest
 from maxdiffusion.kernels import custom_svg_attention_dispatch as dispatch
 from maxdiffusion.kernels import custom_svg_balanced_rounding_attention as balanced
 from maxdiffusion.kernels import custom_svg_static_range_attention as static_range
+from maxdiffusion.kernels import custom_svg_balanced_rounding_partial as padding
 
 
 def _bs():
@@ -250,3 +251,21 @@ def test_production_kernel_matches_rounded_support(n, dense_support, use_base2_e
   relative_error = np.linalg.norm(actual - expected) / np.linalg.norm(expected)
   assert relative_error < 0.01, relative_error
   np.testing.assert_allclose(actual, expected, rtol=0, atol=0.05)
+
+
+def test_padding_partial_rejects_unaligned_value_dimension():
+  block = 128
+  bs = static_range.SVGBlockSizes(block_q=block, block_kv=block, block_kv_compute=block, block_kv_compute_in=block)
+  kernel = padding.make_padding_partial_from_table(
+      table_np=np.zeros((1, 1), dtype=np.int32),
+      active_np=np.ones((1,), dtype=np.int32),
+      block_sizes=bs,
+      orig_q_seq_len=127,
+      orig_kv_seq_len=127,
+      band_width=128,
+      frame_size=128,
+  )
+  q = jnp.zeros((1, block, 128), dtype=jnp.bfloat16)
+  v = jnp.zeros((1, block, padding.NUM_SUBLANES + 1), dtype=jnp.bfloat16)
+  with pytest.raises(NotImplementedError, match="must be divisible"):
+    kernel(q, q, v)

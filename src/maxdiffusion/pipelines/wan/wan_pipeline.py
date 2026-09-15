@@ -341,8 +341,10 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
-  high_density = float(getattr(config, "svg_high_noise_density", -1.0))
-  low_density = float(getattr(config, "svg_low_noise_density", -1.0))
+  high_density = getattr(config, "svg_high_noise_density", None)
+  low_density = getattr(config, "svg_low_noise_density", None)
+  high_density = -1.0 if high_density is None else float(high_density)
+  low_density = -1.0 if low_density is None else float(low_density)
 
   if subfolder == "transformer" and high_density >= 0:
     expert_density = high_density
