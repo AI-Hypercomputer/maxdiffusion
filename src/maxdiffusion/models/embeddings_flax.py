@@ -546,14 +546,19 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
 
   @nn.compact
   def __call__(self, timestep, guidance, pooled_projection=None):
-    timesteps_proj = FlaxTimesteps(dim=self.frequency_embedding_size, flip_sin_to_cos=True, freq_shift=0)(timestep)
+    # timestep and guidance arrive already projected: FluxTransformer2DModel runs
+    # both through its own timestep_embedding(), which carries a time_factor the
+    # sinusoidal helper here does not. Projecting again would shape them
+    # (batch, frequency_embedding_size, embedding_dim) and break the sum with the
+    # pooled projection below. The NNX variant owns its projection instead.
+    timesteps_proj = timestep
     dtype = pooled_projection.dtype if pooled_projection is not None else jnp.float32
     timestep_emb = FlaxTimestepEmbedding(
         time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
     )(timesteps_proj.astype(dtype))
 
     if self.guidance_embeds and guidance is not None:
-      guidance_proj = FlaxTimesteps(dim=self.frequency_embedding_size, flip_sin_to_cos=True, freq_shift=0)(guidance)
+      guidance_proj = guidance
       guidance_emb = FlaxTimestepEmbedding(
           time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
       )(guidance_proj.astype(dtype))
