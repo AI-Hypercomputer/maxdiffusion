@@ -468,10 +468,16 @@ def delete_file(file_path: str):
     max_logging.log(f"The file '{file_path}' does not exist.")
 
 
-def get_git_commit_hash():
+def get_git_commit_hash(check_dirty: bool = True):
   """Tries to get the current Git commit hash, for run provenance."""
   try:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
+    repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    commit = subprocess.check_output(["git", "-C", repo_dir, "rev-parse", "HEAD"]).strip().decode("utf-8")
+    if check_dirty:
+      status = subprocess.check_output(["git", "-C", repo_dir, "status", "--porcelain"]).strip().decode("utf-8")
+      if status:
+        return f"{commit}-dirty"
+    return commit
   except subprocess.CalledProcessError:
     max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
     return None
