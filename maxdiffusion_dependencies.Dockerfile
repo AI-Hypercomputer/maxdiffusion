@@ -1,5 +1,5 @@
-# Use Python 3.12-slim-bullseye as the base image unless overridden
-ARG BASEIMAGE=python:3.12-slim-bullseye
+# Use Python 3.12-slim-bookworm as the base image unless overridden
+ARG BASEIMAGE=python:3.12-slim-bookworm
 FROM $BASEIMAGE
 
 # Environment variable for no-cache-dir and pip root user warning
@@ -23,8 +23,9 @@ RUN apt-get update && apt-get install -y apt-utils git curl gnupg procps iproute
 RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list
 
-# Install the Google Cloud SDK
-RUN apt-get update && apt-get install -y google-cloud-sdk && rm -rf /var/lib/apt/lists/*
+# Install the Google Cloud CLI. The `google-cloud-sdk` package was retired
+# upstream and is replaced by `google-cloud-cli`, which provides gcloud/gsutil/bq.
+RUN apt-get update && apt-get install -y google-cloud-cli && rm -rf /var/lib/apt/lists/*
 
 # Install diagnostic and storage dependencies using uv
 RUN python -m uv pip install --system \

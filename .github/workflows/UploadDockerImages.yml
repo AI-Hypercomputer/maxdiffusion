@@ -32,8 +32,15 @@ jobs:
     - name: Cleanup old docker images
       run: docker system prune --all --force
     - name: build maxdiffusion stable image
+      id: build_stable
       run: |
         bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_stable MODE=stable PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_stable
+    # The stable and nightly images are independent artifacts with independent
+    # consumers. Without `if: always()` a failure in the stable build silently
+    # skips the nightly build, which is how the nightly image went stale for
+    # 18 consecutive days while its own build was healthy.
     - name: build maxdiffusion nightly image
+      id: build_nightly
+      if: always()
       run: |
         bash .github/workflows/build_and_upload_images.sh CLOUD_IMAGE_NAME=maxdiffusion_jax_nightly MODE=nightly PROJECT=tpu-prod-env-multipod LOCAL_IMAGE_NAME=maxdiffusion_jax_nightly
