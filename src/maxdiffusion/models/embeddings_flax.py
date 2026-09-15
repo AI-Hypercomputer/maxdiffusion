@@ -552,16 +552,15 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
     # (batch, frequency_embedding_size, embedding_dim) and break the sum with the
     # pooled projection below. The NNX variant owns its projection instead.
     timesteps_proj = timestep
-    dtype = pooled_projection.dtype if pooled_projection is not None else jnp.float32
     timestep_emb = FlaxTimestepEmbedding(
         time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
-    )(timesteps_proj.astype(dtype))
+    )(timesteps_proj)
 
     if self.guidance_embeds and guidance is not None:
       guidance_proj = guidance
       guidance_emb = FlaxTimestepEmbedding(
           time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
-      )(guidance_proj.astype(dtype))
+      )(guidance_proj)
       time_guidance_emb = timestep_emb + guidance_emb
     else:
       time_guidance_emb = timestep_emb
