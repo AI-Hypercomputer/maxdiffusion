@@ -31,8 +31,26 @@ NUM_SUBLANES = 8
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))
 
 
+LN2 = float(np.log(2.0))
+
+
 class _BlockSizes:
-  __slots__ = ("block_q", "block_kv", "block_kv_compute", "block_kv_compute_in")
+  __slots__ = (
+      "block_q",
+      "block_kv",
+      "block_kv_compute",
+      "block_kv_compute_in",
+      "block_q_dkv",
+      "block_kv_dkv",
+      "block_kv_dkv_compute",
+      "block_kv_dkv_compute_in",
+      "block_q_dq",
+      "block_kv_dq",
+      "block_kv_dq_compute",
+      "block_kv_dq_compute_in",
+      "use_fused_bwd_kernel",
+      "dq_reduction_steps",
+  )
 
   def __init__(
       self,
@@ -40,11 +58,65 @@ class _BlockSizes:
       block_kv: int,
       block_kv_compute: int | None = None,
       block_kv_compute_in: int = 256,
+      block_q_dkv: int | None = None,
+      block_kv_dkv: int | None = None,
+      block_kv_dkv_compute: int | None = None,
+      block_kv_dkv_compute_in: int | None = None,
+      block_q_dq: int | None = None,
+      block_kv_dq: int | None = None,
+      block_kv_dq_compute: int | None = None,
+      block_kv_dq_compute_in: int | None = None,
+      use_fused_bwd_kernel: bool = True,
+      dq_reduction_steps: int | None = 3,
   ):
     self.block_q = block_q
     self.block_kv = block_kv
     self.block_kv_compute = block_kv_compute if block_kv_compute is not None else block_kv
     self.block_kv_compute_in = block_kv_compute_in
+    self.block_q_dkv = block_q_dkv if block_q_dkv is not None else block_q
+    self.block_kv_dkv = block_kv_dkv if block_kv_dkv is not None else block_kv
+    self.block_kv_dkv_compute = (
+        block_kv_dkv_compute if block_kv_dkv_compute is not None else self.block_kv_dkv
+    )
+    self.block_kv_dkv_compute_in = (
+        block_kv_dkv_compute_in if block_kv_dkv_compute_in is not None else block_kv_compute_in
+    )
+    self.block_q_dq = block_q_dq if block_q_dq is not None else block_q
+    self.block_kv_dq = block_kv_dq if block_kv_dq is not None else block_kv
+    self.block_kv_dq_compute = (
+        block_kv_dq_compute if block_kv_dq_compute is not None else self.block_kv_dq
+    )
+    self.block_kv_dq_compute_in = (
+        block_kv_dq_compute_in if block_kv_dq_compute_in is not None else block_kv_compute_in
+    )
+    self.use_fused_bwd_kernel = use_fused_bwd_kernel
+    self.dq_reduction_steps = dq_reduction_steps
+
+  def _as_tuple(self):
+    return (
+        self.block_q,
+        self.block_kv,
+        self.block_kv_compute,
+        self.block_kv_compute_in,
+        self.block_q_dkv,
+        self.block_kv_dkv,
+        self.block_kv_dkv_compute,
+        self.block_kv_dkv_compute_in,
+        self.block_q_dq,
+        self.block_kv_dq,
+        self.block_kv_dq_compute,
+        self.block_kv_dq_compute_in,
+        self.use_fused_bwd_kernel,
+        self.dq_reduction_steps,
+    )
+
+  def __eq__(self, other):
+    if not isinstance(other, _BlockSizes):
+      return False
+    return self._as_tuple() == other._as_tuple()
+
+  def __hash__(self):
+    return hash(self._as_tuple())
 
 
 # Fixed-m softmax-bound constants. Instead of tracking the online-softmax
@@ -89,6 +161,7 @@ def _flash_attention_kernel(
     fuse_reciprocal: bool = True,
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
+    save_lse: bool = False,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -315,7 +388,11 @@ def _flash_attention_kernel(
       # can merge shard contributions and normalize only once at the very end.
       o_ref[...] = o_scratch_ref[...].astype(o_ref.dtype)
     if l_ring_ref is not None:
-      l_ring_ref[...] = l.astype(l_ring_ref.dtype)
+      if save_lse:
+        log = jnp.log2 if use_base2_exp else jnp.log
+        l_ring_ref[...] = (m_scratch_ref[...] + log(l)).astype(l_ring_ref.dtype)
+      else:
+        l_ring_ref[...] = l.astype(l_ring_ref.dtype)
     if m_ring_ref is not None:
       m_ring_ref[...] = m_scratch_ref[...].astype(m_ring_ref.dtype)
 
@@ -483,6 +560,7 @@ def _splash_attention_forward(
     vmem_limit_bytes: int | None = None,
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
+    save_residuals: bool = False,
 ):
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
@@ -513,6 +591,15 @@ def _splash_attention_forward(
   def v_index_map(h, i, j, *_):
     return (h // q_heads_per_kv_head, j, 0)
 
+  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
+  grid_height = (actual_q_seq_len + bq - 1) // bq
+  active_q_len = grid_height * bq
+  active_kv_len = grid_width * bkv
+
+  q_in = jnp.pad(q, ((0, 0), (0, active_q_len - q.shape[1]), (0, 0))) if q.shape[1] < active_q_len else q
+  k_in = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
+  v_in = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
+
   in_specs = [
       pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
       pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
@@ -522,7 +609,7 @@ def _splash_attention_forward(
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
+      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, active_q_len), q.dtype),
   ]
   out_specs = [
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
@@ -530,8 +617,10 @@ def _splash_attention_forward(
       pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
       pl.BlockSpec((None, head_dim_v, bq), out_index_map),
   ]
-  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
-  grid_height = (actual_q_seq_len + bq - 1) // bq
+  if save_residuals:
+    out_shapes.append(jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, active_q_len), jnp.float32))
+    out_specs.append(pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map))
+
   grid = (num_q_heads, grid_height, grid_width)
 
   all_out = pl.pallas_call(
@@ -546,6 +635,7 @@ def _splash_attention_forward(
           kv_seq_len=actual_kv_seq_len,
           use_base2_exp=use_base2_exp,
           use_fixed_m=use_fixed_m,
+          save_lse=save_residuals,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
@@ -561,8 +651,11 @@ def _splash_attention_forward(
           vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
-  )(mk, q, k, v)
-  return all_out[-1]
+  )(mk, q_in, k_in, v_in)
+  out = all_out[3][:, :, :actual_q_seq_len]
+  if save_residuals:
+    return out, all_out[4][:, :, :actual_q_seq_len]
+  return out
 
 
 def _splash_attention_forward_ring(
@@ -617,6 +710,15 @@ def _splash_attention_forward_ring(
   def v_index_map(h, i, j, *_):
     return (h // q_heads_per_kv_head, j, 0)
 
+  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
+  grid_height = (actual_q_seq_len + bq - 1) // bq
+  active_q_len = grid_height * bq
+  active_kv_len = grid_width * bkv
+
+  q_in = jnp.pad(q, ((0, 0), (0, active_q_len - q.shape[1]), (0, 0))) if q.shape[1] < active_q_len else q
+  k_in = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
+  v_in = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
+
   in_specs = [
       pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
       pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
@@ -626,9 +728,9 @@ def _splash_attention_forward_ring(
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, active_q_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, active_q_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, active_q_len), jnp.float32),
   ]
   out_specs = [
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
@@ -638,8 +740,6 @@ def _splash_attention_forward_ring(
       pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
       pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
   ]
-  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
-  grid_height = (actual_q_seq_len + bq - 1) // bq
   grid = (num_q_heads, grid_height, grid_width)
 
   # Scalar-prefetch operand carrying per-head fixed-m data (same convention as
@@ -678,10 +778,10 @@ def _splash_attention_forward_ring(
           vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
-  )(mk, q, k, v)
-  out = jnp.swapaxes(all_out[3], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
-  l = all_out[4][:, 0, :]  # (h, s)
-  m = all_out[5][:, 0, :]  # (h, s)
+  )(mk, q_in, k_in, v_in)
+  out = jnp.swapaxes(all_out[3][:, :, :actual_q_seq_len], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
+  l = all_out[4][:, 0, :actual_q_seq_len]  # (h, s)
+  m = all_out[5][:, 0, :actual_q_seq_len]  # (h, s)
   return out, m, l
 
 
@@ -774,6 +874,843 @@ def _splash_attention_forward_mhpt(
   return all_out[-1]
 
 
+def _flash_attention_dq_kernel(
+    q_ref,
+    k_ref,
+    v_ref,
+    do_ref,
+    lse_ref,
+    di_ref,
+    dq_scratch_ref,
+    dq_ref,
+    *,
+    grid_width: int,
+    bkv: int,
+    bkv_compute: int,
+    bkv_compute_in: int,
+    kv_seq_len: int,
+    use_base2_exp: bool = True,
+):
+  float32 = jnp.float32
+  _, _, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+  exp = jnp.exp2 if use_base2_exp else jnp.exp
+
+  @pl.when(j == 0)
+  def init():
+    dq_scratch_ref[...] = jnp.zeros_like(dq_scratch_ref)
+
+  def _dq_inner(qk, k_chunk, v_chunk, do, lse, di, dq_prev):
+    step = bkv_compute_in
+    for idx in range(0, qk.shape[0], step):
+      qk_slice = qk[idx : idx + step]
+      v_slice = v_chunk[idx : idx + step]
+      k_slice = k_chunk[idx : idx + step]
+
+      p_curr = exp(qk_slice - lse)
+      dp_curr = lax.dot_general(
+          v_slice,
+          do.astype(v_slice.dtype),
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      ds_curr = p_curr * (dp_curr - di)
+      dq_curr = lax.dot_general(
+          ds_curr.astype(k_slice.dtype),
+          k_slice,
+          (((0,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      dq_prev = dq_prev + dq_curr
+    return dq_prev
+
+  def compute_body(kv_compute_index, _):
+    q = q_ref[...]
+    do = do_ref[...]
+    lse = lse_ref[0:1, :]
+    di = di_ref[0:1, :]
+    base_offset = kv_compute_index * bkv_compute
+    slice_k = pl.ds(base_offset, bkv_compute)
+    k_chunk = k_ref[slice_k, :]
+    v_chunk = v_ref[slice_k, :]
+    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    dq_scratch_ref[...] = _dq_inner(qk, k_chunk, v_chunk, do, lse, di, dq_scratch_ref[...])
+
+  def last_compute_body(kv_compute_index):
+    q = q_ref[...]
+    do = do_ref[...]
+    lse = lse_ref[0:1, :]
+    di = di_ref[0:1, :]
+    slice_k_len = kv_seq_len % bkv_compute
+    slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
+    k_chunk = k_ref[slice_k, :]
+    v_chunk = v_ref[slice_k, :]
+    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    dq_scratch_ref[...] = _dq_inner(qk, k_chunk, v_chunk, do, lse, di, dq_scratch_ref[...])
+
+  assert bkv % bkv_compute == 0
+
+  @pl.when(j != grid_width - 1)
+  def body():
+    lax.fori_loop(0, (bkv // bkv_compute), compute_body, None, unroll=True)
+
+  @pl.when(j == grid_width - 1)
+  def last_body():
+    if kv_seq_len % bkv == 0:
+      iter_num = bkv // bkv_compute
+      lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+    else:
+      remain_kv_seq_len = kv_seq_len % bkv
+      iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
+      if remain_kv_seq_len % bkv_compute == 0:
+        lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+      else:
+        lax.fori_loop(0, iter_num - 1, compute_body, None, unroll=True)
+        last_compute_body(iter_num - 1)
+
+  @pl.when(j == grid_width - 1)
+  def end():
+    if use_base2_exp:
+      dq_ref[...] = (dq_scratch_ref[...] * LN2).astype(dq_ref.dtype)
+    else:
+      dq_ref[...] = dq_scratch_ref[...].astype(dq_ref.dtype)
+
+
+def _flash_attention_dkv_kernel(
+    q_ref,
+    k_ref,
+    v_ref,
+    do_ref,
+    lse_ref,
+    di_ref,
+    dk_scratch_ref,
+    dv_scratch_ref,
+    dk_ref,
+    dv_ref,
+    *,
+    grid_width: int,
+    total_q_steps: int,
+    bkv: int,
+    bkv_compute: int,
+    bkv_compute_in: int,
+    kv_seq_len: int,
+    use_base2_exp: bool = True,
+):
+  float32 = jnp.float32
+  _, j, step_q = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+  exp = jnp.exp2 if use_base2_exp else jnp.exp
+
+  @pl.when(step_q == 0)
+  def init():
+    dk_scratch_ref[...] = jnp.zeros_like(dk_scratch_ref)
+    dv_scratch_ref[...] = jnp.zeros_like(dv_scratch_ref)
+
+  def _dkv_inner(base_offset, qk, q, v_chunk, do, lse, di):
+    step = bkv_compute_in
+    for idx in range(0, qk.shape[0], step):
+      sub_len = min(step, qk.shape[0] - idx)
+      sub_slice = pl.ds(base_offset + idx, sub_len)
+      qk_slice = qk[idx : idx + sub_len]
+      v_slice = v_chunk[idx : idx + sub_len]
+
+      p_curr = exp(qk_slice - lse)
+      dv_curr = lax.dot_general(
+          p_curr.astype(do.dtype),
+          do,
+          NT_DIM_NUMBERS,
+          preferred_element_type=float32,
+      )
+      dv_scratch_ref[sub_slice, :] = dv_scratch_ref[sub_slice, :] + dv_curr
+
+      dp_curr = lax.dot_general(
+          v_slice,
+          do.astype(v_slice.dtype),
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      ds_curr = p_curr * (dp_curr - di)
+      dk_curr = lax.dot_general(
+          ds_curr.astype(q.dtype),
+          q,
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      dk_scratch_ref[sub_slice, :] = dk_scratch_ref[sub_slice, :] + dk_curr
+
+  def compute_body(kv_compute_index, _):
+    q = q_ref[...]
+    do = do_ref[...]
+    lse = lse_ref[0:1, :]
+    di = di_ref[0:1, :]
+    base_offset = kv_compute_index * bkv_compute
+    slice_k = pl.ds(base_offset, bkv_compute)
+    k_chunk = k_ref[slice_k, :]
+    v_chunk = v_ref[slice_k, :]
+    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    _dkv_inner(base_offset, qk, q, v_chunk, do, lse, di)
+
+  def last_compute_body(kv_compute_index):
+    q = q_ref[...]
+    do = do_ref[...]
+    lse = lse_ref[0:1, :]
+    di = di_ref[0:1, :]
+    base_offset = kv_compute_index * bkv_compute
+    slice_k_len = kv_seq_len % bkv_compute
+    slice_k = pl.ds(base_offset, slice_k_len)
+    k_chunk = k_ref[slice_k, :]
+    v_chunk = v_ref[slice_k, :]
+    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    _dkv_inner(base_offset, qk, q, v_chunk, do, lse, di)
+
+  assert bkv % bkv_compute == 0
+
+  @pl.when(j != grid_width - 1)
+  def body():
+    lax.fori_loop(0, (bkv // bkv_compute), compute_body, None, unroll=True)
+
+  @pl.when(j == grid_width - 1)
+  def last_body():
+    if kv_seq_len % bkv == 0:
+      iter_num = bkv // bkv_compute
+      lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+    else:
+      remain_kv_seq_len = kv_seq_len % bkv
+      iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
+      if remain_kv_seq_len % bkv_compute == 0:
+        lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+      else:
+        lax.fori_loop(0, iter_num - 1, compute_body, None, unroll=True)
+        last_compute_body(iter_num - 1)
+
+  @pl.when(step_q == total_q_steps - 1)
+  def end():
+    if use_base2_exp:
+      dk_ref[...] = (dk_scratch_ref[...] * LN2).astype(dk_ref.dtype)
+    else:
+      dk_ref[...] = dk_scratch_ref[...].astype(dk_ref.dtype)
+    dv_ref[...] = dv_scratch_ref[...].astype(dv_ref.dtype)
+
+
+def _flash_attention_bwd_fused_kernel(
+    q_ref,
+    k_ref,
+    v_ref,
+    do_ref,
+    lse_ref,
+    di_ref,
+    dq_alias_ref,
+    dq_ref,
+    dk_ref,
+    dv_ref,
+    dq_scratch_ref,
+    dk_scratch_ref,
+    dv_scratch_ref,
+    *,
+    grid_width: int,
+    grid_height: int,
+    q_heads_per_kv_head: int,
+    bkv: int,
+    bkv_compute: int,
+    bkv_compute_in: int,
+    kv_seq_len: int,
+    use_base2_exp: bool = True,
+    use_dq_aliasing: bool = False,
+):
+  """Fused backward kernel iterating over KV outer (grid_width) and Q inner (num_q_heads, grid_height).
+
+  Computes dQ, dK, and dV in a single pass without masks, ignoring KV tail padding via
+  slice bounds and accumulating dK/dV in VMEM across Q steps and KV head groups.
+  """
+  float32 = jnp.float32
+  j, h_q, i = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+  exp = jnp.exp2 if use_base2_exp else jnp.exp
+
+  q_head_in_group = lax.rem(h_q, q_heads_per_kv_head)
+  should_init_dkv = jnp.logical_and(i == 0, q_head_in_group == 0)
+  should_write_dkv = jnp.logical_and(
+      i == grid_height - 1, q_head_in_group == q_heads_per_kv_head - 1
+  )
+
+  @pl.when(should_init_dkv)
+  def init_dkv():
+    dk_scratch_ref[...] = jnp.zeros_like(dk_scratch_ref)
+    dv_scratch_ref[...] = jnp.zeros_like(dv_scratch_ref)
+
+  dq_scratch_ref[...] = jnp.zeros_like(dq_scratch_ref)
+
+  def _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di):
+    step = bkv_compute_in
+    dq_acc = dq_scratch_ref[...]
+    for idx in range(0, qk.shape[0], step):
+      sub_len = min(step, qk.shape[0] - idx)
+      sub_slice = pl.ds(base_offset + idx, sub_len)
+      qk_slice = qk[idx : idx + sub_len]
+      k_slice = k_chunk[idx : idx + sub_len]
+      v_slice = v_chunk[idx : idx + sub_len]
+
+      p_curr = exp(qk_slice - lse)
+      dv_curr = lax.dot_general(
+          p_curr.astype(do.dtype),
+          do,
+          NT_DIM_NUMBERS,
+          preferred_element_type=float32,
+      )
+      dv_scratch_ref[sub_slice, :] = dv_scratch_ref[sub_slice, :] + dv_curr
+
+      dp_curr = lax.dot_general(
+          v_slice,
+          do.astype(v_slice.dtype),
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      ds_curr = p_curr * (dp_curr - di)
+      dk_curr = lax.dot_general(
+          ds_curr.astype(q.dtype),
+          q,
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      dk_scratch_ref[sub_slice, :] = dk_scratch_ref[sub_slice, :] + dk_curr
+
+      dq_curr = lax.dot_general(
+          ds_curr.astype(k_slice.dtype),
+          k_slice,
+          (((0,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      dq_acc = dq_acc + dq_curr
+    dq_scratch_ref[...] = dq_acc
+
+  def compute_body(kv_compute_index, _):
+    q = q_ref[...]
+    do = do_ref[...]
+    lse = lse_ref[0:1, :]
+    di = di_ref[0:1, :]
+    base_offset = kv_compute_index * bkv_compute
+    slice_k = pl.ds(base_offset, bkv_compute)
+    k_chunk = k_ref[slice_k, :]
+    v_chunk = v_ref[slice_k, :]
+    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di)
+
+  def last_compute_body(kv_compute_index):
+    q = q_ref[...]
+    do = do_ref[...]
+    lse = lse_ref[0:1, :]
+    di = di_ref[0:1, :]
+    base_offset = kv_compute_index * bkv_compute
+    slice_k_len = kv_seq_len % bkv_compute
+    slice_k = pl.ds(base_offset, slice_k_len)
+    k_chunk = k_ref[slice_k, :]
+    v_chunk = v_ref[slice_k, :]
+    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di)
+
+  assert bkv % bkv_compute == 0
+
+  @pl.when(j != grid_width - 1)
+  def body():
+    lax.fori_loop(0, (bkv // bkv_compute), compute_body, None, unroll=True)
+
+  @pl.when(j == grid_width - 1)
+  def last_body():
+    if kv_seq_len % bkv == 0:
+      iter_num = bkv // bkv_compute
+      lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+    else:
+      remain_kv_seq_len = kv_seq_len % bkv
+      iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
+      if remain_kv_seq_len % bkv_compute == 0:
+        lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+      else:
+        lax.fori_loop(0, iter_num - 1, compute_body, None, unroll=True)
+        last_compute_body(iter_num - 1)
+
+  if use_base2_exp:
+    dq_val = (dq_scratch_ref[...] * LN2).astype(dq_ref.dtype)
+  else:
+    dq_val = dq_scratch_ref[...].astype(dq_ref.dtype)
+
+  if use_dq_aliasing:
+
+    @pl.when(j < 3)
+    def write_dq_first():
+      dq_ref[...] = dq_val
+
+    @pl.when(j >= 3)
+    def write_dq_acc():
+      dq_ref[...] = dq_alias_ref[...] + dq_val
+
+  else:
+    dq_ref[...] = dq_val
+
+  @pl.when(should_write_dkv)
+  def end_dkv():
+    if use_base2_exp:
+      dk_ref[...] = (dk_scratch_ref[...] * LN2).astype(dk_ref.dtype)
+    else:
+      dk_ref[...] = dk_scratch_ref[...].astype(dk_ref.dtype)
+    dv_ref[...] = dv_scratch_ref[...].astype(dv_ref.dtype)
+
+
+def _splash_attention_bwd_fused(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    do: jax.Array,
+    lse: jax.Array,
+    di: jax.Array,
+    block_sizes: _BlockSizes,
+    actual_q_seq_len: int,
+    actual_kv_seq_len: int,
+    padded_q_seq_len: int,
+    padded_kv_seq_len: int,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+):
+  num_q_heads, _, head_dim_qk = q.shape
+  head_dim_v = v.shape[-1]
+  num_kv_heads = k.shape[0]
+  q_heads_per_kv_head = num_q_heads // num_kv_heads
+
+  bq = block_sizes.block_q_dkv
+  bkv = block_sizes.block_kv_dkv
+  bkv_compute = block_sizes.block_kv_dkv_compute
+  bkv_compute_in = block_sizes.block_kv_dkv_compute_in
+
+  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
+  grid_height = (actual_q_seq_len + bq - 1) // bq
+  active_q_len = grid_height * bq
+  active_kv_len = grid_width * bkv
+
+  if actual_q_seq_len < active_q_len:
+    pad_q = active_q_len - actual_q_seq_len
+    q_bwd = jnp.pad(q[:, :actual_q_seq_len, :], ((0, 0), (0, pad_q), (0, 0)))
+    do_bwd = jnp.pad(do[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+    lse_bwd = jnp.pad(lse[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+    di_bwd = jnp.pad(di[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+  elif q.shape[1] > active_q_len:
+    q_bwd = q[:, :active_q_len, :]
+    do_bwd = do[:, :, :active_q_len]
+    lse_bwd = lse[:, :, :active_q_len]
+    di_bwd = di[:, :, :active_q_len]
+  else:
+    q_bwd, do_bwd, lse_bwd, di_bwd = q, do, lse, di
+
+  k_bwd = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
+  v_bwd = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
+
+  use_dq_aliasing = (
+      block_sizes.dq_reduction_steps == 3 and grid_width > 3
+  )
+
+  if use_dq_aliasing:
+    dq_index_map = lambda j, h_q, i, *_: (j % 3, h_q, i, 0)
+    dq_spec = pl.BlockSpec((None, None, bq, head_dim_qk), dq_index_map)
+    dq_alias_spec = dq_spec
+    dq_dtype = jnp.float32
+    dq_shape = jax.ShapeDtypeStruct((3, num_q_heads, active_q_len, head_dim_qk), dq_dtype)
+    dq_init = lax.empty((3, num_q_heads, active_q_len, head_dim_qk), dtype=dq_dtype)
+  else:
+    dq_index_map = lambda j, h_q, i, *_: (j, h_q, i, 0)
+    dq_spec = pl.BlockSpec((None, None, bq, head_dim_qk), dq_index_map)
+    dq_alias_spec = None
+    dq_dtype = q.dtype if grid_width == 1 else jnp.float32
+    dq_shape = jax.ShapeDtypeStruct((grid_width, num_q_heads, active_q_len, head_dim_qk), dq_dtype)
+    dq_init = None
+
+  in_specs = [
+      pl.BlockSpec((None, bq, head_dim_qk), lambda j, h_q, i, *_: (h_q, i, 0)),
+      pl.BlockSpec((None, bkv, head_dim_qk), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((None, bkv, head_dim_v), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((None, head_dim_v, bq), lambda j, h_q, i, *_: (h_q, 0, i)),
+      pl.BlockSpec((None, NUM_SUBLANES, bq), lambda j, h_q, i, *_: (h_q, 0, i)),
+      pl.BlockSpec((None, NUM_SUBLANES, bq), lambda j, h_q, i, *_: (h_q, 0, i)),
+      dq_alias_spec,
+  ]
+
+  out_shapes = [
+      dq_shape,
+      jax.ShapeDtypeStruct((num_kv_heads, active_kv_len, head_dim_qk), k.dtype),
+      jax.ShapeDtypeStruct((num_kv_heads, active_kv_len, head_dim_v), v.dtype),
+      jax.ShapeDtypeStruct((bq, head_dim_qk), jnp.float32),
+      jax.ShapeDtypeStruct((bkv, head_dim_qk), jnp.float32),
+      jax.ShapeDtypeStruct((bkv, head_dim_v), jnp.float32),
+  ]
+  out_specs = [
+      dq_spec,
+      pl.BlockSpec((None, bkv, head_dim_qk), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((None, bkv, head_dim_v), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((bq, head_dim_qk), lambda *_: (0, 0)),
+      pl.BlockSpec((bkv, head_dim_qk), lambda *_: (0, 0)),
+      pl.BlockSpec((bkv, head_dim_v), lambda *_: (0, 0)),
+  ]
+  grid = (grid_width, num_q_heads, grid_height)
+  input_output_aliases = {6: 0} if use_dq_aliasing else {}
+
+  all_out = pl.pallas_call(
+      functools.partial(
+          _flash_attention_bwd_fused_kernel,
+          grid_width=grid_width,
+          grid_height=grid_height,
+          q_heads_per_kv_head=q_heads_per_kv_head,
+          bkv=bkv,
+          bkv_compute=bkv_compute,
+          bkv_compute_in=bkv_compute_in,
+          kv_seq_len=actual_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+          use_dq_aliasing=use_dq_aliasing,
+      ),
+      grid_spec=pltpu.PrefetchScalarGridSpec(
+          num_scalar_prefetch=0,
+          in_specs=in_specs,
+          out_specs=out_specs,
+          grid=grid,
+      ),
+      compiler_params=pltpu.CompilerParams(
+          dimension_semantics=("arbitrary", "arbitrary", "arbitrary"),
+          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
+          disable_bounds_checks=True,
+          skip_device_barrier=True,
+          vmem_limit_bytes=vmem_limit_bytes,
+      ),
+      out_shape=out_shapes,
+      input_output_aliases=input_output_aliases,
+  )(q_bwd, k_bwd, v_bwd, do_bwd, lse_bwd, di_bwd, dq_init)
+
+  dq_unreduced, dk, dv = all_out[0], all_out[1], all_out[2]
+  if grid_width == 1:
+    dq = dq_unreduced[0].astype(q.dtype)
+  else:
+    dq = dq_unreduced.sum(axis=0).astype(q.dtype)
+
+  if active_q_len > padded_q_seq_len:
+    dq = dq[:, :padded_q_seq_len, :]
+  elif active_q_len < padded_q_seq_len:
+    dq = jnp.pad(dq, ((0, 0), (0, padded_q_seq_len - active_q_len), (0, 0)))
+
+  if active_kv_len > padded_kv_seq_len:
+    dk = dk[:, :padded_kv_seq_len, :]
+    dv = dv[:, :padded_kv_seq_len, :]
+  elif active_kv_len < padded_kv_seq_len:
+    pad_kv = padded_kv_seq_len - active_kv_len
+    dk = jnp.pad(dk, ((0, 0), (0, pad_kv), (0, 0)))
+    dv = jnp.pad(dv, ((0, 0), (0, pad_kv), (0, 0)))
+
+  return dq, dk, dv
+
+
+def _splash_attention_backward(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    o: jax.Array,
+    lse: jax.Array,
+    do: jax.Array,
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None = None,
+    kv_seq_len: int | None = None,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+    di: jax.Array | None = None,
+):
+  num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
+  head_dim_v = v.shape[-1]
+  num_kv_heads = k.shape[0]
+  padded_kv_seq_len = k.shape[1]
+
+  actual_q_seq_len = q_seq_len if q_seq_len is not None else padded_q_seq_len
+  actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else padded_kv_seq_len
+  q_heads_per_kv_head = num_q_heads // num_kv_heads
+
+  if di is None:
+    di_vec = jnp.sum(o.astype(jnp.float32) * do.astype(jnp.float32), axis=1)
+    di = jnp.broadcast_to(di_vec[:, None, :], (num_q_heads, NUM_SUBLANES, o.shape[2]))
+
+  if block_sizes.use_fused_bwd_kernel:
+    return _splash_attention_bwd_fused(
+        q=q,
+        k=k,
+        v=v,
+        do=do,
+        lse=lse,
+        di=di,
+        block_sizes=block_sizes,
+        actual_q_seq_len=actual_q_seq_len,
+        actual_kv_seq_len=actual_kv_seq_len,
+        padded_q_seq_len=padded_q_seq_len,
+        padded_kv_seq_len=padded_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
+    )
+
+  # --- 1. Compute dQ ---
+  bq_dq, bkv_dq = block_sizes.block_q_dq, block_sizes.block_kv_dq
+  bkv_dq_compute = block_sizes.block_kv_dq_compute
+  bkv_dq_compute_in = block_sizes.block_kv_dq_compute_in
+  grid_width_dq = (actual_kv_seq_len + bkv_dq - 1) // bkv_dq
+  grid_height_dq = (actual_q_seq_len + bq_dq - 1) // bq_dq
+  active_q_len_dq = grid_height_dq * bq_dq
+  active_kv_len_dq = grid_width_dq * bkv_dq
+
+  if actual_q_seq_len < active_q_len_dq:
+    pad_q = active_q_len_dq - actual_q_seq_len
+    q_dq = jnp.pad(q[:, :actual_q_seq_len, :], ((0, 0), (0, pad_q), (0, 0)))
+    do_dq = jnp.pad(do[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+    lse_dq = jnp.pad(lse[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+    di_dq = jnp.pad(di[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+  elif q.shape[1] > active_q_len_dq:
+    q_dq = q[:, :active_q_len_dq, :]
+    do_dq = do[:, :, :active_q_len_dq]
+    lse_dq = lse[:, :, :active_q_len_dq]
+    di_dq = di[:, :, :active_q_len_dq]
+  else:
+    q_dq, do_dq, lse_dq, di_dq = q, do, lse, di
+
+  k_dq = jnp.pad(k, ((0, 0), (0, active_kv_len_dq - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len_dq else k
+  v_dq = jnp.pad(v, ((0, 0), (0, active_kv_len_dq - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len_dq else v
+
+  dq_in_specs = [
+      pl.BlockSpec((None, bq_dq, head_dim_qk), lambda h, i, j, *_: (h, i, 0)),
+      pl.BlockSpec((None, bkv_dq, head_dim_qk), lambda h, i, j, *_: (h // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((None, bkv_dq, head_dim_v), lambda h, i, j, *_: (h // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((None, head_dim_v, bq_dq), lambda h, i, j, *_: (h, 0, i)),
+      pl.BlockSpec((None, NUM_SUBLANES, bq_dq), lambda h, i, j, *_: (h, 0, i)),
+      pl.BlockSpec((None, NUM_SUBLANES, bq_dq), lambda h, i, j, *_: (h, 0, i)),
+  ]
+  dq_out_shapes = [
+      jax.ShapeDtypeStruct((bq_dq, head_dim_qk), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, active_q_len_dq, head_dim_qk), q.dtype),
+  ]
+  dq_out_specs = [
+      pl.BlockSpec((bq_dq, head_dim_qk), lambda *_: (0, 0)),
+      pl.BlockSpec((None, bq_dq, head_dim_qk), lambda h, i, j, *_: (h, i, 0)),
+  ]
+  dq_grid = (num_q_heads, grid_height_dq, grid_width_dq)
+
+  _, dq = pl.pallas_call(
+      functools.partial(
+          _flash_attention_dq_kernel,
+          grid_width=grid_width_dq,
+          bkv=bkv_dq,
+          bkv_compute=bkv_dq_compute,
+          bkv_compute_in=bkv_dq_compute_in,
+          kv_seq_len=actual_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+      ),
+      grid_spec=pltpu.PrefetchScalarGridSpec(
+          num_scalar_prefetch=0,
+          in_specs=dq_in_specs,
+          out_specs=dq_out_specs,
+          grid=dq_grid,
+      ),
+      compiler_params=pltpu.CompilerParams(
+          dimension_semantics=("parallel", "arbitrary", "arbitrary"),
+          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
+          disable_bounds_checks=True,
+          skip_device_barrier=True,
+          vmem_limit_bytes=vmem_limit_bytes,
+      ),
+      out_shape=dq_out_shapes,
+  )(q_dq, k_dq, v_dq, do_dq, lse_dq, di_dq)
+
+  if active_q_len_dq > padded_q_seq_len:
+    dq = dq[:, :padded_q_seq_len, :]
+  elif active_q_len_dq < padded_q_seq_len:
+    dq = jnp.pad(dq, ((0, 0), (0, padded_q_seq_len - active_q_len_dq), (0, 0)))
+
+  # --- 2. Compute dK, dV ---
+  bq_dkv, bkv_dkv = block_sizes.block_q_dkv, block_sizes.block_kv_dkv
+  bkv_dkv_compute = block_sizes.block_kv_dkv_compute
+  bkv_dkv_compute_in = block_sizes.block_kv_dkv_compute_in
+  grid_width_dkv = (actual_kv_seq_len + bkv_dkv - 1) // bkv_dkv
+  grid_height_dkv = (actual_q_seq_len + bq_dkv - 1) // bq_dkv
+  active_q_len_dkv = grid_height_dkv * bq_dkv
+  active_kv_len_dkv = grid_width_dkv * bkv_dkv
+  total_q_steps = q_heads_per_kv_head * grid_height_dkv
+
+  if actual_q_seq_len < active_q_len_dkv:
+    pad_q = active_q_len_dkv - actual_q_seq_len
+    q_dkv = jnp.pad(q[:, :actual_q_seq_len, :], ((0, 0), (0, pad_q), (0, 0)))
+    do_dkv = jnp.pad(do[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+    lse_dkv = jnp.pad(lse[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+    di_dkv = jnp.pad(di[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
+  elif q.shape[1] > active_q_len_dkv:
+    q_dkv = q[:, :active_q_len_dkv, :]
+    do_dkv = do[:, :, :active_q_len_dkv]
+    lse_dkv = lse[:, :, :active_q_len_dkv]
+    di_dkv = di[:, :, :active_q_len_dkv]
+  else:
+    q_dkv, do_dkv, lse_dkv, di_dkv = q, do, lse, di
+
+  k_dkv = jnp.pad(k, ((0, 0), (0, active_kv_len_dkv - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len_dkv else k
+  v_dkv = jnp.pad(v, ((0, 0), (0, active_kv_len_dkv - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len_dkv else v
+
+  def q_step_map(h_kv, j, step_q, *_):
+    h_q = h_kv * q_heads_per_kv_head + (step_q // grid_height_dkv)
+    i = step_q % grid_height_dkv
+    return (h_q, i, 0)
+
+  def do_step_map(h_kv, j, step_q, *_):
+    h_q = h_kv * q_heads_per_kv_head + (step_q // grid_height_dkv)
+    i = step_q % grid_height_dkv
+    return (h_q, 0, i)
+
+  dkv_in_specs = [
+      pl.BlockSpec((None, bq_dkv, head_dim_qk), q_step_map),
+      pl.BlockSpec((None, bkv_dkv, head_dim_qk), lambda h_kv, j, step_q, *_: (h_kv, j, 0)),
+      pl.BlockSpec((None, bkv_dkv, head_dim_v), lambda h_kv, j, step_q, *_: (h_kv, j, 0)),
+      pl.BlockSpec((None, head_dim_v, bq_dkv), do_step_map),
+      pl.BlockSpec((None, NUM_SUBLANES, bq_dkv), do_step_map),
+      pl.BlockSpec((None, NUM_SUBLANES, bq_dkv), do_step_map),
+  ]
+  dkv_out_shapes = [
+      jax.ShapeDtypeStruct((bkv_dkv, head_dim_qk), jnp.float32),
+      jax.ShapeDtypeStruct((bkv_dkv, head_dim_v), jnp.float32),
+      jax.ShapeDtypeStruct((num_kv_heads, active_kv_len_dkv, head_dim_qk), k.dtype),
+      jax.ShapeDtypeStruct((num_kv_heads, active_kv_len_dkv, head_dim_v), v.dtype),
+  ]
+  dkv_out_specs = [
+      pl.BlockSpec((bkv_dkv, head_dim_qk), lambda *_: (0, 0)),
+      pl.BlockSpec((bkv_dkv, head_dim_v), lambda *_: (0, 0)),
+      pl.BlockSpec((None, bkv_dkv, head_dim_qk), lambda h_kv, j, step_q, *_: (h_kv, j, 0)),
+      pl.BlockSpec((None, bkv_dkv, head_dim_v), lambda h_kv, j, step_q, *_: (h_kv, j, 0)),
+  ]
+  dkv_grid = (num_kv_heads, grid_width_dkv, total_q_steps)
+
+  _, _, dk, dv = pl.pallas_call(
+      functools.partial(
+          _flash_attention_dkv_kernel,
+          grid_width=grid_width_dkv,
+          total_q_steps=total_q_steps,
+          bkv=bkv_dkv,
+          bkv_compute=bkv_dkv_compute,
+          bkv_compute_in=bkv_dkv_compute_in,
+          kv_seq_len=actual_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+      ),
+      grid_spec=pltpu.PrefetchScalarGridSpec(
+          num_scalar_prefetch=0,
+          in_specs=dkv_in_specs,
+          out_specs=dkv_out_specs,
+          grid=dkv_grid,
+      ),
+      compiler_params=pltpu.CompilerParams(
+          dimension_semantics=("parallel", "arbitrary", "arbitrary"),
+          flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
+          disable_bounds_checks=True,
+          skip_device_barrier=True,
+          vmem_limit_bytes=vmem_limit_bytes,
+      ),
+      out_shape=dkv_out_shapes,
+  )(q_dkv, k_dkv, v_dkv, do_dkv, lse_dkv, di_dkv)
+
+  if active_kv_len_dkv > padded_kv_seq_len:
+    dk = dk[:, :padded_kv_seq_len, :]
+    dv = dv[:, :padded_kv_seq_len, :]
+  elif active_kv_len_dkv < padded_kv_seq_len:
+    pad_kv = padded_kv_seq_len - active_kv_len_dkv
+    dk = jnp.pad(dk, ((0, 0), (0, pad_kv), (0, 0)))
+    dv = jnp.pad(dv, ((0, 0), (0, pad_kv), (0, 0)))
+
+  return dq, dk, dv
+
+
+@functools.partial(
+    jax.custom_vjp,
+    nondiff_argnames=(
+        "block_sizes",
+        "q_seq_len",
+        "kv_seq_len",
+        "use_base2_exp",
+        "use_experimental_scheduler",
+        "vmem_limit_bytes",
+    ),
+)
+def _splash_attention_custom(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None = None,
+    kv_seq_len: int | None = None,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+):
+  return _splash_attention_forward(
+      q,
+      k,
+      v,
+      block_sizes,
+      q_seq_len=q_seq_len,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      save_residuals=False,
+  )
+
+
+def _splash_attention_fwd(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None = None,
+    kv_seq_len: int | None = None,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+):
+  out, lse = _splash_attention_forward(
+      q,
+      k,
+      v,
+      block_sizes,
+      q_seq_len=q_seq_len,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      save_residuals=True,
+  )
+  return out, (q, k, v, out, lse)
+
+
+def _splash_attention_bwd(
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None,
+    kv_seq_len: int | None,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    residuals,
+    do: jax.Array,
+):
+  q, k, v, out, lse = residuals
+  dq, dk, dv = _splash_attention_backward(
+      q,
+      k,
+      v,
+      out,
+      lse,
+      do,
+      block_sizes,
+      q_seq_len=q_seq_len,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+  )
+  return dq, dk, dv
+
+
+_splash_attention_custom.defvjp(_splash_attention_fwd, _splash_attention_bwd)
+
+
 def make_splash_mha(
     block_sizes: _BlockSizes,
     orig_q_seq_len: int | None = None,
@@ -800,18 +1737,30 @@ def make_splash_mha(
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
       )
-    return _splash_attention_forward(
+    if use_fixed_m or mk is not None:
+      return _splash_attention_forward(
+          q,
+          k,
+          v,
+          block_sizes,
+          q_seq_len=orig_q_seq_len,
+          kv_seq_len=orig_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
+          use_fixed_m=use_fixed_m,
+          mk=mk,
+      )
+    return _splash_attention_custom(
         q,
         k,
         v,
-        block_sizes,
+        block_sizes=block_sizes,
         q_seq_len=orig_q_seq_len,
         kv_seq_len=orig_kv_seq_len,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
-        use_fixed_m=use_fixed_m,
-        mk=mk,
     )
 
   return _splash_attention
