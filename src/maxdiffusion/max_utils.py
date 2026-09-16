@@ -503,9 +503,13 @@ def device_put_replicated(x, sharding):
 
   to also shard an array based on sharding.
   """
+  if isinstance(x, jax.Array) and hasattr(x, "sharding") and x.sharding == sharding:
+    return x
+
   arr = getattr(x, "value", x)
+  arr_np = np.asarray(arr)
   shd = getattr(sharding, "value", sharding)
-  res = jax.make_array_from_callback(arr.shape, shd, lambda index: arr[index])
+  res = jax.make_array_from_callback(arr_np.shape, shd, lambda index: arr_np[index])
   if hasattr(x, "set_value"):
     x.set_value(res)
     return x
