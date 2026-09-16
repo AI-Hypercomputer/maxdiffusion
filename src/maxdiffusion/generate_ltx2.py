@@ -105,6 +105,9 @@ def maybe_tune_block_sizes(config):
   vmem_limit_bytes = int(
       keys.get("tile_search_vmem_limit_bytes") or config.flash_block_sizes.get("vmem_limit_bytes") or 64 * 1024 * 1024
   )
+  if "v6" in jax.devices()[0].device_kind.lower():
+    vmem_limit_bytes = min(vmem_limit_bytes, 32 * 1024 * 1024)
+
   bench = LTX2BlockBenchmark.from_config(config, mesh, vmem_limit_bytes=vmem_limit_bytes)
   max_logging.log(f"[tile-search] tuning block sizes for {bench.label} before inference...")
   result = grid_search(
