@@ -32,7 +32,7 @@ os.environ.setdefault(
         "--xla_tpu_enable_async_collective_fusion_multiple_steps=true",
         "--xla_tpu_overlap_compute_collective_tc=true",
         "--xla_enable_async_all_gather=true",
-        "--xla_tpu_scoped_vmem_limit_kib=65536",
+        "--xla_tpu_scoped_vmem_limit_kib=32768",
         "--xla_tpu_enable_async_all_to_all=true",
         "--xla_tpu_enable_all_experimental_scheduler_features=true",
         "--xla_tpu_enable_latency_hiding_scheduler=true",
@@ -143,7 +143,13 @@ class LTX2BlockBenchmark(BlockBenchmark):
     self._width_orig = width
 
     data_shards = int(mesh.shape.get("data", 1)) * int(mesh.shape.get("fsdp", 1))
-    self._batch = batch if batch is not None else max(1, data_shards)
+    guidance_scale = getattr(config, "guidance_scale", 1.0)
+    stg_scale = getattr(config, "stg_scale", 0.0)
+    do_cfg = guidance_scale > 1.0
+    do_stg = stg_scale > 0.0
+    cfg_mult = 4 if (do_cfg and do_stg) else (2 if do_cfg else 1)
+    default_batch = max(1, data_shards) * cfg_mult
+    self._batch = batch if batch is not None else default_batch
     self._hf_cfg = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
     self._inputs = self._make_inputs()
 
@@ -163,7 +169,7 @@ class LTX2BlockBenchmark(BlockBenchmark):
     return (s, s)
 
   def vmem_bytes(self):
-    return self._vmem
+    return self._vmem // max(1, self._batch)
 
   def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2):
     cmp = bkv_compute or bkv
@@ -268,10 +274,10 @@ class LTX2BlockBenchmark(BlockBenchmark):
 
     # Prompts
     prompt_embeds = jax.random.normal(k2, (self._batch, 1024, 3840), dtype)
-    prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.int32)
+    prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.bool_)
 
     audio_prompt_embeds = jax.random.normal(k4, (self._batch, 1024, 3840), dtype)
-    audio_prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.int32)
+    audio_prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.bool_)
 
     timestep = jnp.zeros((self._batch,), jnp.float32)
     repl = jax.sharding.NamedSharding(self._mesh, jax.sharding.PartitionSpec())
