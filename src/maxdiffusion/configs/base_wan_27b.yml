@@ -103,7 +103,7 @@ svg_low_noise_density: -1.0
 # {"block_q":3328,"block_kv":2816,"block_kv_compute":256,
 #  "block_kv_compute_in":256,"heads_per_tile":1,"vmem_limit_bytes":67108864}.
 svg_flash_block_sizes: {}
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_bidir
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir
 
 
 #
@@ -112,9 +112,25 @@ attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cud
 #   CP4  (v7x-8):  ulysses_shards=2 (R=2), BQ=9472
 #   CP8  (v7x-8):  ulysses_shards=4 (R=2), BQ=9472
 #   CP16 (v7x-16): ulysses_shards=8 (R=2), BQ=9472
+#
+# WARNING: ulysses_shards only has an effect on the *ring* variants.
+#   - Setting U == CP gives R=1, which is a DEGENERATE ring: no KV is rotated
+#     and the result is mathematically equivalent to the non-ring
+#     ulysses_custom* kernel (fixed-m numerics may differ, because "auto"
+#     K-centering is off for ring variants and on for non-ring). Such a run
+#     must not be reported as a ring result. The attention layer logs a
+#     warning when this happens.
+#   - The non-ring ulysses/ulysses_custom* kernels always use the full context
+#     axis, so their Ulysses degree is fixed at CP. Passing a different
+#     ulysses_shards to them now raises instead of being silently ignored.
 use_base2_exp: True
 use_experimental_scheduler: True
-# For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
+# auto: on for non-ring ulysses_custom_fixed_m* (virtual, no copy), off for ring
+# paths (materialized K - mean: an HBM copy, plus a pmean when R>1).
+# Note: the Wan pipelines do not pass this key to the attention layer yet, so
+# the layer's default ("auto") applies.
+use_k_centering: "auto"
+# For attention=ulysses_ring*, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
 # For communication-compute overlap to be effective, enable the following XLA flags:

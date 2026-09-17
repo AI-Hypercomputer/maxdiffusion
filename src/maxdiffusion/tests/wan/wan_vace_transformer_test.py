@@ -120,13 +120,25 @@ class WanVaceTransformerTest(unittest.TestCase):
         apply_input_projection=True,
         apply_output_projection=True,
     )
+
+    @nnx.jit
+    def forward(m, h, eh, ch, temb, rot):
+      return m(
+          hidden_states=h,
+          encoder_hidden_states=eh,
+          control_hidden_states=ch,
+          temb=temb,
+          rotary_emb=rot,
+      )
+
     with mesh:
-      conditioning_states, control_hidden_states = wan_vace_block(
-          hidden_states=dummy_hidden_states,
-          encoder_hidden_states=dummy_encoder_hidden_states,
-          control_hidden_states=dummy_control_hidden_states,
-          temb=dummy_temb,
-          rotary_emb=dummy_rotary_emb,
+      conditioning_states, control_hidden_states = forward(
+          wan_vace_block,
+          dummy_hidden_states,
+          dummy_encoder_hidden_states,
+          dummy_control_hidden_states,
+          dummy_temb,
+          dummy_rotary_emb,
       )
     assert conditioning_states.shape == dummy_hidden_states.shape
     assert control_hidden_states.shape == dummy_hidden_states.shape
