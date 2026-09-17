@@ -20,6 +20,7 @@ import datetime
 import os
 import pprint
 import threading
+from typing import Any
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
@@ -47,6 +48,54 @@ def _to_array(x):
   if not isinstance(x, jax.Array):
     x = jnp.asarray(x)
   return x
+
+
+def _normalize_path(path: tuple[Any, ...]) -> tuple[Any, ...]:
+  """Normalizes a PyTree path tuple for optimizer state matching."""
+  normalized = []
+  for p in path:
+    if hasattr(p, "key"):
+      val = p.key
+    elif hasattr(p, "idx"):
+      val = p.idx
+    elif hasattr(p, "name"):
+      val = p.name
+    else:
+      val = p
+
+    if isinstance(val, str) and val.isdigit():
+      val = int(val)
+    normalized.append(val)
+
+  if normalized and normalized[-1] == "value":
+    normalized = normalized[:-1]
+
+  return tuple(normalized)
+
+
+def restore_optimizer_state_by_path(
+    target_opt_shardings: Any,
+    restored_opt_state: Any,
+) -> Any:
+  """Restores optimizer state by matching exact parameter paths and applying sharding."""
+  raw_restored_map, _ = jax.tree_util.tree_flatten_with_path(restored_opt_state)
+
+  normalized_restored_map = {}
+  for raw_path, val in raw_restored_map:
+    norm_path = _normalize_path(raw_path)
+    normalized_restored_map[norm_path] = val
+
+  def _restore_leaf(path, target_sharding):
+    norm_path = _normalize_path(path)
+    if norm_path not in normalized_restored_map:
+      raise KeyError(f"Optimizer checkpoint missing path: {norm_path}.")
+    val = normalized_restored_map[norm_path]
+    return max_utils.device_put_replicated(val, target_sharding)
+
+  return jax.tree_util.tree_map_with_path(
+      _restore_leaf,
+      target_opt_shardings,
+  )
 
 
 def generate_sample(config, pipeline, filename_prefix):
@@ -178,9 +227,11 @@ class BaseWanTrainer(abc.ABC):
     with nn_partitioning.axis_rules(self.config.logical_axis_rules):
       pipeline, opt_state, step = self.checkpointer.load_checkpoint()
     restore_args = {}
-    if opt_state and step:
-      restore_args = {"opt_state": opt_state, "step": step}
+    if opt_state is not None:
+      restore_args["opt_state"] = opt_state
       del opt_state
+    if step is not None:
+      restore_args["step"] = step
     if self.config.enable_ssim:
       # Generate a sample before training to compare against generated sample after training.
       pretrained_video_path = generate_sample(self.config, pipeline, filename_prefix="pre-training-")
@@ -261,21 +312,27 @@ class BaseWanTrainer(abc.ABC):
       state = TrainState.create(
           apply_fn=graphdef.apply, params=params, tx=optimizer, graphdef=graphdef, rest_of_state=rest_of_state
       )
-      if restore_args:
-        step = restore_args.get("step", 0)
-        max_logging.log(f"Restoring optimizer and resuming from step {step}")
-        state.replace(opt_state=restore_args.get("opt_state"), step=restore_args.get("step", 0))
-        del restore_args["opt_state"]
-        del optimizer
       state = jax.tree.map(_to_array, state)
       state_spec = nnx.get_partition_spec(state)
       state = jax.lax.with_sharding_constraint(state, state_spec)
       state_shardings = nnx.get_named_sharding(state, mesh)
-      if jax.process_index() == 0 and restore_args:
-        max_logging.log("--- Optimizer State Sharding Spec (opt_state) ---")
-        pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
-        max_logging.log(pretty_string)
-        max_logging.log("------------------------------------------------")
+      if restore_args.get("step") is not None:
+        step = restore_args.get("step", 0)
+        state = state.replace(step=step)
+      if restore_args.get("opt_state") is not None:
+        max_logging.log("Restoring optimizer")
+        resharded_opt_state = restore_optimizer_state_by_path(
+            target_opt_shardings=state_shardings.opt_state,
+            restored_opt_state=restore_args["opt_state"],
+        )
+        state = state.replace(opt_state=resharded_opt_state)
+        del restore_args["opt_state"]
+        if jax.process_index() == 0:
+          max_logging.log("--- Optimizer State Sharding Spec (opt_state) ---")
+          pretty_string = pprint.pformat(state_spec.opt_state, indent=4, width=60)
+          max_logging.log(pretty_string)
+          max_logging.log("------------------------------------------------")
+
     if self.config.hardware != "gpu":
       max_utils.delete_pytree(params)
     data_shardings = self.get_data_shardings(mesh)
@@ -312,7 +369,7 @@ class BaseWanTrainer(abc.ABC):
         first_profiling_step + self.config.profiler_steps - 1, first_profiling_step, self.config.max_train_steps - 1
     )
     if restore_args.get("step", 0):
-      max_logging.log(f"Resuming training from step {step}")
+      max_logging.log(f"Resuming training from step {restore_args.get('step', 0)}")
     start_step = restore_args.get("step", 0)
     per_device_tflops, _, _ = BaseWanTrainer.calculate_tflops(pipeline)
     scheduler_state = pipeline.scheduler_state
@@ -367,7 +424,10 @@ class BaseWanTrainer(abc.ABC):
         writer.flush()
       if self.config.save_final_checkpoint:
         max_logging.log(f"Saving final checkpoint for step {step}")
-        self.checkpointer.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
+        if self.config.save_optimizer:
+          self.checkpointer.save_checkpoint(self.config.max_train_steps - 1, pipeline, state)
+        else:
+          self.checkpointer.save_checkpoint(self.config.max_train_steps - 1, pipeline, state.params)
         self.checkpointer.checkpoint_manager.wait_until_finished()
       # load new state for trained transformer
       pipeline.transformer = nnx.merge(state.graphdef, state.params, state.rest_of_state)
