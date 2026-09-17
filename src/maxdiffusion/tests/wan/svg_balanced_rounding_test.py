@@ -220,7 +220,7 @@ def test_production_kernel_matches_rounded_support(n, dense_support, use_base2_e
   }
   full, full_active, boundary, _, stats = balanced.build_boundary_stats(**support_args)
   selected, selected_active, _ = balanced.build_selected_boundary_table(
-      stats=stats, qtiles=boundary.shape[0], policy="global_balanced", budget_scale=1.0
+      stats=stats, qtiles=boundary.shape[0], full_active=full_active, policy="global_balanced", budget_scale=1.0
   )
   mask = np.zeros((n, n), dtype=bool)
   for table, active in ((full, full_active), (selected, selected_active)):
@@ -269,3 +269,61 @@ def test_padding_partial_rejects_unaligned_value_dimension():
   v = jnp.zeros((1, block, padding.NUM_SUBLANES + 1), dtype=jnp.bfloat16)
   with pytest.raises(NotImplementedError, match="must be divisible"):
     kernel(q, q, v)
+
+
+@pytest.mark.parametrize("n", [128, 401, 1024])
+@pytest.mark.parametrize("include_first_frame", [False, True])
+def test_rounding_keeps_support_for_every_query(n, include_first_frame):
+  block = 128
+  bs = static_range.SVGBlockSizes(block_q=block, block_kv=block, block_kv_compute=block, block_kv_compute_in=block)
+  args = dict(
+      orig_q_seq_len=n,
+      orig_kv_seq_len=n,
+      block_sizes=bs,
+      band_width=1,
+      frame_size=1,
+      include_first_frame=include_first_frame,
+  )
+  fm, fa, bm, _, stats = balanced.build_boundary_stats(**args)
+  sm, sa, report = balanced.build_selected_boundary_table(stats=stats, qtiles=bm.shape[0], full_active=fa)
+  assert np.all(fa + sa > 0)
+  assert report["coverage_tiles_added"] > 0
+  actual_pairs = sum(x.real_pairs for x in stats if x.kj in sm[x.qi, : sa[x.qi]])
+  assert report["rounded_boundary_pairs"] == actual_pairs
+  assert report["budget_error_pairs"] == actual_pairs - report["target_boundary_pairs"]
+  # Constant values must yield ones for every real query, including when the
+  # global budget is smaller than the cost of one physical tile per row.
+  if jax.default_backend() != "tpu":
+    return  # Host support and accounting assertions above also run on CPU.
+  padded = math.ceil(n / block) * block
+  q = jnp.zeros((1, padded, 128), dtype=jnp.bfloat16)
+  v = jnp.ones_like(q).at[:, n:, :].set(64)
+  kernel = dispatch.make_svg_static_range_mha(**args)
+  actual = np.asarray(jax.jit(kernel)(q, q, v))
+  assert np.isfinite(actual).all()
+  np.testing.assert_allclose(actual, 1.0, rtol=0, atol=0.01)
+
+
+def test_coverage_guard_preserves_already_supported_selection():
+  bs = _bs()
+  for density in (0.65, 0.50, 0.35, 0.20, 0.15):
+    _, fa, bm, _, stats = balanced.build_boundary_stats(
+        orig_q_seq_len=75600,
+        orig_kv_seq_len=75600,
+        block_sizes=bs,
+        band_width=_band_width(density),
+        frame_size=3600,
+        include_first_frame=True,
+    )
+    old_table, old_active, _ = balanced.build_selected_boundary_table(stats=stats, qtiles=bm.shape[0])
+    table, active, report = balanced.build_selected_boundary_table(stats=stats, qtiles=bm.shape[0], full_active=fa)
+    assert np.all(fa + active > 0)
+    if np.all(fa + old_active > 0):
+      np.testing.assert_array_equal(table, old_table)
+      np.testing.assert_array_equal(active, old_active)
+      assert report["coverage_tiles_added"] == 0
+
+
+def test_coverage_guard_rejects_rows_without_candidates():
+  with pytest.raises(ValueError, match="no valid attention support"):
+    balanced.build_selected_boundary_table(stats=[], qtiles=1, full_active=np.zeros(1, dtype=np.int32))

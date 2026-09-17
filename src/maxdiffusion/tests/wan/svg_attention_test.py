@@ -433,6 +433,30 @@ class SVGAttentionUnitTest(unittest.TestCase):
     )
     self.assertLess(float(rel_l2), 0.01)
 
+  def test_profile_respects_sample_pool_limit(self):
+    from unittest.mock import patch
+
+    q = jnp.zeros((1, 1, 128, 8), dtype=jnp.float32)
+    for pool_size, query_count in ((32, 64), (32, 32), (32, 8), (256, 256), (1, 64)):
+      with patch.object(svg_attention, "svg_probe_masks", wraps=svg_attention.svg_probe_masks) as masks:
+        svg_attention.svg_profile_temporal_heads(
+            q, q, q, (2, 8, 8), query_count, jax.random.PRNGKey(0), 1.0, sample_max_row=pool_size
+        )
+      rows = np.asarray(masks.call_args.args[0])
+      self.assertEqual(len(rows), min(query_count, pool_size, 128))
+      self.assertTrue(np.all((rows >= 0) & (rows < min(pool_size, 128))))
+
+  def test_low_noise_svg_nested_config_rejects_caches(self):
+    from types import SimpleNamespace
+    from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+
+    pipeline = WanPipeline2_2.__new__(WanPipeline2_2)
+    pipeline.use_svg_attention = False
+    pipeline.low_noise_transformer = SimpleNamespace(config=SimpleNamespace(attention_config={"use_svg_attention": True}))
+    for flag in ("use_cfg_cache", "use_magcache"):
+      with self.assertRaisesRegex(ValueError, "SVG sparse attention cannot be combined"):
+        pipeline(prompt="test", guidance_scale_low=5.0, guidance_scale_high=5.0, **{flag: True})
+
   def test_svg_cache_check_without_loaded_low_noise_transformer(self):
     from unittest.mock import Mock
     from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2

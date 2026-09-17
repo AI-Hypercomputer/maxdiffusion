@@ -193,8 +193,9 @@ class WanPipeline2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
-    low_noise_config = getattr(self.low_noise_transformer, "config", None)
-    if getattr(self, "use_svg_attention", False) or getattr(low_noise_config, "use_svg_attention", False):
+    low_noise_config = getattr(getattr(self, "low_noise_transformer", None), "config", None)
+    low_noise_attention_config = getattr(low_noise_config, "attention_config", None) or {}
+    if getattr(self, "use_svg_attention", False) or low_noise_attention_config.get("use_svg_attention", False):
       if use_cfg_cache or use_magcache:
         raise ValueError("SVG sparse attention cannot be combined with CFG cache or MagCache.")
 

@@ -109,7 +109,7 @@ def svg_profile_temporal_heads(
   with jax.named_scope("svg_route_profile"):
     sequence_length = query.shape[2]
     sample_pool_size = min(max(int(sample_max_row), 1), sequence_length)
-    sample_count = min(max(int(query_count), 1), sequence_length)
+    sample_count = min(max(int(query_count), 1), sample_pool_size)
 
     if sample_count >= sample_pool_size:
       sampled_rows = jnp.arange(sample_count, dtype=jnp.int32)
@@ -242,15 +242,6 @@ def is_svg_active(
     first_sparse_timestep = (1.0 - dense_timestep_fraction) * num_train_timesteps
     is_active = jnp.logical_and(is_active, jnp.max(jnp.asarray(timestep)) < first_sparse_timestep)
   return is_active
-
-
-def compute_band_width(sequence_length_or_grid: int | Tuple[int, int, int], density: float) -> int:
-  """Compute SVG execution band width given token grid or integer sequence length."""
-  if isinstance(sequence_length_or_grid, int):
-    grid = (sequence_length_or_grid, 1, 1)
-  else:
-    grid = sequence_length_or_grid
-  return svg_execution_band_width(grid, density)
 
 
 def place_sequence_for_mask(

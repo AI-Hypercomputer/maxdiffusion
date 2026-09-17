@@ -18,7 +18,9 @@ Budget-preserving tile-native boundary rounding for SVG attention.
 FULL tiles retain exact SVG semantics. Each exact SVG BOUNDARY tile is rounded
 UP (execute the full real rectangle with padding-only masking) or DOWN (omit
 it). The host policy chooses UP tiles so rounded pair work matches the exact
-boundary-pair budget as closely as possible.
+boundary-pair budget as closely as possible. If a query tile would have no
+retained keys, one boundary tile is restored; its cost is included in the
+reported budget error. Nonempty support takes priority over budget matching.
 
 Production execution then unions FULL tiles with selected rounded BOUNDARY
 tiles. Tiles fully inside the physical sequence run together through one
@@ -179,6 +181,7 @@ def build_selected_boundary_table(
     *,
     stats,
     qtiles,
+    full_active=None,
     policy="global_balanced",
     budget_scale=1.0,
 ):
@@ -187,6 +190,23 @@ def build_selected_boundary_table(
       policy=policy,
       budget_scale=budget_scale,
   )
+  # A global budget alone can leave real queries with no keys. Preserve the
+  # original selection except for empty rows, where validity takes priority
+  # over the approximate pair budget. A rounded tile covers every real query
+  # in its query block, even if its exact support only covered some of them.
+  coverage_added = set()
+  if full_active is not None:
+    covered = {qi for qi in range(qtiles) if full_active[qi] > 0}
+    covered.update(qi for qi, _ in selected)
+    for qi in range(qtiles):
+      if qi in covered:
+        continue
+      candidates = [x for x in stats if x.qi == qi and x.exact_pairs > 0]
+      if not candidates:
+        raise ValueError(f"SVG query tile {qi} has no valid attention support")
+      tile = min(candidates, key=lambda x: (-x.alpha, -x.exact_pairs, x.kj))
+      coverage_added.add((tile.qi, tile.kj))
+    selected |= coverage_added
   rows = [[] for _ in range(qtiles)]
   for tile in stats:
     if (tile.qi, tile.kj) in selected:
@@ -200,6 +220,8 @@ def build_selected_boundary_table(
   retained = int(sum(x.exact_pairs for x in stats if (x.qi, x.kj) in selected))
   target = float(budget_scale) * exact
   report = {
+      "coverage_tiles_added": len(coverage_added),
+      "coverage_pairs_added": int(sum(x.real_pairs for x in stats if (x.qi, x.kj) in coverage_added)),
       "policy": policy,
       "budget_scale": float(budget_scale),
       "boundary_tiles_total": len(stats),
@@ -283,6 +305,7 @@ def make_svg_balanced_rounding_mha(
   sm, sa, budget = build_selected_boundary_table(
       stats=stats,
       qtiles=bm.shape[0],
+      full_active=fa,
       policy=policy,
       budget_scale=budget_scale,
   )
