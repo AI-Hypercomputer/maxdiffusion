@@ -17,6 +17,24 @@ a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True
 precision: 'bf16'
+# Sparse VideoGen (SVG) Attention configuration
+use_svg_attention: False
+svg_spatial_density: 0.25
+svg_sample_max_row: 10000
+svg_profile_query_count: 64
+svg_profile_seed: 0
+svg_active_start_step: -1
+svg_active_end_step: -1
+svg_active_start_layer: -1
+svg_active_end_layer: -1
+svg_include_first_frame: True
+svg_high_noise_density: -1.0
+svg_low_noise_density: -1.0
+# Tiling for the sparse SVG kernel only. Empty means "reuse flash_block_sizes",
+# which is rarely what you want: the dense ring kernel is tuned for large kv
+# compute blocks and the sparse kernel for small ones. Must stay a dict so the
+# command line can override it with JSON.
+svg_flash_block_sizes: {}
 
 # For scanning transformer layers
 scan_layers: True

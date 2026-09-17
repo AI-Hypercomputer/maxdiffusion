@@ -352,7 +352,58 @@ class LTX2Attention(nnx.Module):
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
       enable_jax_named_scopes: bool = False,
+      attention_config: Optional[dict] = None,
   ):
+    attention_config = {
+        "use_base2_exp": use_base2_exp,
+        "use_experimental_scheduler": use_experimental_scheduler,
+        "ulysses_shards": ulysses_shards,
+        "ulysses_attention_chunks": ulysses_attention_chunks,
+        "use_svg_attention": False,
+        "svg_implementation": "official_svg",
+        "svg_spatial_density": 0.25,
+        "svg_sample_max_row": 10000,
+        "svg_profile_query_count": 64,
+        "svg_profile_seed": 0,
+        "svg_dense_layer_fraction": 0.0,
+        "svg_dense_timestep_fraction": 0.0,
+        "svg_active_start_step": -1,
+        "svg_active_end_step": -1,
+        "svg_active_start_layer": -1,
+        "svg_active_end_layer": -1,
+        "svg_num_train_timesteps": 1000,
+        "svg_num_layers": 48,
+        "svg_include_first_frame": True,
+        "svg_global_stride": 0,
+        "svg_global_offset": 0,
+        "svg_high_noise_density": -1.0,
+        "svg_low_noise_density": -1.0,
+        "svg_flash_block_sizes": None,
+        **(attention_config or {}),
+    }
+
+    self.is_self_attention = context_dim is None
+    self.use_svg_attention = bool(attention_config["use_svg_attention"]) and self.is_self_attention
+    self.svg_implementation = attention_config["svg_implementation"]
+    self.svg_spatial_density = attention_config["svg_spatial_density"]
+    self.svg_sample_max_row = attention_config["svg_sample_max_row"]
+    self.svg_profile_query_count = attention_config["svg_profile_query_count"]
+    self.svg_profile_seed = attention_config["svg_profile_seed"]
+    self.svg_dense_layer_fraction = attention_config["svg_dense_layer_fraction"]
+    self.svg_dense_timestep_fraction = attention_config["svg_dense_timestep_fraction"]
+    self.svg_active_start_step = attention_config["svg_active_start_step"]
+    self.svg_active_end_step = attention_config["svg_active_end_step"]
+    self.svg_active_start_layer = attention_config["svg_active_start_layer"]
+    self.svg_active_end_layer = attention_config["svg_active_end_layer"]
+    self.svg_num_train_timesteps = attention_config["svg_num_train_timesteps"]
+    self.svg_num_layers = attention_config["svg_num_layers"]
+    self.svg_include_first_frame = attention_config["svg_include_first_frame"]
+    self.svg_global_stride = attention_config["svg_global_stride"]
+    self.svg_global_offset = attention_config["svg_global_offset"]
+    self.svg_high_noise_density = attention_config["svg_high_noise_density"]
+    self.svg_low_noise_density = attention_config["svg_low_noise_density"]
+    self.svg_flash_block_sizes = attention_config["svg_flash_block_sizes"]
+
     self.heads = heads
     self.rope_type = rope_type
     self.dim_head = dim_head
@@ -542,9 +593,21 @@ class LTX2Attention(nnx.Module):
       k_rotary_emb: Optional[Tuple[Array, Array]] = None,
       perturbation_mask: Optional[Array] = None,
       cached_kv: Optional[Tuple[Array, Array]] = None,
+      deterministic: bool = True,
+      spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+      svg_layer_index: Optional[int | jax.Array] = None,
+      svg_timestep: Optional[int | float | jax.Array] = None,
+      svg_step_index: Optional[int | jax.Array] = None,
   ) -> Array:
     # Determine context (Self or Cross)
+    is_self_attention = encoder_hidden_states is None
     context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+
+    if self.use_svg_attention and is_self_attention:
+      if not deterministic:
+        raise ValueError("SVG attention supports deterministic inference only.")
+      if spatiotemporal_shape is None:
+        raise ValueError("SVG attention requires spatiotemporal_shape.")
 
     # 1. Project and Norm
     with self.named_scope("QKV Projection"):
@@ -586,8 +649,70 @@ class LTX2Attention(nnx.Module):
 
     with self.named_scope("Attention and Output Project"):
       # 4. Attention
-      # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
-      attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
+      if self.use_svg_attention and is_self_attention and spatiotemporal_shape is not None:
+        from maxdiffusion.models.wan.transformers import svg_attention
+
+        is_active = svg_attention.is_svg_active(
+            step_index=svg_step_index,
+            layer_index=svg_layer_index,
+            timestep=svg_timestep,
+            start_step=self.svg_active_start_step,
+            end_step=self.svg_active_end_step,
+            start_layer=self.svg_active_start_layer,
+            end_layer=self.svg_active_end_layer,
+            dense_layer_fraction=self.svg_dense_layer_fraction,
+            dense_timestep_fraction=self.svg_dense_timestep_fraction,
+            num_train_timesteps=self.svg_num_train_timesteps,
+            num_layers=self.svg_num_layers,
+        )
+
+        def run_dense(_):
+          return self.attention_op.apply_attention(
+              query=query,
+              key=key,
+              value=value,
+              attention_mask=attention_mask,
+          )
+
+        def run_sparse_svg(_):
+          execution_band_width = svg_attention.svg_execution_band_width(
+              spatiotemporal_shape,
+              self.svg_spatial_density,
+          )
+          sparse_config = {
+              "use_svg_attention": True,
+              "mask_type": "svg_spatial",
+              "band_width": execution_band_width,
+              "include_first_frame": self.svg_include_first_frame,
+              "global_stride": self.svg_global_stride,
+              "global_offset": self.svg_global_offset,
+              "profile_query_count": self.svg_profile_query_count,
+              "profile_seed": self.svg_profile_seed,
+              "sample_max_row": self.svg_sample_max_row,
+              "custom_flash_block_sizes": self.svg_flash_block_sizes,
+              "svg_step_index": svg_step_index,
+              "svg_layer_index": svg_layer_index,
+              "svg_timestep": svg_timestep,
+          }
+          return self.attention_op.apply_attention(
+              query=query,
+              key=key,
+              value=value,
+              attention_mask=attention_mask,
+              spatiotemporal_shape=spatiotemporal_shape,
+              sparse_config_override=sparse_config,
+          )
+
+        with self.named_scope("apply_attention"):
+          if isinstance(is_active, bool):
+            attn_output = run_sparse_svg(None) if is_active else run_dense(None)
+          else:
+            attn_output = jax.lax.cond(is_active, run_sparse_svg, run_dense, operand=None)
+      else:
+        with self.named_scope("apply_attention"):
+          attn_output = self.attention_op.apply_attention(
+              query=query, key=key, value=value, attention_mask=attention_mask
+          )
 
       if perturbation_mask is not None:
         # value is [B, S, InnerDim]

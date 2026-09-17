@@ -256,6 +256,13 @@ class LTX2BlockBenchmark(BlockBenchmark):
         remat_policy=getattr(c, "remat_policy", "NONE"),
         scan_layers=False,
         num_layers=1,
+        attention_config={
+            "use_base2_exp": getattr(c, "use_base2_exp", False),
+            "use_experimental_scheduler": getattr(c, "use_experimental_scheduler", False),
+            "ulysses_shards": getattr(c, "ulysses_shards", -1),
+            "ulysses_attention_chunks": getattr(c, "ulysses_attention_chunks", 1),
+            "use_svg_attention": getattr(c, "use_svg_attention", False),
+        },
     )
     model = LTX2VideoTransformer3DModel(**ltx2_config, rngs=nnx.Rngs(params=0))
     gd, state, rest = nnx.split(model, nnx.Param, ...)
