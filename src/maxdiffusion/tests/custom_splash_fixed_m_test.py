@@ -739,6 +739,46 @@ class FixedMMetadataSafetyTest(unittest.TestCase):
         f"Fallback online softmax output must be ~15/17 (~0.8824), got {float(out[0, 0, 0]):.6f}",
     )
 
+  def test_gqa_rejects_q_head_padded_k_mean(self):
+    """GQA (8 Q heads, 2 KV heads): a k_mean padded to 8 rows is rejected by the splash kernel.
+
+    Only the ValueError is asserted; the correctly shaped (2, dim) k_mean is used
+    to build the metadata but is not run through the kernel here.
+    """
+    from maxdiffusion.models.attention_flax import _compute_fixed_m_metadata
+
+    batch, num_q_heads, num_kv_heads, seq_len, dim = 1, 8, 2, 1024, 128
+    bq = 512
+    q = jnp.ones((batch, num_q_heads, seq_len, dim), dtype=jnp.bfloat16)
+    # Give the two KV heads different means, so a padded array read as
+    # Q-head-indexed would pair Q heads with the wrong (zero) mean rows.
+    k = jnp.zeros((batch, num_kv_heads, seq_len, dim), dtype=jnp.bfloat16)
+    k = k.at[:, 0, :, 0].set(1.0)
+    k = k.at[:, 1, :, 0].set(50.0)
+    v = jnp.ones((batch, num_kv_heads, seq_len, dim), dtype=jnp.bfloat16)
+
+    k_mean = jnp.mean(k.astype(jnp.float32), axis=2)  # (batch, 2, dim)
+    self.assertEqual(k_mean.shape, (batch, num_kv_heads, dim))
+    mk_arr, _ = _compute_fixed_m_metadata(q, k, block_q=bq, k_mean=k_mean, value=v)
+    block_sizes = custom_splash._BlockSizes(block_q=bq, block_kv=512, block_kv_compute=256, block_kv_compute_in=256)
+
+    # Pre-padding k_mean from 2 rows to 8 (NUM_SUBLANES) matches num_q_heads=8
+    # and must be rejected rather than misinterpreted as Q-head-expanded metadata.
+    padded_k_mean = jnp.pad(k_mean[0], ((0, 6), (0, 0)))
+    with self.assertRaisesRegex(ValueError, "indexed by KV head"):
+      custom_splash._splash_attention_forward(
+          q[0],
+          k[0],
+          v[0],
+          block_sizes=block_sizes,
+          q_seq_len=seq_len,
+          kv_seq_len=seq_len,
+          use_base2_exp=True,
+          use_fixed_m=True,
+          mk=mk_arr[0],
+          k_mean=padded_k_mean,
+      )
+
 
 class FixedMAttentionFlaxIntegrationTest(unittest.TestCase):
   """End-to-end fixed-m through the attention_flax entry points.

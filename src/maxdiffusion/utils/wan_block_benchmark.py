@@ -74,9 +74,13 @@ _IN_CHANNELS = 16
 _VAE_T, _VAE_S = 4, 8  # VAE temporal / spatial compression
 _PATCH_T, _PATCH_H, _PATCH_W = 1, 2, 2
 _RING_VARIANTS = {
+    "ulysses_ring",
     "ulysses_ring_custom",
+    "ulysses_ring_custom_fixed_m",
+    "ulysses_ring_custom_fixed_m_per_q_block",
     "ulysses_ring_custom_bidir",
     "tokamax_ring",
+    "tokamax_ring_custom",
     "ring",
 }
 
