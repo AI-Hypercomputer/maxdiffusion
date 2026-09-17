@@ -19,6 +19,7 @@ from .wan_pipeline import (
     transformer_forward_pass_cfg_cache,
     init_magcache,
     magcache_step,
+    validate_svg_cache_compatibility,
 )
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
@@ -146,6 +147,7 @@ class WanPipeline2_1(WanPipeline):
           f"use_cfg_cache=True requires guidance_scale > 1.0 (got {guidance_scale}). "
           "CFG cache accelerates classifier-free guidance, which is disabled when guidance_scale <= 1.0."
       )
+    self._validate_svg_cache_compatibility(use_cfg_cache=use_cfg_cache, use_magcache=use_magcache)
     trace = {}
     t_cond_start = time.perf_counter()
 
@@ -261,6 +263,8 @@ def run_inference_2_1(
   except Exception:
     pass
 
+  validate_svg_cache_compatibility(config, use_cfg_cache, use_magcache, graphdef)
+
   if use_cfg_cache and do_cfg and bsz % data_shards != 0:
     max_logging.log(
         f"Warning: Disabling CFG cache because batch size {bsz} is not divisible by data shards {data_shards}. This often happens with data_parallelism > 1 and per_device_batch_size = 1."
@@ -372,6 +376,7 @@ def run_inference_2_1(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=current_scheduler_state.step_index,
         )
       else:
         timestep = jnp.broadcast_to(t, bsz)
@@ -387,6 +392,7 @@ def run_inference_2_1(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=current_scheduler_state.step_index,
         )
 
       new_latents, new_scheduler_state = scheduler.step(
@@ -437,6 +443,7 @@ def run_inference_2_1(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
+          svg_step_index=jnp.asarray(step, dtype=jnp.int32),
       )
 
       if not skip_blocks:
@@ -465,6 +472,7 @@ def run_inference_2_1(
             kv_cache=kv_cache_cond,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask_cond,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
 
       elif do_cfg:
@@ -485,6 +493,7 @@ def run_inference_2_1(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
 
       else:
@@ -501,6 +510,7 @@ def run_inference_2_1(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

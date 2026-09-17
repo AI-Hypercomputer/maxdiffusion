@@ -448,6 +448,10 @@ class WanTransformerBlock(nnx.Module):
       rngs: nnx.Rngs = None,
       encoder_attention_mask: Optional[jax.Array] = None,
       cached_kv: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
+      spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+      svg_layer_index: Optional[int | jax.Array] = None,
+      svg_timestep: Optional[int | float | jax.Array] = None,
+      svg_step_index: Optional[int | jax.Array] = None,
   ):
     with self.conditional_named_scope("transformer_block"):
       # Support both global [B, 6, dim] and per-token [B, seq_len, 6, dim] temb.
@@ -494,6 +498,10 @@ class WanTransformerBlock(nnx.Module):
               rotary_emb=rotary_emb,
               deterministic=deterministic,
               rngs=rngs,
+              spatiotemporal_shape=spatiotemporal_shape,
+              svg_layer_index=svg_layer_index,
+              svg_timestep=svg_timestep,
+              svg_step_index=svg_step_index,
           )
         with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
@@ -773,6 +781,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       kv_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
+      svg_step_index: Optional[int | jax.Array] = None,
   ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
@@ -848,9 +857,9 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         def scan_fn(carry, block_input):
           hidden_states_carry, rngs_carry = carry
           if kv_cache is not None:
-            block, layer_kv_cache = block_input
+            block, layer_kv_cache, layer_index = block_input
           else:
-            block = block_input
+            block, layer_index = block_input
             layer_kv_cache = None
 
           hidden_states = block(
@@ -862,6 +871,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
               rngs_carry,
               encoder_attention_mask,
               cached_kv=layer_kv_cache,
+              spatiotemporal_shape=(post_patch_num_frames, post_patch_height, post_patch_width),
+              svg_layer_index=layer_index,
+              svg_timestep=timestep,
+              svg_step_index=svg_step_index,
           )
           new_carry = (hidden_states, rngs_carry)
           return new_carry, None
@@ -874,10 +887,11 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         )
         initial_carry = (h, rngs)
 
+        layer_indices = jnp.arange(self.num_layers, dtype=jnp.int32)
         if kv_cache is not None:
-          scan_input = (self.blocks, kv_cache)
+          scan_input = (self.blocks, kv_cache, layer_indices)
         else:
-          scan_input = self.blocks
+          scan_input = (self.blocks, layer_indices)
 
         final_carry, _ = nnx.scan(
             rematted_block_forward,
@@ -904,6 +918,12 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
                 rngs,
                 encoder_attention_mask=encoder_attention_mask,
                 cached_kv=l_kv,
+                spatiotemporal_shape=(post_patch_num_frames, post_patch_height, post_patch_width),
+                # Python int: lets is_svg_active resolve statically inactive
+                # layers at trace time instead of emitting a lax.cond.
+                svg_layer_index=i,
+                svg_timestep=timestep,
+                svg_step_index=svg_step_index,
             )
 
           rematted_layer_forward = self.gradient_checkpoint.apply(
