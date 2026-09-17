@@ -552,6 +552,151 @@ class SVGAttentionUnitTest(unittest.TestCase):
             use_magcache=(cache_flag == "use_magcache"),
         )
 
+  def test_partially_specified_schedules(self):
+    # 1. Layer-only schedule: [1, 40), steps unrestricted
+    self.assertIs(
+        svg_attention.is_svg_active(step_index=0, layer_index=0, start_layer=1, end_layer=40),
+        False,
+    )
+    self.assertIs(
+        svg_attention.is_svg_active(step_index=0, layer_index=1, start_layer=1, end_layer=40),
+        True,
+    )
+    self.assertIs(
+        svg_attention.is_svg_active(step_index=None, layer_index=0, start_layer=1, end_layer=40),
+        False,
+    )
+    self.assertIs(
+        svg_attention.is_svg_active(step_index=None, layer_index=1, start_layer=1, end_layer=40),
+        True,
+    )
+    # Statically inactive layer short-circuits to Python False even with JAX array step_index
+    self.assertIs(
+        svg_attention.is_svg_active(step_index=jnp.asarray(15), layer_index=0, start_layer=1, end_layer=40),
+        False,
+    )
+    self.assertTrue(
+        bool(svg_attention.is_svg_active(step_index=jnp.asarray(15), layer_index=1, start_layer=1, end_layer=40))
+    )
+
+    # 2. Step-only schedule: [11, 40), layers unrestricted
+    for layer in (0, 1, 20, 39):
+      self.assertIs(
+          svg_attention.is_svg_active(step_index=10, layer_index=layer, start_step=11, end_step=40),
+          False,
+      )
+      self.assertIs(
+          svg_attention.is_svg_active(step_index=11, layer_index=layer, start_step=11, end_step=40),
+          True,
+      )
+      self.assertTrue(
+          bool(svg_attention.is_svg_active(step_index=jnp.asarray(11), layer_index=layer, start_step=11, end_step=40))
+      )
+      self.assertFalse(
+          bool(svg_attention.is_svg_active(step_index=jnp.asarray(10), layer_index=layer, start_step=11, end_step=40))
+      )
+
+    # 3. Fully specified schedule: steps [11, 40), layers [1, 40)
+    self.assertIs(
+        svg_attention.is_svg_active(
+            step_index=11, layer_index=0, start_step=11, end_step=40, start_layer=1, end_layer=40
+        ),
+        False,
+    )
+    self.assertIs(
+        svg_attention.is_svg_active(
+            step_index=10, layer_index=1, start_step=11, end_step=40, start_layer=1, end_layer=40
+        ),
+        False,
+    )
+    self.assertIs(
+        svg_attention.is_svg_active(
+            step_index=11, layer_index=1, start_step=11, end_step=40, start_layer=1, end_layer=40
+        ),
+        True,
+    )
+
+    # 4. Incomplete schedules must raise ValueError
+    with self.assertRaisesRegex(ValueError, "Incomplete explicit SVG step schedule"):
+      svg_attention.is_svg_active(step_index=0, layer_index=0, start_step=11, end_step=-1)
+    with self.assertRaisesRegex(ValueError, "Incomplete explicit SVG layer schedule"):
+      svg_attention.is_svg_active(step_index=0, layer_index=0, start_layer=1, end_layer=-1)
+
+  def test_high_only_low_only_and_i2v_svg_cache_incompatibility(self):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from maxdiffusion.pipelines.wan.wan_pipeline_2_1 import WanPipeline2_1
+    from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+    from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p1 import WanPipelineI2V_2_1
+    from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
+
+    def make_transformer(use_svg: bool):
+      return SimpleNamespace(config=SimpleNamespace(attention_config={"use_svg_attention": use_svg}))
+
+    # Dual-expert pipelines (T2V 2.2 and I2V 2.2) without pipeline.use_svg_attention set
+    for pipe_cls in (WanPipeline2_2, WanPipelineI2V_2_2):
+      extra_kwargs = {"image": None} if "I2V" in pipe_cls.__name__ else {}
+      for high_svg, low_svg in ((True, False), (False, True), (True, True), (False, False)):
+        for flag in ("use_cfg_cache", "use_magcache"):
+          with self.subTest(pipe=pipe_cls.__name__, high=high_svg, low=low_svg, flag=flag):
+            pipe = pipe_cls.__new__(pipe_cls)
+            pipe.config = SimpleNamespace(height=480, width=832, num_frames=81, max_sequence_length=512)
+            pipe.vae_scale_factor_temporal = 4
+            pipe.high_noise_transformer = make_transformer(high_svg)
+            pipe.low_noise_transformer = make_transformer(low_svg)
+            pipe._prepare_model_inputs = Mock(side_effect=RuntimeError("reached input preparation"))
+            pipe._prepare_model_inputs_i2v = pipe._prepare_model_inputs
+            if high_svg or low_svg:
+              with self.assertRaisesRegex(ValueError, "SVG sparse attention cannot be combined"):
+                pipe(prompt="test", guidance_scale_low=5.0, guidance_scale_high=5.0, **{flag: True}, **extra_kwargs)
+            else:
+              with self.assertRaisesRegex(RuntimeError, "reached input preparation"):
+                pipe(prompt="test", guidance_scale_low=5.0, guidance_scale_high=5.0, **{flag: True}, **extra_kwargs)
+
+    # Single-expert pipelines (T2V 2.1 and I2V 2.1)
+    for pipe_cls in (WanPipeline2_1, WanPipelineI2V_2_1):
+      extra_kwargs = {"image": None} if "I2V" in pipe_cls.__name__ else {}
+      for use_svg in (True, False):
+        for flag in ("use_cfg_cache", "use_magcache"):
+          with self.subTest(pipe=pipe_cls.__name__, use_svg=use_svg, flag=flag):
+            pipe = pipe_cls.__new__(pipe_cls)
+            pipe.config = SimpleNamespace(height=480, width=832, num_frames=81, max_sequence_length=512)
+            pipe.vae_scale_factor_temporal = 4
+            pipe.transformer = make_transformer(use_svg)
+            pipe._prepare_model_inputs = Mock(side_effect=RuntimeError("reached input preparation"))
+            pipe._prepare_model_inputs_i2v = pipe._prepare_model_inputs
+            if use_svg:
+              with self.assertRaisesRegex(ValueError, "SVG sparse attention cannot be combined"):
+                pipe(prompt="test", guidance_scale=5.0, **{flag: True}, **extra_kwargs)
+            else:
+              with self.assertRaisesRegex(RuntimeError, "reached input preparation"):
+                pipe(prompt="test", guidance_scale=5.0, **{flag: True}, **extra_kwargs)
+
+  def test_i2v_step_argument_preserves_aot_signature(self):
+    from maxdiffusion import aot_cache
+    import inspect
+    from maxdiffusion.pipelines.wan import wan_pipeline_i2v_2p1, wan_pipeline_i2v_2p2
+
+    # 1. Verify source code passes jnp.asarray(step, dtype=jnp.int32) rather than raw Python int step
+    src_2p1 = inspect.getsource(wan_pipeline_i2v_2p1.run_inference_2_1_i2v)
+    src_2p2 = inspect.getsource(wan_pipeline_i2v_2p2.run_inference_2_2_i2v)
+    self.assertNotIn("svg_step_index=step,", src_2p1)
+    self.assertNotIn("svg_step_index=step,", src_2p2)
+    self.assertIn("svg_step_index=jnp.asarray(step, dtype=jnp.int32)", src_2p1)
+    self.assertIn("svg_step_index=jnp.asarray(step, dtype=jnp.int32)", src_2p2)
+
+    # 2. Verify dynamic signature is identical across all 40 denoising steps
+    dummy_latents = jnp.zeros((2, 16, 21, 45, 80), dtype=jnp.bfloat16)
+    dummy_ts = jnp.zeros((2,), dtype=jnp.int32)
+    sigs = {
+        aot_cache._dynamic_signature(
+            (dummy_latents, dummy_ts),
+            {"svg_step_index": jnp.asarray(step, dtype=jnp.int32)},
+        )
+        for step in range(40)
+    }
+    self.assertEqual(len(sigs), 1)
+
 
 if __name__ == "__main__":
   unittest.main()

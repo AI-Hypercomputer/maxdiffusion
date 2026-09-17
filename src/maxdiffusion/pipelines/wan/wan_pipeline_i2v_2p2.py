@@ -21,6 +21,7 @@ from .wan_pipeline import (
     transformer_forward_pass_cfg_cache,
     init_magcache,
     magcache_step,
+    validate_svg_cache_compatibility,
 )
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
@@ -276,6 +277,8 @@ class WanPipelineI2V_2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
+    self._validate_svg_cache_compatibility(use_cfg_cache=use_cfg_cache, use_magcache=use_magcache)
+
     height = height or self.config.height
     width = width or self.config.width
     num_frames = num_frames or self.config.num_frames
@@ -452,6 +455,8 @@ def run_inference_2_2_i2v(
   except Exception:
     pass
 
+  validate_svg_cache_compatibility(config, use_cfg_cache, use_magcache, low_noise_graphdef, high_noise_graphdef)
+
   if use_cfg_cache and do_classifier_free_guidance and bsz % data_shards != 0:
     max_logging.log(
         f"Warning: Disabling CFG cache because batch size {bsz} is not divisible by data shards {data_shards}. This often happens with data_parallelism > 1 and per_device_batch_size = 1."
@@ -585,7 +590,7 @@ def run_inference_2_2_i2v(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
-          svg_step_index=step,
+          svg_step_index=jnp.asarray(step, dtype=jnp.int32),
       )
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
 
@@ -682,7 +687,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
-            svg_step_index=step,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
         noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
         ref_noise_pred = noise_pred
@@ -724,7 +729,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
-            svg_step_index=step,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
         return jnp.transpose(out, (0, 2, 3, 4, 1))
 
@@ -856,7 +861,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache_cond,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask_cond,
-            svg_step_index=step,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
       else:
         # ── Full CFG step: doubled batch, store raw cond/uncond for cache ──
@@ -880,7 +885,7 @@ def run_inference_2_2_i2v(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
-            svg_step_index=step,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
 
       noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))  # BCFHW -> BFHWC
@@ -1033,7 +1038,7 @@ def run_inference_2_2_i2v(
         rotary_emb,
         encoder_attention_mask_high,
         encoder_attention_mask_low,
-        step,
+        jnp.asarray(step, dtype=jnp.int32),
     ))
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

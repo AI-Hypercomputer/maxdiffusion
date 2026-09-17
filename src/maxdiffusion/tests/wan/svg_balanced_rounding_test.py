@@ -276,14 +276,14 @@ def test_padding_partial_rejects_unaligned_value_dimension():
 def test_rounding_keeps_support_for_every_query(n, include_first_frame):
   block = 128
   bs = static_range.SVGBlockSizes(block_q=block, block_kv=block, block_kv_compute=block, block_kv_compute_in=block)
-  args = dict(
-      orig_q_seq_len=n,
-      orig_kv_seq_len=n,
-      block_sizes=bs,
-      band_width=1,
-      frame_size=1,
-      include_first_frame=include_first_frame,
-  )
+  args = {
+      "orig_q_seq_len": n,
+      "orig_kv_seq_len": n,
+      "block_sizes": bs,
+      "band_width": 1,
+      "frame_size": 1,
+      "include_first_frame": include_first_frame,
+  }
   fm, fa, bm, _, stats = balanced.build_boundary_stats(**args)
   sm, sa, report = balanced.build_selected_boundary_table(stats=stats, qtiles=bm.shape[0], full_active=fa)
   assert np.all(fa + sa > 0)

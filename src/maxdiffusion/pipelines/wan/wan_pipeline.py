@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import List, Union, Optional, Tuple
+from typing import Any, List, Union, Optional, Tuple
 from functools import partial
 from maxdiffusion.image_processor import PipelineImageInput
 import numpy as np
@@ -1383,10 +1383,85 @@ class WanPipeline:
         num_frames,
     )
 
+  def _validate_svg_cache_compatibility(
+      self,
+      use_cfg_cache: bool = False,
+      use_magcache: bool = False,
+  ) -> None:
+    """Validates that SVG sparse attention is not combined with incompatible caches."""
+    validate_svg_cache_compatibility(
+        self,
+        use_cfg_cache=use_cfg_cache,
+        use_magcache=use_magcache,
+    )
+
   @abstractmethod
   def __call__(self, **kwargs):
     """Runs the inference pipeline."""
     pass
+
+
+def _has_svg_enabled(obj: Any) -> bool:
+  """Returns True if obj (transformer, GraphDef, or config) has effective SVG enabled."""
+  if obj is None:
+    return False
+  if bool(getattr(obj, "use_svg_attention", False)):
+    return True
+  cfg = getattr(obj, "config", None)
+  if cfg is not None:
+    attn_cfg = (
+        getattr(cfg, "attention_config", None)
+        or (cfg.get("attention_config") if isinstance(cfg, dict) else None)
+    )
+    if isinstance(attn_cfg, dict) and bool(attn_cfg.get("use_svg_attention", False)):
+      return True
+  if hasattr(obj, "attributes") and hasattr(obj, "nodes"):
+    for k, v in getattr(obj, "attributes", ()):
+      if k == "use_svg_attention" and getattr(v, "value", False) is True:
+        return True
+      if k == "config":
+        val = getattr(v, "value", None)
+        ac = (
+            getattr(val, "attention_config", None)
+            or (val.get("attention_config") if isinstance(val, dict) else None)
+        )
+        if isinstance(ac, dict) and bool(ac.get("use_svg_attention", False)):
+          return True
+  return False
+
+
+def validate_svg_cache_compatibility(
+    target: Any,
+    use_cfg_cache: bool = False,
+    use_magcache: bool = False,
+    *extra_targets: Any,
+) -> None:
+  """Raises ValueError if SVG sparse attention is active and CFG cache or MagCache is enabled."""
+  if not (use_cfg_cache or use_magcache):
+    return
+  svg_active = _has_svg_enabled(target)
+  transformers_found = False
+  for attr in ("transformer", "high_noise_transformer", "low_noise_transformer"):
+    t = getattr(target, attr, None)
+    if t is not None:
+      transformers_found = True
+      if _has_svg_enabled(t):
+        svg_active = True
+  for extra in extra_targets:
+    if _has_svg_enabled(extra):
+      svg_active = True
+  if not svg_active and not transformers_found:
+    cfg = getattr(target, "config", target)
+    if cfg is not None and bool(getattr(cfg, "use_svg_attention", False)):
+      h_d = getattr(cfg, "svg_high_noise_density", None)
+      l_d = getattr(cfg, "svg_low_noise_density", None)
+      s_d = float(getattr(cfg, "svg_spatial_density", 0.25))
+      eff_high = float(h_d) if (h_d is not None and float(h_d) >= 0) else s_d
+      eff_low = float(l_d) if (l_d is not None and float(l_d) >= 0) else s_d
+      if eff_high < 1.0 or eff_low < 1.0:
+        svg_active = True
+  if svg_active:
+    raise ValueError("SVG sparse attention cannot be combined with CFG cache or MagCache.")
 
 
 @partial(

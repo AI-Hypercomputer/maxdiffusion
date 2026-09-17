@@ -19,6 +19,7 @@ from .wan_pipeline import (
     transformer_forward_pass_cfg_cache,
     init_magcache,
     magcache_step,
+    validate_svg_cache_compatibility,
 )
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
@@ -193,11 +194,7 @@ class WanPipeline2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
-    low_noise_config = getattr(getattr(self, "low_noise_transformer", None), "config", None)
-    low_noise_attention_config = getattr(low_noise_config, "attention_config", None) or {}
-    if getattr(self, "use_svg_attention", False) or low_noise_attention_config.get("use_svg_attention", False):
-      if use_cfg_cache or use_magcache:
-        raise ValueError("SVG sparse attention cannot be combined with CFG cache or MagCache.")
+    self._validate_svg_cache_compatibility(use_cfg_cache=use_cfg_cache, use_magcache=use_magcache)
 
     trace = {}
     t_cond_start = time.perf_counter()
@@ -328,6 +325,8 @@ def run_inference_2_2(
       data_shards = latents.sharding.mesh.shape["data"] * latents.sharding.mesh.shape.get("fsdp", 1)
   except Exception:
     pass
+
+  validate_svg_cache_compatibility(config, use_cfg_cache, use_magcache, low_noise_graphdef, high_noise_graphdef)
 
   if use_cfg_cache and do_classifier_free_guidance and bsz % data_shards != 0:
     max_logging.log(

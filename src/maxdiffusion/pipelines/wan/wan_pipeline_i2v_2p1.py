@@ -14,7 +14,13 @@
 
 from maxdiffusion import max_logging
 from maxdiffusion.image_processor import PipelineImageInput
-from .wan_pipeline import WanPipeline, transformer_forward_pass, init_magcache, magcache_step
+from .wan_pipeline import (
+    WanPipeline,
+    transformer_forward_pass,
+    init_magcache,
+    magcache_step,
+    validate_svg_cache_compatibility,
+)
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional, Tuple
 from ...pyconfig import HyperParameters
@@ -185,6 +191,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       last_image: Optional[PipelineImageInput] = None,
       output_type: Optional[str] = "np",
       rng: Optional[jax.Array] = None,
+      use_cfg_cache: bool = False,
       use_magcache: bool = False,
       magcache_thresh: Optional[float] = None,
       magcache_K: Optional[int] = None,
@@ -192,6 +199,7 @@ class WanPipelineI2V_2_1(WanPipeline):
       use_kv_cache: bool = False,
   ):
     config = getattr(self, "config", None)
+    self._validate_svg_cache_compatibility(use_cfg_cache=use_cfg_cache, use_magcache=use_magcache)
     if max_sequence_length is None:
       max_sequence_length = getattr(config, "max_sequence_length", 512)
 
@@ -350,6 +358,7 @@ def run_inference_2_1_i2v(
     use_kv_cache: bool = False,
 ):
   do_cfg = guidance_scale > 1.0
+  validate_svg_cache_compatibility(config, False, use_magcache, graphdef)
 
   if use_magcache and do_cfg:
     magcache_init = init_magcache(num_inference_steps, retention_ratio, mag_ratios_base)
@@ -482,7 +491,7 @@ def run_inference_2_1_i2v(
         kv_cache=kv_cache,
         rotary_emb=rotary_emb,
         encoder_attention_mask=encoder_attention_mask,
-        svg_step_index=step,
+        svg_step_index=jnp.asarray(step, dtype=jnp.int32),
     )
     if use_magcache and do_cfg:
       noise_pred, residual_x_cur = outputs

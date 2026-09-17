@@ -19,6 +19,7 @@ from .wan_pipeline import (
     transformer_forward_pass_cfg_cache,
     init_magcache,
     magcache_step,
+    validate_svg_cache_compatibility,
 )
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
@@ -146,6 +147,7 @@ class WanPipeline2_1(WanPipeline):
           f"use_cfg_cache=True requires guidance_scale > 1.0 (got {guidance_scale}). "
           "CFG cache accelerates classifier-free guidance, which is disabled when guidance_scale <= 1.0."
       )
+    self._validate_svg_cache_compatibility(use_cfg_cache=use_cfg_cache, use_magcache=use_magcache)
     trace = {}
     t_cond_start = time.perf_counter()
 
@@ -261,9 +263,7 @@ def run_inference_2_1(
   except Exception:
     pass
 
-  if config and bool(getattr(config, "use_svg_attention", False)):
-    if use_cfg_cache or use_magcache:
-      raise ValueError("SVG sparse attention cannot be combined with CFG cache or MagCache.")
+  validate_svg_cache_compatibility(config, use_cfg_cache, use_magcache, graphdef)
 
   if use_cfg_cache and do_cfg and bsz % data_shards != 0:
     max_logging.log(
