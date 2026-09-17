@@ -101,10 +101,11 @@ svg_low_noise_density: -1.0
 # compute blocks and the sparse kernel for small ones. Must stay a dict so the
 # command line can override it with JSON.
 svg_flash_block_sizes: {}
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_ring
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir
 
 use_base2_exp: True
 use_experimental_scheduler: True
+use_k_centering: "auto"  # auto: on for non-ring ulysses_custom_fixed_m* (free, virtual), off for ring paths (pmean + HBM copy)
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
@@ -309,6 +310,8 @@ dataset_config_name: ''
 jax_cache_dir: ''
 # Directory for per-shape AOT serialized executables ('' = disabled).
 aot_cache_dir: ''
+aot_build_revision: ''
+wan_debug_cond_timers: False
 # Directory for memoized torch->flax converted weights ('' = disabled).
 converted_weights_dir: ''
 hf_data_dir: ''

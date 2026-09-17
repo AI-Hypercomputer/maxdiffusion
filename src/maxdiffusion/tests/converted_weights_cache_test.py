@@ -89,6 +89,15 @@ class ConvertedWeightsCacheTest(unittest.TestCase):
         node = node[part]
       self.assertEqual(node.dtype, value.dtype)
 
+  def test_resave_replaces_invalidated_cache(self):
+    save_converted_weights(self.cache_dir, self.flat)
+    self.assertIsNone(try_load_converted_weights(self.cache_dir, self.eval_shapes, lambda key: np.dtype(np.float16)))
+    updated = {k: v.astype(np.float16) for k, v in self.flat.items()}
+    save_converted_weights(self.cache_dir, updated)
+    loaded = try_load_converted_weights(self.cache_dir, _eval_shapes(updated), lambda key: np.dtype(np.float16))
+    self.assertIsNotNone(loaded)
+    self.assertEqual(loaded["blocks"]["attn1"]["kernel"].dtype, np.float16)
+
 
 if __name__ == "__main__":
   unittest.main()

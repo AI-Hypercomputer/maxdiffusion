@@ -127,8 +127,6 @@ use_base2_exp: True
 use_experimental_scheduler: True
 # auto: on for non-ring ulysses_custom_fixed_m* (virtual, no copy), off for ring
 # paths (materialized K - mean: an HBM copy, plus a pmean when R>1).
-# Note: the Wan pipelines do not pass this key to the attention layer yet, so
-# the layer's default ("auto") applies.
 use_k_centering: "auto"
 # For attention=ulysses_ring*, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
@@ -302,6 +300,8 @@ dataset_config_name: ''
 jax_cache_dir: ''
 # Directory for per-shape AOT serialized executables ('' = disabled).
 aot_cache_dir: ''
+aot_build_revision: ''
+wan_debug_cond_timers: False
 # Directory for memoized torch->flax converted weights ('' = disabled).
 converted_weights_dir: ''
 hf_data_dir: ''
