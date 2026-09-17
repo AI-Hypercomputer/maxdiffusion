@@ -327,3 +327,41 @@ def test_coverage_guard_preserves_already_supported_selection():
 def test_coverage_guard_rejects_rows_without_candidates():
   with pytest.raises(ValueError, match="no valid attention support"):
     balanced.build_selected_boundary_table(stats=[], qtiles=1, full_active=np.zeros(1, dtype=np.int32))
+
+
+def test_coverage_repair_only_adds_support_to_empty_rows():
+  # Row 0 has a full tile, row 1 wins the global budget, and row 2 would
+  # otherwise be dropped. Repair must not spend additional work on row 0.
+  stats = [
+      balanced.BoundaryTileStat(0, 0, 100, 1),
+      balanced.BoundaryTileStat(1, 1, 100, 90),
+      balanced.BoundaryTileStat(2, 2, 100, 1),
+  ]
+  table, active, report = balanced.build_selected_boundary_table(
+      stats=stats, qtiles=3, full_active=np.array([1, 0, 0], dtype=np.int32)
+  )
+  np.testing.assert_array_equal(active, [0, 1, 1])
+  assert table[1, 0] == 1
+  assert table[2, 0] == 2
+  assert report["coverage_tiles_added"] == 1
+  assert report["coverage_pairs_added"] == 100
+  assert report["rounded_boundary_pairs"] == 200
+  assert report["retained_exact_pairs"] == 91
+  assert report["dropped_exact_pairs"] == 1
+  assert report["budget_error_pairs"] == 108
+  # Candidate order must not change the repaired support or accounting.
+  other_table, other_active, other_report = balanced.build_selected_boundary_table(
+      stats=list(reversed(stats)), qtiles=3, full_active=np.array([1, 0, 0], dtype=np.int32)
+  )
+  np.testing.assert_array_equal(other_table, table)
+  np.testing.assert_array_equal(other_active, active)
+  assert other_report == report
+
+
+def test_coverage_repair_rejects_zero_overlap_candidates():
+  with pytest.raises(ValueError, match="query tile 0 has no valid attention support"):
+    balanced.build_selected_boundary_table(
+        stats=[balanced.BoundaryTileStat(0, 0, 128 * 128, 0)],
+        qtiles=1,
+        full_active=np.zeros(1, dtype=np.int32),
+    )

@@ -457,6 +457,54 @@ class SVGAttentionUnitTest(unittest.TestCase):
       with self.assertRaisesRegex(ValueError, "SVG sparse attention cannot be combined"):
         pipeline(prompt="test", guidance_scale_low=5.0, guidance_scale_high=5.0, **{flag: True})
 
+  def test_oversized_profile_request_matches_capped_request_under_jit(self):
+    from unittest.mock import patch
+
+    token_grid = (4, 8, 8)
+    rng = np.random.default_rng(42)
+    q, k, v = [jnp.asarray(rng.normal(size=(1, 4, 256, 8)), dtype=jnp.float32) for _ in range(3)]
+    for pool_size, query_count in ((32, 64), (32, 512), (512, 512), (0, 64)):
+      with self.subTest(pool_size=pool_size, query_count=query_count):
+        count = min(max(pool_size, 1), 256)
+
+        def route(q, requested):
+          return svg_attention.svg_profile_temporal_heads(
+              q, k, v, token_grid, requested, jax.random.PRNGKey(0), 8**-0.5, sample_max_row=pool_size
+          )
+
+        with patch.object(svg_attention, "svg_probe_masks", wraps=svg_attention.svg_probe_masks) as masks:
+          expected = route(q, count)
+          actual = route(q, query_count)
+        np.testing.assert_array_equal(np.asarray(masks.call_args.args[0]), np.arange(count))
+        np.testing.assert_array_equal(actual, expected)
+        compiled = jax.jit(lambda query: route(query, query_count))
+        np.testing.assert_array_equal(compiled(q), expected)
+        # Queries outside the eligible pool cannot influence the route.
+        changed = q.at[:, :, count:, :].set(1e3)
+        np.testing.assert_array_equal(compiled(changed), expected)
+
+  def test_disabled_low_noise_svg_allows_caches(self):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
+
+    for config in (
+        None,
+        SimpleNamespace(),
+        SimpleNamespace(attention_config=None),
+        SimpleNamespace(attention_config={}),
+        SimpleNamespace(attention_config={"use_svg_attention": False}),
+    ):
+      for flag in ("use_cfg_cache", "use_magcache"):
+        with self.subTest(config=config, flag=flag):
+          pipeline = WanPipeline2_2.__new__(WanPipeline2_2)
+          pipeline.use_svg_attention = False
+          pipeline.low_noise_transformer = SimpleNamespace(config=config)
+          pipeline._prepare_model_inputs = Mock(side_effect=RuntimeError("reached input preparation"))
+          with self.assertRaisesRegex(RuntimeError, "reached input preparation"):
+            pipeline(prompt="test", **{flag: True})
+          pipeline._prepare_model_inputs.assert_called_once()
+
   def test_svg_cache_check_without_loaded_low_noise_transformer(self):
     from unittest.mock import Mock
     from maxdiffusion.pipelines.wan.wan_pipeline_2_2 import WanPipeline2_2
