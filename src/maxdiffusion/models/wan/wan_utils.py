@@ -337,10 +337,13 @@ def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn:
   try:
     with open(manifest_path, "r") as f:
       manifest = json.load(f)
-    expected_keys = set(flatten_dict(eval_shapes).keys())
+    flat_eval = flatten_dict(eval_shapes)
+    expected_keys = set(flat_eval.keys())
 
     def load_one(key_str, meta):
       flax_key = _tuple_str_to_int(tuple(key_str.split(".")))
+      if flax_key not in flat_eval:
+        raise ValueError(f"unexpected key {key_str} in converted cache")
       logical_dtype = np.dtype(meta["dtype"])
       if cast_dtype_fn is not None and logical_dtype != np.dtype(cast_dtype_fn(flax_key)):
         raise ValueError(f"dtype policy changed for {key_str}")
@@ -351,8 +354,9 @@ def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn:
         # Non-native dtypes (bf16/fp8) are stored as same-width uints:
         # npy cannot resolve ml_dtypes descriptors on all paths.
         value = value.view(logical_dtype)
-      if tuple(value.shape) != tuple(meta["shape"]):
-        raise ValueError(f"shape changed for {key_str}")
+      expected_shape = tuple(flat_eval[flax_key].shape)
+      if tuple(value.shape) != tuple(meta["shape"]) or tuple(value.shape) != expected_shape:
+        raise ValueError(f"shape changed for {key_str}: got {value.shape}, expected {expected_shape}")
       return flax_key, value
 
     flax_state_dict = {}
@@ -369,23 +373,40 @@ def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn:
 
 def save_converted_weights(cache_dir: str, flat_state_dict: dict) -> None:
   """Writes the converted tree as per-tensor .npy + manifest, atomically."""
-  tmp_dir = f"{cache_dir}.tmp.{os.getpid()}"
+  import uuid
+
+  suffix = f"{os.getpid()}.{uuid.uuid4().hex[:8]}"
+  tmp_dir = f"{cache_dir}.tmp.{suffix}"
   os.makedirs(tmp_dir, exist_ok=True)
-  manifest = {}
-  uint_by_width = {1: np.uint8, 2: np.uint16, 4: np.uint32}
-  for flax_key, value in flat_state_dict.items():
-    filename = _converted_key_to_filename(flax_key)
-    bitview = value.dtype.kind not in "fiub"  # ml_dtypes (bf16/fp8) etc.
-    stored = value.view(uint_by_width[value.dtype.itemsize]) if bitview else value
-    np.save(os.path.join(tmp_dir, filename), stored)
-    key_str = ".".join(str(k) for k in flax_key)
-    manifest[key_str] = {"file": filename, "shape": list(value.shape), "dtype": str(value.dtype), "bitview": bitview}
-  with open(os.path.join(tmp_dir, "manifest.json"), "w") as f:
-    json.dump(manifest, f)
+  try:
+    manifest = {}
+    uint_by_width = {1: np.uint8, 2: np.uint16, 4: np.uint32}
+    for flax_key, value in flat_state_dict.items():
+      filename = _converted_key_to_filename(flax_key)
+      bitview = value.dtype.kind not in "fiub"  # ml_dtypes (bf16/fp8) etc.
+      stored = value.view(uint_by_width[value.dtype.itemsize]) if bitview else value
+      np.save(os.path.join(tmp_dir, filename), stored)
+      key_str = ".".join(str(k) for k in flax_key)
+      manifest[key_str] = {"file": filename, "shape": list(value.shape), "dtype": str(value.dtype), "bitview": bitview}
+    with open(os.path.join(tmp_dir, "manifest.json"), "w") as f:
+      json.dump(manifest, f)
+  except Exception:
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    raise
+  stale_dir = None
+  if os.path.isdir(cache_dir):
+    stale_dir = f"{cache_dir}.stale.{suffix}"
+    try:
+      os.rename(cache_dir, stale_dir)
+    except OSError:
+      stale_dir = None
   try:
     os.rename(tmp_dir, cache_dir)
   except OSError:
     shutil.rmtree(tmp_dir, ignore_errors=True)  # another process won the race
+  finally:
+    if stale_dir and os.path.isdir(stale_dir):
+      shutil.rmtree(stale_dir, ignore_errors=True)
 
 
 def load_base_wan_transformer(
@@ -514,7 +535,7 @@ def load_base_wan_transformer(
       future.result()  # re-raise conversion errors
 
   validate_flax_state_dict(eval_shapes, flax_state_dict)
-  if converted_cache_dir and not os.path.isdir(converted_cache_dir):
+  if converted_cache_dir:
     t_save = time.perf_counter()
     if jax.process_index() == 0:
       save_converted_weights(converted_cache_dir, flax_state_dict)

@@ -866,14 +866,63 @@ def run_inference_2_2(
     final_latents, _ = final_carry
     return final_latents
 
+  # The short warmup schedule can miss a phase entirely (with flow_shift=12 a
+  # 2-step schedule is t=[999, 923], both >= the 875 boundary), which would
+  # push the low-noise forward-pass compile into the first real generation (or
+  # skip _compile_and_record registration under warmup_mode). Compile both
+  # phases under warmup_mode FIRST (compile/register only, no execution) so the
+  # real_execution() priming below dispatches the already-compiled executables
+  # instead of tracing and lowering both 14B transformers a second time.
+  if aot_cache.in_warmup():
+    warmup_phases = (
+        (True, False) if do_classifier_free_guidance else ({True, False} - set(step_uses_high[:num_inference_steps]))
+    )
+    for _uses_high in warmup_phases:
+      if _uses_high:
+        _gd, _st, _rest = high_noise_graphdef, high_noise_state, high_noise_rest
+        _gs, _kv, _mask = guidance_scale_high, kv_cache_high, encoder_attention_mask_high
+      else:
+        _gd, _st, _rest = low_noise_graphdef, low_noise_state, low_noise_rest
+        _gs, _kv, _mask = guidance_scale_low, kv_cache_low, encoder_attention_mask_low
+      if do_classifier_free_guidance:
+        transformer_forward_pass(
+            _gd,
+            _st,
+            _rest,
+            latents,
+            jnp.broadcast_to(timesteps[0], bsz * 2),
+            prompt_embeds_combined,
+            do_classifier_free_guidance=True,
+            guidance_scale=_gs,
+            kv_cache=_kv,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=_mask,
+            svg_step_index=jnp.asarray(0, dtype=jnp.int32),
+        )
+      else:
+        transformer_forward_pass(
+            _gd,
+            _st,
+            _rest,
+            latents,
+            jnp.broadcast_to(timesteps[0], bsz),
+            prompt_embeds,
+            do_classifier_free_guidance,
+            _gs,
+            kv_cache=_kv,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=_mask,
+            svg_step_index=jnp.asarray(0, dtype=jnp.int32),
+        )
+
   # Warmup only runs a couple of steps and the scheduler puts both on the
   # high-noise transformer, so the low-noise weights are never executed; their
   # first real call then lands mid-generation and costs 26.4s against a 2.6s
-  # step. Touch every weight set here instead, so the first generation already
-  # runs at steady-state latency.
+  # step. Touch every weight set here using transformer_forward_pass (the same
+  # executable compiled above and dispatched by the loop below) so the first
+  # generation already runs at steady-state latency.
   if aot_cache.in_warmup() and do_classifier_free_guidance:
     with aot_cache.real_execution():
-      priming_latents = jnp.concatenate([latents] * 2)
       priming_timestep = jnp.broadcast_to(timesteps[0], bsz * 2)
       for _gd, _st, _rest, _gs, _kv, _mask in (
           (
@@ -894,13 +943,14 @@ def run_inference_2_2(
           ),
       ):
         jax.block_until_ready(
-            transformer_forward_pass_full_cfg(
+            transformer_forward_pass(
                 _gd,
                 _st,
                 _rest,
-                priming_latents,
+                latents,
                 priming_timestep,
                 prompt_embeds_combined,
+                do_classifier_free_guidance=True,
                 guidance_scale=_gs,
                 kv_cache=_kv,
                 rotary_emb=rotary_emb,
