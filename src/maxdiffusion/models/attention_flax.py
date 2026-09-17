@@ -2200,10 +2200,21 @@ def _apply_attention_dot(
 
     hidden_states = hidden_states.transpose(1, 0, 2)
   else:
+    preferred_element_type = jnp.float32 if float32_qk_product else None
     if split_head_dim:
-      attention_scores = jnp.einsum("b t n h, b f n h -> b n f t", key_states, query_states)
+      attention_scores = jnp.einsum(
+          "b t n h, b f n h -> b n f t",
+          key_states,
+          query_states,
+          preferred_element_type=preferred_element_type,
+      )
     else:
-      attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
+      attention_scores = jnp.einsum(
+          "b i d, b j d->b i j",
+          query_states,
+          key_states,
+          preferred_element_type=preferred_element_type,
+      )
 
     attention_scores = attention_scores * scale
     if attention_mask is not None:
@@ -3577,11 +3588,12 @@ class FlaxWanAttention(nnx.Module):
       svg_timestep: Optional[int | float | jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
   ) -> jax.Array:
+    same_kv_source = encoder_hidden_states is None or encoder_hidden_states is hidden_states
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
     if encoder_hidden_states is not None:
       encoder_hidden_states = nn.with_logical_constraint(encoder_hidden_states, (BATCH, LENGTH, HEAD))
     dtype = hidden_states.dtype
-    if encoder_hidden_states is not None and encoder_hidden_states is not hidden_states:
+    if not same_kv_source:
       is_self_attention = False
     else:
       is_self_attention = getattr(self, "is_self_attention", True)

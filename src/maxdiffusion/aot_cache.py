@@ -53,6 +53,7 @@ Usage::
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import glob
 import hashlib
@@ -63,6 +64,7 @@ import pickle
 import re
 import threading
 from typing import Any, Callable
+import uuid
 
 import jax
 import jax.numpy as jnp
@@ -78,21 +80,18 @@ def _is_graphdef(x: Any) -> bool:
 
 
 def _graphdef_desc(gd: Any) -> str:
-  """Extracts a process-deterministic digest of static attributes in an nnx.GraphDef."""
+  """Extracts a process-deterministic digest of static attributes in an nnx.GraphDef.
+
+  Values go through ``_format_static_val`` rather than ``json.dumps(default=repr)``:
+  the latter falls back to ``repr`` for sets, whose iteration order depends on
+  PYTHONHASHSEED, so signatures would differ across processes.
+  """
   items = []
   for k, v in getattr(gd, "attributes", ()):
     if str(k).startswith("_pytree__"):
       continue
     if hasattr(v, "value"):
-      try:
-        s = json.dumps(
-            v.value,
-            sort_keys=True,
-            default=lambda o: re.sub(r"0x[0-9a-fA-F]+", "@", repr(o)),
-        )
-      except Exception:  # noqa: BLE001
-        s = re.sub(r"0x[0-9a-fA-F]+", "@", repr(v.value))
-      items.append(f"{k}:{s}")
+      items.append(f"{k}:{_format_static_val(v.value)}")
   return "GraphDef(" + ",".join(items) + ")"
 
 
@@ -131,9 +130,8 @@ def extract_svg_meta(config: Any, pipeline: Any = None) -> dict[str, Any]:
       t = getattr(pipeline, attr, None)
       if t is not None:
         t_cfg = getattr(t, "config", None)
-        attn_cfg = (
-            getattr(t_cfg, "attention_config", None)
-            or (t_cfg.get("attention_config") if isinstance(t_cfg, dict) else None)
+        attn_cfg = getattr(t_cfg, "attention_config", None) or (
+            t_cfg.get("attention_config") if isinstance(t_cfg, dict) else None
         )
         if isinstance(attn_cfg, dict):
           meta[f"{attr}_svg_config"] = json.dumps(
@@ -150,31 +148,147 @@ def _metadata_fingerprint(meta: dict[str, Any]) -> str:
   return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
+def _format_const(c: Any) -> str:
+  import types as _types
+
+  if isinstance(c, _types.CodeType):
+    return f"<code:{_code_digest(c)}>"
+  if isinstance(c, tuple):
+    return "(" + ",".join(_format_const(x) for x in c) + ")"
+  if isinstance(c, (set, frozenset)):
+    return f"{type(c).__name__}({{" + ",".join(sorted(_format_const(x) for x in c)) + "})"
+  if isinstance(c, (int, float, bool, str, bytes, type(None))):
+    return repr(c)
+  return re.sub(r"0x[0-9a-fA-F]+", "@", repr(c))
+
+
+def _code_digest(code: Any) -> str:
+  if code is None:
+    return ""
+  hasher = hashlib.sha256(code.co_code)
+  consts_str = "".join(_format_const(c) for c in code.co_consts)
+  hasher.update(consts_str.encode("utf-8"))
+  hasher.update(str(code.co_names).encode("utf-8"))
+  return hasher.hexdigest()[:8]
+
+
+def _format_static_val(val: Any) -> str:
+  if isinstance(val, dict):
+    items = []
+    for k in sorted(val.keys(), key=_format_static_val):
+      v = val[k]
+      # `diffusers.ConfigMixin.register_to_config` stores `_use_default_values = list(set(...))`,
+      # whose element order depends on PYTHONHASHSEED across processes.
+      if k == "_use_default_values" and isinstance(v, list):
+        v = sorted(v, key=_format_static_val)
+      items.append(f"{_format_static_val(k)}:{_format_static_val(v)}")
+    return "{" + ",".join(items) + "}"
+  if isinstance(val, (set, frozenset)):
+    items = sorted(_format_static_val(x) for x in val)
+    return f"{type(val).__name__}({{" + ",".join(items) + "})"
+  if isinstance(val, tuple):
+    return "(" + ",".join(_format_static_val(x) for x in val) + ",)"
+  if isinstance(val, list):
+    return "[" + ",".join(_format_static_val(x) for x in val) + "]"
+  if inspect.isfunction(val) or inspect.ismethod(val):
+    code = getattr(val, "__code__", None)
+    return f"<fn:{val.__module__}.{val.__qualname__}:{_code_digest(code)}>"
+  if isinstance(val, type):
+    call_code = getattr(getattr(val, "__call__", None), "__code__", None)
+    return f"<type:{val.__module__}.{val.__qualname__}:{_code_digest(call_code)}>"
+  return re.sub(r"0x[0-9a-fA-F]+", "@", repr(val))
+
+
+_GRAPHDEF_MEMO: collections.OrderedDict[int, tuple[Any, str]] = collections.OrderedDict()
+
+
+def _extract_graphdef_statics(obj: Any, prefix: str = "") -> list[str]:
+  """Extracts deterministic node types, topology, and static attributes from nnx.GraphDef objects."""
+  out = []
+  if hasattr(obj, "nodes") and hasattr(obj, "attributes"):
+    obj_id = id(obj)
+    digest = None
+    if obj_id in _GRAPHDEF_MEMO:
+      cached_obj, cached_digest = _GRAPHDEF_MEMO[obj_id]
+      if cached_obj is obj:
+        _GRAPHDEF_MEMO.move_to_end(obj_id)
+        digest = cached_digest
+    if digest is None:
+      raw = []
+      for i, node in enumerate(getattr(obj, "nodes", ())):
+        node_type = _format_static_val(getattr(node, "type", None))
+        node_idx = getattr(node, "index", None)
+        outer_idx = getattr(node, "outer_index", None)
+        num_attrs = getattr(node, "num_attributes", None)
+        meta = _format_static_val(getattr(node, "metadata", None))
+        raw.append(f"node[{i}]={node_type}:{node_idx}:{outer_idx}:{num_attrs}:{meta}")
+      for i, attr_item in enumerate(getattr(obj, "attributes", ())):
+        if isinstance(attr_item, tuple) and len(attr_item) == 2:
+          k, v = attr_item
+          if isinstance(k, str) and k.startswith("_pytree"):
+            continue
+          if hasattr(v, "value"):
+            desc = _format_static_val(v.value)
+            raw.append(f"attr[{i}].{k}={desc}")
+          else:
+            v_type = _format_static_val(getattr(v, "type", type(v)))
+            v_idx = getattr(v, "index", None)
+            v_meta = _format_static_val(getattr(v, "metadata", None))
+            raw.append(f"attr[{i}].{k}=<{type(v).__name__}:{v_type}:{v_idx}:{v_meta}>")
+            if hasattr(v, "graphdef"):
+              raw.extend(_extract_graphdef_statics(v.graphdef, f"attr[{i}].{k}.graphdef"))
+      digest = hashlib.sha256("|".join(raw).encode("utf-8")).hexdigest()[:16]
+      if len(_GRAPHDEF_MEMO) >= 1024:
+        _GRAPHDEF_MEMO.popitem(last=False)
+      _GRAPHDEF_MEMO[obj_id] = (obj, digest)
+    out.append(f"{prefix}:graphdef={digest}")
+  elif isinstance(obj, (tuple, list)):
+    for i, item in enumerate(obj):
+      out.extend(_extract_graphdef_statics(item, f"{prefix}[{i}]"))
+  elif isinstance(obj, dict):
+    for k in sorted(obj.keys(), key=str):
+      out.extend(_extract_graphdef_statics(obj[k], f"{prefix}.{k}"))
+  return out
+
+
 def _dynamic_signature(args: tuple, kwargs: dict) -> str:
   """Deterministic digest of everything that selects an executable.
 
   Structure is captured by each leaf's KEY PATH (names, order, count) --
   NOT by ``repr(treedef)``: an nnx GraphDef's repr embeds object
   addresses and hash-order-dependent content that differ per process and
-  made signatures never match across restarts (measured: every array
-  part stable, only the treedef part unstable). Static graph metadata
-  in GraphDef leaves is extracted deterministically via ``_graphdef_desc``.
-  Array leaves contribute shape/dtype; non-array leaves (python scalars,
-  None flags) contribute an address-stripped repr.
+  made signatures never match across restarts. ``nnx.GraphDef`` leaves are
+  described deterministically via ``_graphdef_desc``, and their node types,
+  topology and static attributes are additionally captured by
+  ``_extract_graphdef_statics`` (address-stripped, with dicts/sets
+  canonicalized). Array leaves contribute shape/dtype/weak_type; non-array
+  leaves contribute a canonicalized representation.
   """
-  leaves_with_paths = jax.tree_util.tree_flatten_with_path(
-      (args, kwargs), is_leaf=_is_graphdef
-  )[0]
+  leaves_with_paths = jax.tree_util.tree_flatten_with_path((args, kwargs), is_leaf=_is_graphdef)[0]
   parts = []
   for path, leaf in leaves_with_paths:
     if _is_graphdef(leaf):
       desc = _graphdef_desc(leaf)
     elif hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
-      desc = f"{tuple(leaf.shape)}:{leaf.dtype}"
+      weak = getattr(leaf, "weak_type", False)
+      desc = f"{tuple(leaf.shape)}:{leaf.dtype}:weak={weak}"
     else:
-      desc = re.sub(r"0x[0-9a-fA-F]+", "@", repr(leaf))
+      desc = _format_static_val(leaf)
     parts.append(f"{jax.tree_util.keystr(path)}={desc}")
+  parts.extend(_extract_graphdef_statics((args, kwargs)))
   return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+
+
+def _to_aval_leaf(x: Any) -> Any:
+  """Replaces live jax.Array buffers with lightweight ShapeDtypeStructs."""
+  if isinstance(x, jax.Array):
+    return jax.ShapeDtypeStruct(
+        x.shape,
+        x.dtype,
+        sharding=getattr(x, "sharding", None),
+        weak_type=getattr(x, "weak_type", False),
+    )
+  return x
 
 
 class _AotEntry:
@@ -190,6 +304,7 @@ class _AotEntry:
     self._out_specs: dict[str, Any] = {}
     self._pending: dict[str, tuple] = {}
     self._adapters: dict[str, Any] = {}
+    self._sig_cache: dict[tuple, str] = {}
     self._on_disk: set[str] = set()
     self._lock = threading.Lock()
 
@@ -263,7 +378,7 @@ class _AotEntry:
 
   # ---------------------------------------------------------------- call
   def __call__(self, *args, **kwargs):
-    if not _STATE.enabled:
+    if not _STATE.enabled and not _STATE.warmup_only:
       return self.jitted(*args, **kwargs)
     dynamic, static = self._canonicalize(args, kwargs)
     leaves, treedef = jax.tree_util.tree_flatten(dynamic)
@@ -271,7 +386,28 @@ class _AotEntry:
       # Under an outer trace a deserialized executable cannot be applied
       # and tracers must not be recorded -- inline like a nested jit.
       return self.jitted(**dynamic, **static)
-    signature = _dynamic_signature((), {**dynamic, **static})
+
+    # Fast-path signature cache: avoid tree_flatten_with_path + SHA256 string hashing on repeated steps
+    shapes_dtypes = tuple(
+        (leaf.shape, leaf.dtype, getattr(leaf, "weak_type", False))
+        if hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+        else (type(leaf), _format_static_val(leaf))
+        for leaf in leaves
+    )
+    static_items = tuple((k, _format_static_val(v)) for k, v in sorted(static.items(), key=lambda item: str(item[0])))
+    graphdef_statics = tuple(_extract_graphdef_statics((args, kwargs)))
+    cache_key = (treedef, shapes_dtypes, static_items, graphdef_statics)
+    signature = getattr(self, "_sig_cache", {}).get(cache_key)
+    if signature is None:
+      signature = _dynamic_signature((), {**dynamic, **static})
+      with self._lock:
+        if not hasattr(self, "_sig_cache"):
+          self._sig_cache = {}
+        if len(self._sig_cache) < 64:
+          new_cache = dict(self._sig_cache)
+          new_cache[cache_key] = signature
+          self._sig_cache = new_cache
+
     if _STATE.warmup_only:
       # Compilation only needs avals; skip the (possibly seconds-long)
       # real execution and hand back correctly-shaped/sharded zeros so
@@ -279,8 +415,8 @@ class _AotEntry:
       if signature not in self._compiled:
         self._compile_and_record(signature, leaves, treedef, static)
         with self._lock:
-          if signature not in self._on_disk:
-            self._pending[signature] = (leaves, treedef, static)
+          if _STATE.enabled and signature not in self._on_disk:
+            self._pending[signature] = ([_to_aval_leaf(x) for x in leaves], treedef, static)
       zeros = self._zeros_output(signature)
       if zeros is not None:
         return zeros
@@ -296,10 +432,11 @@ class _AotEntry:
       try:
         return compiled(leaves)
       except Exception as e:  # noqa: BLE001 - any failure means "use jit"
-        max_logging.log(f"[aot] {self.name}: compiled call failed ({e}); using jit")
+        max_logging.log(f"[aot] {self.name}: compiled call on pruned leaves failed ({e}); using jit")
+        return self.jitted(**dynamic, **static)
     with self._lock:
-      if signature not in self._pending and signature not in self._compiled:
-        self._pending[signature] = (leaves, treedef, static)
+      if _STATE.enabled and signature not in self._pending and signature not in self._compiled:
+        self._pending[signature] = ([_to_aval_leaf(x) for x in leaves], treedef, static)
     return self._adapter_for(signature, treedef, static)(leaves)
 
   def _align_inputs(self, compiled: Any, leaves: list):
@@ -308,28 +445,31 @@ class _AotEntry:
     jit auto-commits mismatched inputs; a deserialized Compiled does not --
     a placement mismatch aborts inside PjRt (uncatchable C++). Weights
     already carry final shardings; in practice this only moves small
-    fresh-off-host activations. Returns the aligned leaf list, or None on
-    structural mismatch (caller falls back to jit).
+    fresh-off-host activations. Returns the aligned leaf list, or None when
+    XLA pruned unused inputs (caller retries via Compiled's own pruning path).
+    Raises loudly on sharding alignment errors rather than silently triggering
+    a mid-serving JIT recompile.
     """
-    try:
-      flat_expected = jax.tree_util.tree_leaves(compiled.input_shardings)
-      if len(flat_expected) != len(leaves):
-        # Fewer expected shardings than leaves = XLA pruned unused inputs;
-        # the caller retries via Compiled's own pruning path. Not an error.
-        return None
-      aligned = []
-      for leaf, expected in zip(leaves, flat_expected):
-        if not hasattr(leaf, "shape"):  # python scalar traced as weak array
-          leaf = jnp.asarray(leaf)
-        sharding = getattr(leaf, "sharding", None)
-        if sharding is not None and sharding.is_equivalent_to(expected, leaf.ndim):
-          aligned.append(leaf)
-        else:
-          aligned.append(jax.device_put(leaf, expected))
-      return aligned
-    except Exception as e:  # noqa: BLE001 - any failure means "use jit"
-      max_logging.log(f"[aot] {self.name}: cannot align inputs ({e}); using jit")
+    flat_expected = jax.tree_util.tree_leaves(compiled.input_shardings)
+    if len(flat_expected) != len(leaves):
+      # Fewer expected shardings than leaves = XLA pruned unused inputs;
+      # the caller retries via Compiled's own pruning path. Not an error.
       return None
+
+    # Fast path: check if all leaves already match expected sharding exactly
+    if all(getattr(leaf, "sharding", None) is expected for leaf, expected in zip(leaves, flat_expected)):
+      return leaves
+
+    aligned = []
+    for leaf, expected in zip(leaves, flat_expected):
+      if not hasattr(leaf, "shape"):  # python scalar traced as weak array
+        leaf = jnp.asarray(leaf)
+      sharding = getattr(leaf, "sharding", None)
+      if sharding is not None and (sharding is expected or sharding.is_equivalent_to(expected, leaf.ndim)):
+        aligned.append(leaf)
+      else:
+        aligned.append(jax.device_put(leaf, expected))
+    return aligned
 
   # ---------------------------------------------------------------- disk
   def _path_for(self, signature: str) -> str:
@@ -377,6 +517,7 @@ class _AotEntry:
       if signature in self._on_disk:
         # Background deserialization landed after this shape was recorded.
         continue
+      tmp_path = ""
       try:
         compiled = self._compiled.get(signature)
         if compiled is None:
@@ -398,7 +539,7 @@ class _AotEntry:
         if out_spec is not None:
           blob["out_shapes_dtypes"] = [(list(shape), str(dtype)) for shape, dtype in out_spec[1]]
         path = self._path_for(signature)
-        tmp_path = f"{path}.tmp.{os.getpid()}"
+        tmp_path = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
         with open(tmp_path, "wb") as f:
           pickle.dump(blob, f)
         os.replace(tmp_path, path)
@@ -408,6 +549,11 @@ class _AotEntry:
         saved += 1
         max_logging.log(f"[aot] {self.name}: serialized {os.path.basename(path)} ({len(payload) / 1e6:.1f}MB)")
       except Exception as e:  # noqa: BLE001 - saving is best-effort
+        if tmp_path and os.path.exists(tmp_path):
+          try:
+            os.unlink(tmp_path)
+          except OSError:
+            pass
         max_logging.log(f"[aot] {self.name}: serialize failed ({e}); shape stays on jit")
     return saved
 
@@ -461,12 +607,14 @@ def install(cache_dir: str, meta: dict[str, Any], mesh: Any) -> None:
   _STATE.fingerprint = ""
   _STATE.mesh = None
   _STATE.enabled = False
+  _GRAPHDEF_MEMO.clear()
   for entry in _REGISTRY:
     with entry._lock:
       entry._compiled.clear()
       entry._out_specs.clear()
       entry._pending.clear()
       entry._adapters.clear()
+      entry._sig_cache.clear()
       entry._on_disk.clear()
 
   if not cache_dir:
@@ -498,6 +646,13 @@ def save_pending() -> int:
   return sum(entry.save_pending() for entry in _REGISTRY)
 
 
+def clear_pending() -> None:
+  """Discards any recorded pending shapes without serializing them."""
+  for entry in _REGISTRY:
+    with entry._lock:
+      entry._pending.clear()
+
+
 @contextlib.contextmanager
 def warmup_mode():
   """Zero-execution warmup: wrapped fns lower+compile but never execute.
@@ -510,11 +665,12 @@ def warmup_mode():
   compile against faithful inputs. Outputs of a warmup pass are garbage by
   design; callers must discard them. No-op when the cache is disabled.
   """
+  previous = _STATE.warmup_only
   _STATE.warmup_only = _STATE.enabled
   try:
     yield
   finally:
-    _STATE.warmup_only = False
+    _STATE.warmup_only = previous
 
 
 def in_warmup() -> bool:

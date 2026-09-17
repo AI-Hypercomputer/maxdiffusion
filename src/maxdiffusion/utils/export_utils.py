@@ -131,7 +131,9 @@ def export_to_obj(mesh, output_obj_path: str = None):
 
 
 def _legacy_export_to_video(
-    video_frames: Union[List[np.ndarray], List[PIL.Image.Image]], output_video_path: str = None, fps: int = 10
+    video_frames: Union[List[np.ndarray], List[PIL.Image.Image]],
+    output_video_path: str = None,
+    fps: int = 10,
 ):
   if is_opencv_available():
     import cv2
@@ -212,21 +214,22 @@ def export_to_video(
   if output_video_path is None:
     output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-  if isinstance(video_frames, np.ndarray):
-    if video_frames.dtype != np.uint8:
-      video_frames = (video_frames * 255).astype(np.uint8)
-  elif isinstance(video_frames[0], np.ndarray):
-    video_frames = np.stack(video_frames)
-    if video_frames.dtype != np.uint8:
-      video_frames = (video_frames * 255).astype(np.uint8)
-  elif isinstance(video_frames[0], PIL.Image.Image):
+  if isinstance(video_frames, list) and len(video_frames) > 0 and isinstance(video_frames[0], PIL.Image.Image):
     video_frames = np.stack([np.asarray(frame) for frame in video_frames])
+  else:
+    video_frames = np.asarray(video_frames)
+    if video_frames.dtype != np.uint8:
+      video_frames = (video_frames * 255).clip(0, 255).astype(np.uint8)
 
   with imageio.get_writer(
-      output_video_path, fps=fps, quality=quality, bitrate=bitrate, macro_block_size=macro_block_size
+      output_video_path,
+      fps=fps,
+      quality=quality,
+      bitrate=bitrate,
+      macro_block_size=macro_block_size,
   ) as writer:
     for frame in video_frames:
-      writer.append_data(frame)
+      writer.append_data(np.asarray(frame))
 
   return output_video_path
 
@@ -320,7 +323,12 @@ def _write_audio(
 
 
 def export_to_video_with_audio(
-    video: Any, fps: int, audio: Optional[Any], audio_sample_rate: Optional[int], output_path: str, audio_format: str = "s16"
+    video: Any,
+    fps: int,
+    audio: Optional[Any],
+    audio_sample_rate: Optional[int],
+    output_path: str,
+    audio_format: str = "s16",
 ) -> None:
   """
   Encodes video (and optionally audio) to a file using PyAV.
@@ -369,6 +377,12 @@ def export_to_video_with_audio(
     container.mux(packet)
 
   if audio is not None:
-    _write_audio(container, audio_stream, audio, audio_sample_rate, target_format=audio_format)
+    _write_audio(
+        container,
+        audio_stream,
+        audio,
+        audio_sample_rate,
+        target_format=audio_format,
+    )
 
   container.close()
