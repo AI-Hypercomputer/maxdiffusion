@@ -122,10 +122,10 @@ def create_sharded_logical_transformer(
         eval_shapes=params,
         device="cpu",
         num_layers=wan_config["num_layers"],
-        scan_layers=config.scan_layers,
+        scan_layers=wan_config["scan_layers"],
         subfolder=subfolder,
         cast_dtype_fn=partial(_final_param_dtype, dtype_to_cast=config.weights_dtype),
-        converted_cache_dir=converted_weights_cache_dir(config, subfolder),
+        converted_cache_dir=converted_weights_cache_dir(config, subfolder, scan_layers=wan_config["scan_layers"]),
     )
 
   # No-op (returns leaves unchanged) when the loader already cast to the
