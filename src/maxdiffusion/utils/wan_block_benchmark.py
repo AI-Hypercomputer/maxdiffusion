@@ -76,6 +76,9 @@ _PATCH_T, _PATCH_H, _PATCH_W = 1, 2, 2
 _RING_VARIANTS = {
     "ulysses_ring_custom",
     "ulysses_ring_custom_bidir",
+    "ulysses_ring_custom_iperm",
+    "ulysses_ring_custom_iperm_fixed_m",
+    "ulysses_ring_custom_iperm_fixed_m_nocond",
     "tokamax_ring",
     "ring",
 }
