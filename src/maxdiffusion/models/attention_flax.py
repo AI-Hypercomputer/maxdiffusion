@@ -2181,11 +2181,10 @@ def _apply_attention_dot(
           axis=1,
       ).reshape(b * heads, s_k, -1)
 
-  if float32_qk_product:
-    query_states = query_states.astype(jnp.float32)
-    key_states = key_states.astype(jnp.float32)
-
   if use_memory_efficient_attention and attention_mask is None:
+    if float32_qk_product:
+      query_states = query_states.astype(jnp.float32)
+      key_states = key_states.astype(jnp.float32)
     query_states = query_states.transpose(1, 0, 2)
     key_states = key_states.transpose(1, 0, 2)
     value_states = value_states.transpose(1, 0, 2)
@@ -2213,10 +2212,21 @@ def _apply_attention_dot(
 
     hidden_states = hidden_states.transpose(1, 0, 2)
   else:
+    preferred_element_type = jnp.float32 if float32_qk_product else None
     if split_head_dim:
-      attention_scores = jnp.einsum("b t n h, b f n h -> b n f t", key_states, query_states)
+      attention_scores = jnp.einsum(
+          "b t n h, b f n h -> b n f t",
+          key_states,
+          query_states,
+          preferred_element_type=preferred_element_type,
+      )
     else:
-      attention_scores = jnp.einsum("b i d, b j d->b i j", query_states, key_states)
+      attention_scores = jnp.einsum(
+          "b i d, b j d->b i j",
+          query_states,
+          key_states,
+          preferred_element_type=preferred_element_type,
+      )
 
     attention_scores = attention_scores * scale
     if attention_mask is not None:

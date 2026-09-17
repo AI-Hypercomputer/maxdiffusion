@@ -34,5 +34,10 @@ TESTS=(
   "$T/dot_fallback_layout_test.py"
   "$T/fused_producers_test.py"
   "$T/tile_size_grid_search_test.py"
+  # Wan fast serving / AOT cache (feat/wan-fast-serving)
+  "$T/aot_cache_test.py"
+  "$T/converted_weights_cache_test.py"
+  "$T/wan/wan_transformer_test.py"
+  "$T/wan/wan_warmup_coverage_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"

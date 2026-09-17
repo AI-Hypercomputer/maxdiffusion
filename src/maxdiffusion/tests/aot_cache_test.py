@@ -15,6 +15,7 @@
 """Tests for the per-shape AOT executable cache (CPU backend)."""
 
 import functools
+import glob
 import os
 import tempfile
 import unittest
@@ -32,6 +33,16 @@ from maxdiffusion import aot_cache
 @functools.partial(aot_cache.cached_jit, static_argnames=("flag",))
 def _toy_fn(x, y, flag=False):
   return x @ y + (1.0 if flag else 0.0)
+
+
+@functools.partial(aot_cache.cached_jit, static_argnames=("flag",))
+def _scaled_fn(x, scale, flag=False):
+  """`scale` mirrors guidance_scale: a dynamic Python float multiplying a bf16 tensor."""
+  return x * scale + (1.0 if flag else 0.0)
+
+
+def _entry(suffix):
+  return next(e for e in aot_cache._REGISTRY if e.name.endswith(suffix))
 
 
 class AotCacheTest(unittest.TestCase):
@@ -161,6 +172,7 @@ class AotCacheTest(unittest.TestCase):
         "class T(nnx.Module):",
         "  def __init__(self, rngs):",
         "    self.lin = nnx.Linear(4, 4, rngs=rngs)",
+        "    self.tags = {'alpha', 'beta', 'gamma'}",
         "",
         "graphdef, state = nnx.split(T(nnx.Rngs(0)))",
         "sig = aot_cache._dynamic_signature(",
@@ -173,9 +185,14 @@ class AotCacheTest(unittest.TestCase):
             capture_output=True,
             text=True,
             check=True,
-            env={**os.environ, "JAX_PLATFORMS": "cpu"},
+            env={
+                **os.environ,
+                "JAX_PLATFORMS": "cpu",
+                "PYTHONPATH": os.pathsep.join(sys.path),
+                "PYTHONHASHSEED": str(seed),
+            },
         ).stdout.strip()
-        for _ in range(2)
+        for seed in (1, 42)
     ]
     self.assertEqual(outs[0], outs[1])
 
@@ -241,6 +258,693 @@ class AotCacheTest(unittest.TestCase):
         for step in range(40)
     }
     self.assertEqual(len(sigs), 1)
+
+  def test_graphdef_static_attribute_changes_dynamic_signature(self):
+    """Toggling static attributes on nnx.GraphDef (such as use_k_centering) changes _dynamic_signature."""
+    from flax import nnx
+
+    class DummyBlock(nnx.Module):
+
+      def __init__(self, use_k_centering: bool):
+        self.attention_config = {"use_k_centering": use_k_centering}
+
+    gd_on, _ = nnx.split(DummyBlock(use_k_centering=True))
+    gd_off, _ = nnx.split(DummyBlock(use_k_centering=False))
+
+    sig_on = aot_cache._dynamic_signature((gd_on, jnp.ones((2, 4))), {})
+    sig_off = aot_cache._dynamic_signature((gd_off, jnp.ones((2, 4))), {})
+    self.assertNotEqual(sig_on, sig_off)
+
+  def test_wan_aot_metadata_includes_use_k_centering(self):
+    """Toggling use_k_centering changes the Wan AOT metadata fingerprint."""
+    import types
+    from maxdiffusion import generate_wan
+
+    cfg_on = types.SimpleNamespace(use_k_centering=True, attention="ulysses_ring_custom_fixed_m")
+    cfg_off = types.SimpleNamespace(use_k_centering=False, attention="ulysses_ring_custom_fixed_m")
+
+    meta_on = generate_wan._build_wan_aot_metadata(cfg_on, self._mesh, "rev1")
+    meta_off = generate_wan._build_wan_aot_metadata(cfg_off, self._mesh, "rev1")
+
+    self.assertEqual(meta_on["use_k_centering"], "True")
+    self.assertEqual(meta_off["use_k_centering"], "False")
+    self.assertNotEqual(
+        aot_cache._metadata_fingerprint(meta_on),
+        aot_cache._metadata_fingerprint(meta_off),
+    )
+
+  def test_wan_aot_metadata_includes_compiler_flags(self):
+    """Raw LIBTPU_INIT_ARGS/XLA_FLAGS and runtime versions are included in the metadata."""
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+
+    cfg = types.SimpleNamespace(attention="ulysses_ring_custom_fixed_m")
+
+    def metadata(env):
+      with mock.patch.dict(os.environ, env, clear=False):
+        return generate_wan._build_wan_aot_metadata(cfg, self._mesh, "rev1")
+
+    meta1 = metadata({"LIBTPU_INIT_ARGS": "--a=1 --b=true", "XLA_FLAGS": ""})
+    meta2 = metadata({"LIBTPU_INIT_ARGS": "--a=1 --b=false", "XLA_FLAGS": ""})
+    meta3 = metadata({"LIBTPU_INIT_ARGS": "--a=1 --b=true", "XLA_FLAGS": "--xla_c=2"})
+
+    self.assertNotEqual(aot_cache._metadata_fingerprint(meta1), aot_cache._metadata_fingerprint(meta2))
+    self.assertNotEqual(aot_cache._metadata_fingerprint(meta1), aot_cache._metadata_fingerprint(meta3))
+    self.assertIn("jaxlib", meta1)
+    self.assertIn("flax", meta1)
+    self.assertIn("platform_version", meta1)
+    self.assertIn("default_matmul_precision", meta1)
+    self.assertIn("default_prng_impl", meta1)
+
+  def test_run_aot_gating_and_ephemeral_teardown(self):
+    """run(): default -> no cache dir; downgraded or opted-in -> ephemeral dir, removed even on error."""
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+
+    def run_with(revision, fail=False, **cfg_kwargs):
+      cfg = types.SimpleNamespace(model_name="wan2.2", enable_lora=False, **cfg_kwargs)
+      pipeline = types.SimpleNamespace(mesh=None)
+      installs, generate_calls = [], []
+
+      def fake_generate(config, pipe, prefix, writer, load_time, persistent_dir):
+        del config, pipe, prefix, writer, load_time
+        generate_calls.append((persistent_dir, installs[-1]))
+        if fail:
+          raise RuntimeError("generation failed")
+        return ["out.mp4"]
+
+      with (
+          mock.patch.object(generate_wan, "_resolve_wan_aot_source_revision", return_value=revision),
+          mock.patch.object(generate_wan, "_build_wan_aot_metadata", return_value={}),
+          mock.patch.object(generate_wan, "_warmup_and_generate", side_effect=fake_generate),
+          mock.patch.object(generate_wan.max_utils, "initialize_summary_writer", return_value=None),
+          mock.patch.object(generate_wan.aot_cache, "extract_svg_meta", return_value={}),
+          mock.patch.object(generate_wan.aot_cache, "wait_for_loads"),
+          mock.patch.object(generate_wan.aot_cache, "install", side_effect=lambda d, **kw: installs.append(d)),
+      ):
+        try:
+          out = generate_wan.run(cfg, pipeline=pipeline, commit_hash="abc1234")
+        except RuntimeError:
+          out = None
+      return out, installs, generate_calls
+
+    clean, dirty = "src:clean", "abc1234-dirty"
+
+    # Default: nothing requested -> installed on "" (plain jit), no teardown install.
+    out, installs, calls = run_with(clean, aot_cache_dir="", enable_zero_execution_warmup=False)
+    self.assertEqual(out, ["out.mp4"])
+    self.assertEqual(installs, [""])
+    self.assertEqual(calls, [("", "")])
+
+    # Persistent dir + reusable revision -> used directly, never torn down.
+    out, installs, calls = run_with(clean, aot_cache_dir="/cache/aot", enable_zero_execution_warmup=False)
+    self.assertEqual(installs, ["/cache/aot"])
+    self.assertEqual(calls, [("/cache/aot", "/cache/aot")])
+
+    # Downgraded (dirty revision) and explicit opt-in -> ephemeral dir, torn down afterwards,
+    # including when generation raises.
+    for label, revision, cfg_kwargs, fail in (
+        ("downgraded", dirty, {"aot_cache_dir": "/cache/aot", "enable_zero_execution_warmup": False}, False),
+        ("opt_in", clean, {"aot_cache_dir": "", "enable_zero_execution_warmup": True}, False),
+        ("opt_in_error", clean, {"aot_cache_dir": "", "enable_zero_execution_warmup": True}, True),
+    ):
+      with self.subTest(label):
+        out, installs, calls = run_with(revision, fail=fail, **cfg_kwargs)
+        self.assertEqual(len(installs), 2)
+        ephemeral = installs[0]
+        self.assertIn("wan_aot_ephemeral_", ephemeral)
+        self.assertEqual(installs[1], "")  # uninstalled in `finally`
+        self.assertFalse(os.path.exists(ephemeral))  # temp dir removed
+        # Generation saw the ephemeral install but no persistent dir (so nothing is saved).
+        self.assertEqual(calls, [("", ephemeral)])
+        self.assertEqual(out, None if fail else ["out.mp4"])
+
+  def test_plan_rejects_gcs_and_uses_the_real_revision_resolver(self):
+    """gs:// raises whatever the revision; only an explicitly dirty/unversioned revision downgrades."""
+    import types
+    from maxdiffusion import generate_wan
+
+    for revision in ("src:clean", "abc1234-dirty", None):
+      with self.subTest(revision=revision):
+        cfg = types.SimpleNamespace(aot_cache_dir="gs://bucket/aot", enable_zero_execution_warmup=False)
+        with self.assertRaisesRegex(ValueError, "gs:// URIs are not supported"):
+          generate_wan._plan_wan_aot_cache(cfg, revision)
+
+    def plan(aot_build_revision):
+      cfg = types.SimpleNamespace(
+          aot_cache_dir="/cache/aot", enable_zero_execution_warmup=False, aot_build_revision=aot_build_revision
+      )
+      return generate_wan._plan_wan_aot_cache(cfg, generate_wan._resolve_wan_aot_source_revision(cfg, "abc1234-dirty"))
+
+    # The package content hash always resolves, so a dirty git tree alone does not downgrade.
+    self.assertEqual(plan(None), ("/cache/aot", False))
+    self.assertEqual(plan("release-1"), ("/cache/aot", False))
+    self.assertEqual(plan("dirty:wip"), ("", True))
+    self.assertEqual(plan("unversioned:x"), ("", True))
+
+  def test_run_tears_down_ephemeral_dir_when_install_fails(self):
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+
+    cfg = types.SimpleNamespace(model_name="wan2.2", enable_lora=False, aot_cache_dir="", enable_zero_execution_warmup=True)
+    installs = []
+
+    def fake_install(d, **kw):
+      del kw
+      installs.append(d)
+      if d:
+        raise OSError("install failed")
+
+    with (
+        mock.patch.object(generate_wan, "_resolve_wan_aot_source_revision", return_value="src:clean"),
+        mock.patch.object(generate_wan, "_build_wan_aot_metadata", return_value={}),
+        mock.patch.object(generate_wan.max_utils, "initialize_summary_writer", return_value=None),
+        mock.patch.object(generate_wan.aot_cache, "extract_svg_meta", return_value={}),
+        mock.patch.object(generate_wan.aot_cache, "install", side_effect=fake_install),
+    ):
+      with self.assertRaisesRegex(OSError, "install failed"):
+        generate_wan.run(cfg, pipeline=types.SimpleNamespace(mesh=None), commit_hash="abc1234")
+    self.assertEqual(len(installs), 2)
+    self.assertIn("wan_aot_ephemeral_", installs[0])
+    self.assertEqual(installs[1], "")
+    self.assertFalse(os.path.exists(installs[0]))
+
+  def test_wan_source_hash_includes_shared_modules_and_prefers_content_hash_over_commit(self):
+    """Verifies _compute_wan_source_hash hashes shared modules and prefers content hash over commit."""
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+
+    base_hash = generate_wan._compute_wan_source_hash()
+    self.assertIsNotNone(base_hash)
+    self.assertTrue(base_hash.startswith("src:"))
+
+    # Simulate modifying models/normalization_flax.py or models/embeddings_flax.py
+    orig_open = open
+
+    def patched_open(path, *args, **kwargs):
+      f = orig_open(path, *args, **kwargs)
+      if str(path).endswith(("normalization_flax.py", "embeddings_flax.py")) and "rb" in args:
+        content = f.read()
+        f.close()
+        import io
+
+        return io.BytesIO(content + b"\n# modified for fingerprint test\n")
+      return f
+
+    generate_wan._compute_wan_source_hash.cache_clear()
+    with mock.patch("builtins.open", side_effect=patched_open):
+      mod_hash = generate_wan._compute_wan_source_hash()
+    generate_wan._compute_wan_source_hash.cache_clear()
+
+    self.assertNotEqual(base_hash, mod_hash)
+
+    # Content hash is preferred, reusable, and not invalidated by dirty status
+    cfg = types.SimpleNamespace(aot_build_revision=None)
+    rev = generate_wan._resolve_wan_aot_source_revision(cfg, commit_hash="commit_dirty-dirty")
+    self.assertEqual(rev, base_hash)
+    self.assertTrue(generate_wan._is_reusable_aot_revision(rev))
+
+    # When source hash is unavailable, clean commit hashes are reusable while
+    # "<sha>-dirty" commit hashes from get_git_commit_hash() are rejected.
+    self.assertTrue(generate_wan._is_reusable_aot_revision("abc1234"))
+    self.assertFalse(generate_wan._is_reusable_aot_revision("abc1234-dirty"))
+    self.assertFalse(generate_wan._is_reusable_aot_revision("dirty:abc1234"))
+    self.assertFalse(generate_wan._is_reusable_aot_revision("unversioned:abc1234"))
+
+    # Explicit aot_build_revision takes highest precedence and folds in source hash
+    cfg_explicit = types.SimpleNamespace(aot_build_revision="build-explicit-123")
+    self.assertEqual(
+        generate_wan._resolve_wan_aot_source_revision(cfg_explicit),
+        f"build-explicit-123+{base_hash}",
+    )
+
+  def test_different_nnx_modules_and_unordered_sets_in_dynamic_signature(self):
+    from flax import nnx
+
+    class ModMul(nnx.Module):
+
+      def __init__(self):
+        self.scale = 2
+        self.tags = {"alpha", "beta", "gamma"}
+
+      def __call__(self, x):
+        return x * self.scale
+
+    class ModAdd(nnx.Module):
+
+      def __init__(self):
+        self.scale = 2
+        self.tags = {"gamma", "alpha", "beta"}
+
+      def __call__(self, x):
+        return x + self.scale
+
+    gdef_mul, state_mul = nnx.split(ModMul())
+    gdef_add, state_add = nnx.split(ModAdd())
+    x = jnp.array(3.0, dtype=jnp.float32)
+
+    sig_mul = aot_cache._dynamic_signature((gdef_mul, state_mul, x), {})
+    sig_add = aot_cache._dynamic_signature((gdef_add, state_add, x), {})
+    self.assertNotEqual(sig_mul, sig_add)
+
+    # Unordered sets inside static attributes must format canonically
+    self.assertEqual(
+        aot_cache._format_static_val({"a", "b", "c"}),
+        "set({'a','b','c'})",
+    )
+
+    self._install()
+    fn = aot_cache.cached_jit(lambda g, s, val: nnx.merge(g, s)(val))
+    out_mul = fn(gdef_mul, state_mul, x)
+    aot_cache.save_pending()
+    out_add = fn(gdef_add, state_add, x)
+    self.assertAlmostEqual(float(out_mul), 6.0)
+    self.assertAlmostEqual(float(out_add), 5.0)
+
+    # Same module class with different static attributes must not collide in _sig_cache
+    mod_ten = ModMul()
+    mod_ten.scale = 10
+    gdef_ten, state_ten = nnx.split(mod_ten)
+    out_ten = fn(gdef_ten, state_ten, x)
+    self.assertAlmostEqual(float(out_ten), 30.0)
+
+  def test_compiled_call_failure_raises_loudly_without_fallback(self):
+    """When compiled(flat) fails, it must raise loudly instead of silently recompiling via JIT."""
+    from unittest import mock
+
+    self._install()
+
+    @aot_cache.cached_jit
+    def fn(x):
+      return x + 1.0
+
+    x = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    # Warmup and compile
+    with aot_cache.warmup_mode():
+      fn(x)
+
+    # Corrupt the compiled entry so compiled(flat) raises
+    sig = next(iter(fn._compiled.keys()))
+    bad_compiled = mock.MagicMock(side_effect=RuntimeError("simulated execution error"))
+    bad_compiled.input_shardings = fn._compiled[sig].input_shardings
+    fn._compiled[sig] = bad_compiled
+
+    with self.assertRaises(RuntimeError) as ctx:
+      fn(x)
+    self.assertIn("simulated execution error", str(ctx.exception))
+
+  def test_warmup_mode_with_tempdir_install_returns_zeros(self):
+    """Installing a throwaway dir (as generate_wan does when persistence is disabled) enables zero-execution warmup."""
+    import tempfile
+
+    ephemeral_dir = tempfile.mkdtemp(prefix="aot_ephemeral_")
+    aot_cache.install(ephemeral_dir, meta={"test": "warmup"}, mesh=self._mesh)
+    self.assertTrue(aot_cache._STATE.enabled)
+
+    with aot_cache.warmup_mode():
+      res = _toy_fn(self._a, self._b, True)
+      self.assertEqual(res.shape, (8, 8))
+      self.assertTrue(jnp.all(res == 0))
+
+    # Outside warmup, real execution runs and returns computed values
+    real = _toy_fn(self._a, self._b, True)
+    np.testing.assert_allclose(np.asarray(real), self._a @ self._b + 1.0)
+
+  def test_bytecode_digest_distinguishes_constants(self):
+    """Bytecode digest must distinguish functions that differ only by constant values."""
+
+    def f1(x):
+      return x * 2.0
+
+    def f2(x):
+      return x * 3.0
+
+    val1 = aot_cache._format_static_val(f1)
+    val2 = aot_cache._format_static_val(f2)
+    self.assertNotEqual(val1, val2)
+
+  def test_graphdef_memoization_caches_by_id(self):
+    """GraphDef statics extraction must memoize results by id(obj) without re-traversal."""
+    from unittest import mock
+    from flax import nnx
+
+    class SimpleMod(nnx.Module):
+
+      def __init__(self):
+        self.param = 42
+
+    mod = SimpleMod()
+    gdef, _ = nnx.split(mod)
+
+    aot_cache._GRAPHDEF_MEMO.clear()
+    out1 = aot_cache._extract_graphdef_statics(gdef)
+    self.assertIn(id(gdef), aot_cache._GRAPHDEF_MEMO)
+    self.assertEqual(len(out1), 1)
+
+    # Second call uses cached digest in _GRAPHDEF_MEMO without calling _format_static_val
+    with mock.patch(
+        "maxdiffusion.aot_cache._format_static_val",
+        wraps=aot_cache._format_static_val,
+    ) as spy_fmt:
+      out2 = aot_cache._extract_graphdef_statics(gdef)
+      self.assertEqual(spy_fmt.call_count, 0)
+    self.assertEqual(out1, out2)
+
+  def test_use_k_centering_defaults_to_auto(self):
+    """use_k_centering must default to 'auto' in pyconfig and WanTransformerBlock."""
+    from maxdiffusion import pyconfig
+    from maxdiffusion.models.wan.transformers.transformer_wan import WanTransformerBlock
+    from flax import nnx
+
+    pyconfig.initialize([None, "src/maxdiffusion/configs/base_wan_14b.yml", "run_name=test_k_centering"])
+    self.assertEqual(pyconfig.config.use_k_centering, "auto")
+
+    # Check WanTransformerBlock default attention_config
+    block = WanTransformerBlock(rngs=nnx.Rngs(0), dim=64, num_heads=4, ffn_dim=128, cross_attn_norm=True)
+    self.assertEqual(block.attn1.attention_op.use_k_centering, "auto")
+
+  def test_video_output_path_preserves_prefix_and_gcs_fallback(self):
+    """format_video_output_path must preserve prefix and handle directory vs local naming."""
+    from maxdiffusion.generate_wan import format_video_output_path
+
+    # With output_dir
+    path_with_prefix = format_video_output_path("/tmp/test_wan_out", "wan_run", 42, 0, "prefix_")
+    self.assertEqual(path_with_prefix, "/tmp/test_wan_out/prefix_wan_run_42_0.mp4")
+
+    path_no_prefix = format_video_output_path("/tmp/test_wan_out", "wan_run", 42, 1)
+    self.assertEqual(path_no_prefix, "/tmp/test_wan_out/wan_run_42_1.mp4")
+
+    # Without output_dir (or GCS or default template output_dir)
+    path_empty_dir = format_video_output_path("", "wan_run", 42, 0, "prefix_")
+    self.assertEqual(path_empty_dir, "prefix_wan_output_42_0.mp4")
+
+    path_gcs_dir = format_video_output_path("gs://bucket/dir", "wan_run", 42, 2, "my_")
+    self.assertEqual(path_gcs_dir, "my_wan_output_42_2.mp4")
+
+    path_default_sdxl = format_video_output_path("sdxl-model-finetuned", "None", 42, 0)
+    self.assertEqual(path_default_sdxl, "wan_output_42_0.mp4")
+
+    path_default_empty_run = format_video_output_path("sdxl-model-finetuned", "", 42, 0)
+    self.assertEqual(path_default_empty_run, "wan_output_42_0.mp4")
+
+  def test_float32_qk_product_gate(self):
+    """_apply_attention_dot must use float32 preferred_element_type only when float32_qk_product=True."""
+    from maxdiffusion.models.attention_flax import _apply_attention_dot
+
+    q = jnp.ones((1, 4, 4, 16), dtype=jnp.bfloat16)
+    k = jnp.ones((1, 4, 4, 16), dtype=jnp.bfloat16)
+    v = jnp.ones((1, 4, 4, 16), dtype=jnp.bfloat16)
+
+    def fn_false(q, k, v):
+      return _apply_attention_dot(
+          q,
+          k,
+          v,
+          dtype=jnp.bfloat16,
+          heads=4,
+          dim_head=16,
+          scale=0.25,
+          split_head_dim=True,
+          float32_qk_product=False,
+          use_memory_efficient_attention=False,
+      )
+
+    def fn_true(q, k, v):
+      return _apply_attention_dot(
+          q,
+          k,
+          v,
+          dtype=jnp.bfloat16,
+          heads=4,
+          dim_head=16,
+          scale=0.25,
+          split_head_dim=True,
+          float32_qk_product=True,
+          use_memory_efficient_attention=False,
+      )
+
+    jaxpr_false = jax.make_jaxpr(fn_false)(q, k, v)
+    jaxpr_true = jax.make_jaxpr(fn_true)(q, k, v)
+
+    preferred_false = [
+        eq.params.get("preferred_element_type") for eq in jaxpr_false.eqns if eq.primitive.name == "dot_general"
+    ]
+    preferred_true = [
+        eq.params.get("preferred_element_type") for eq in jaxpr_true.eqns if eq.primitive.name == "dot_general"
+    ]
+
+    # The first dot_general is QK product; second is (QK)V product.
+    self.assertEqual(preferred_false[0], jnp.dtype("bfloat16"))
+    self.assertEqual(preferred_true[0], jnp.dtype("float32"))
+    # The QK operands stay bf16 in both modes: float32_qk_product only widens
+    # the accumulator. (Upcasting Q/K before the dot, the previous behaviour,
+    # also yields a float32 preferred_element_type, so the check above alone
+    # cannot tell the two apart.)
+    for jaxpr in (jaxpr_false, jaxpr_true):
+      qk_dot = next(eq for eq in jaxpr.eqns if eq.primitive.name == "dot_general")
+      self.assertEqual([v.aval.dtype for v in qk_dot.invars], [jnp.dtype("bfloat16")] * 2)
+      upcasts = [
+          eq
+          for eq in jaxpr.eqns
+          if eq.primitive.name == "convert_element_type" and eq.params.get("new_dtype") == jnp.dtype("float32")
+      ]
+      first_dot_index = jaxpr.eqns.index(qk_dot)
+      self.assertFalse([eq for eq in upcasts if jaxpr.eqns.index(eq) < first_dot_index])
+
+  def test_graphdef_memo_prevents_gc_address_reuse_collision(self):
+    """_GRAPHDEF_MEMO must retain object references to prevent id() reuse collisions after GC."""
+    from flax import nnx
+    from maxdiffusion.aot_cache import _extract_graphdef_statics
+
+    class Dummy(nnx.Module):
+
+      def __init__(self, scale: float):
+        self.scale = scale
+
+    seen_digests = set()
+    for i in range(100):
+      m = Dummy(scale=float(i))
+      graphdef, _ = nnx.split(m)
+      statics = _extract_graphdef_statics(graphdef)
+      digest = statics[0]
+      self.assertNotIn(digest, seen_digests, f"Collision detected at iter {i}: {digest}")
+      seen_digests.add(digest)
+
+  def test_pending_stores_shape_dtype_structs_and_clear_pending_empties(self):
+    """_pending must store ShapeDtypeStructs (not live jax.Arrays) and clear_pending() must empty it."""
+    self._install()
+    _toy_fn(self._a, self._b, True)
+    entry = next(e for e in aot_cache._REGISTRY if e.name.endswith("._toy_fn"))
+    self.assertEqual(len(entry._pending), 1)
+    leaves, _, _ = next(iter(entry._pending.values()))
+    for leaf in leaves:
+      self.assertIsInstance(leaf, jax.ShapeDtypeStruct)
+      self.assertNotIsInstance(leaf, jax.Array)
+    # Re-lowering from ShapeDtypeStructs in save_pending succeeds even when _compiled is empty
+    entry._compiled.clear()
+    self.assertEqual(aot_cache.save_pending(), 1)
+
+    # Record another shape and verify clear_pending() discards it
+    _toy_fn(jnp.ones((4, 8)), jnp.ones((8, 4)), True)
+    self.assertEqual(len(entry._pending), 1)
+    aot_cache.clear_pending()
+    self.assertEqual(len(entry._pending), 0)
+
+  def test_nested_warmup_mode_restores_previous_state(self):
+    """Nested warmup_mode() must restore outer warmup_only state on exit."""
+    self._install()
+    self.assertFalse(aot_cache.in_warmup())
+    with aot_cache.warmup_mode():
+      self.assertTrue(aot_cache.in_warmup())
+      with aot_cache.warmup_mode():
+        self.assertTrue(aot_cache.in_warmup())
+      self.assertTrue(aot_cache.in_warmup())
+    self.assertFalse(aot_cache.in_warmup())
+
+  def test_format_static_val_canonicalizes_use_default_values_and_frozensets(self):
+    """_format_static_val must sort diffusers _use_default_values lists and _format_const must sort frozensets."""
+    d1 = {"_use_default_values": ["wan_seq_pad", "wan_patch_embed_mode"], "attention": "flash"}
+    d2 = {"_use_default_values": ["wan_patch_embed_mode", "wan_seq_pad"], "attention": "flash"}
+    self.assertEqual(aot_cache._format_static_val(d1), aot_cache._format_static_val(d2))
+    self.assertEqual(
+        aot_cache._format_const(frozenset({"b", "a", "c"})),
+        "frozenset({'a','b','c'})",
+    )
+
+  def test_align_inputs_memoizes_scalars_and_pruned_none_shardings(self):
+    """_align_inputs must preserve None-sharded pruned inputs, memoize Python scalar device placement, and reject length mismatch."""
+    from unittest import mock
+
+    self._install()
+
+    @aot_cache.cached_jit
+    def fn(x, unused_param, scale=4.0):
+      del unused_param
+      return x * scale
+
+    with aot_cache.warmup_mode():
+      fn(self._a, self._b, 4.0)
+
+    compiled = next(iter(fn._compiled.values()))
+    flat_expected, _ = jax.tree_util.tree_flatten(compiled.input_shardings, is_leaf=lambda s: s is None)
+    self.assertIsNone(flat_expected[1])
+
+    with self.assertRaisesRegex(ValueError, "input leaf count mismatch"):
+      fn._align_inputs(compiled, [self._a])
+
+    with mock.patch.object(aot_cache.jax, "device_put", wraps=jax.device_put) as spy_put:
+      out1 = fn(self._a, self._b, 4.0)
+      first_calls = spy_put.call_count
+      out2 = fn(self._a, self._b, 4.0)
+      second_calls = spy_put.call_count
+
+    np.testing.assert_allclose(np.asarray(out1), self._a * 4.0)
+    np.testing.assert_allclose(np.asarray(out2), self._a * 4.0)
+    self.assertEqual(first_calls, second_calls, "Repeated calls with the same Python scalar must reuse _scalar_cache")
+
+  def test_safe_pickle_load_and_gcs_uri_guard(self):
+    """_safe_pickle_load must reject arbitrary globals and install() must reject gs:// URIs."""
+    import io
+    import pickle
+
+    with self.assertRaisesRegex(ValueError, "gs:// URIs are not supported"):
+      aot_cache.install("gs://some-bucket/aot_cache", meta={}, mesh=self._mesh)
+
+    _, treedef = jax.tree_util.tree_flatten({"a": [1, 2], "b": (3,)})
+    self.assertEqual(aot_cache._safe_pickle_load(io.BytesIO(pickle.dumps(treedef))), treedef)
+
+    malicious_payload = b"cos\nsystem\n(S'echo pwned'\ntR."
+    with self.assertRaises(pickle.UnpicklingError):
+      aot_cache._safe_pickle_load(io.BytesIO(malicious_payload))
+
+  def test_restricted_unpickler_is_an_exact_allowlist(self):
+    """Only exact (module, name) pairs resolve; loose jax.* matches and dotted names are rejected."""
+    import io
+    import pickle
+
+    # The full .aotx envelope shape round-trips.
+    _, in_tree = jax.tree_util.tree_flatten(((list(range(3)),), {}))
+    _, out_tree = jax.tree_util.tree_flatten((1, [2, 3]))
+    blob = {
+        "format_version": 2,
+        "payload": b"\x00\x01",
+        "in_tree": in_tree,
+        "out_tree": out_tree,
+        "dynamic_signature": "sig",
+        "out_shapes_dtypes": [([1, 2], "bfloat16")],
+        "tags": {"a", "b"},
+    }
+    loaded = aot_cache._safe_pickle_load(io.BytesIO(pickle.dumps(blob)))
+    self.assertEqual(loaded["in_tree"], in_tree)
+    self.assertEqual(loaded["out_tree"], out_tree)
+
+    def global_ref(module: str, name: str) -> bytes:
+      # Protocol-0 GLOBAL opcode followed by STOP: resolves module.name via find_class.
+      return f"c{module}\n{name}\n.".encode()
+
+    rejected = [
+        ("jax._src.tree_util", "register_pytree_node"),  # "tree" in module used to allow any name
+        ("jax._src.api", "_check_callable"),  # "_"-prefixed names used to be allowed
+        ("jaxlib._jax.pytree", "PyTreeDef.__reduce__"),  # dotted: resolved attribute by attribute
+        ("builtins", "dict.fromkeys"),
+        ("builtins", "eval"),
+        ("os", "system"),
+    ]
+    for module, name in rejected:
+      with self.subTest(module=module, name=name):
+        with self.assertRaises(pickle.UnpicklingError):
+          aot_cache._safe_pickle_load(io.BytesIO(global_ref(module, name)))
+
+  def test_dynamic_signature_keys_python_scalars_by_type_and_statics_by_value(self):
+    """jit traces non-static Python scalars, so only their type selects the executable."""
+
+    def sig(value, **static):
+      return aot_cache._dynamic_signature((self._a,), {"guidance_scale": value}, static)
+
+    self.assertEqual(sig(3.0), sig(4.0))
+    self.assertNotEqual(sig(3.0), sig(3))  # float and int trace to different dtypes
+    self.assertNotEqual(sig(1), sig(True))  # jit does not treat a bool as an int
+    self.assertNotEqual(sig(3.0, flag=True), sig(3.0, flag=False))
+    self.assertNotEqual(sig(3.0, scale=3.0), sig(3.0, scale=4.0))  # a static float stays value-keyed
+
+  def test_python_scalar_values_share_one_executable(self):
+    """Wan 2.2 guidance (4.0 high-noise, 3.0 low-noise, any per-request value) must not fork executables."""
+    self._install()
+    entry = _entry("._scaled_fn")
+    x = jnp.arange(16, dtype=jnp.bfloat16).reshape(4, 4)
+    reference = jax.jit(_scaled_fn.fn, static_argnames=("flag",))
+    with aot_cache.warmup_mode():
+      _scaled_fn(x, 4.0)
+    for scale in (3.0, 4.0, 5.0):
+      out = _scaled_fn(x, scale)
+      self.assertEqual(out.dtype, jnp.bfloat16, "a weakly typed Python float must not promote bf16")
+      np.testing.assert_array_equal(np.asarray(out, np.float32), np.asarray(reference(x, scale), np.float32))
+    self.assertEqual(len(entry._compiled), 1)
+    self.assertEqual(len(entry._adapters), 1, "a new scalar value must not fall back to jit")
+    self.assertEqual(aot_cache.save_pending(), 1)
+    self.assertEqual(len(glob.glob(os.path.join(self._tmp.name, f"{entry.name}-*.aotx"))), 1)
+
+  def test_shared_scalar_executable_roundtrips_disk_and_honors_value(self):
+    """One deserialized executable serves every scalar value, with the value applied at run time."""
+    x = jnp.arange(16, dtype=jnp.bfloat16).reshape(4, 4)
+    self._install()
+    with aot_cache.warmup_mode():
+      _scaled_fn(x, 4.0)
+    self.assertEqual(aot_cache.save_pending(), 1)
+
+    self._install()  # Like a fresh process: clears all state and deserializes from disk.
+    entry = _entry("._scaled_fn")
+    self.assertEqual(len(entry._on_disk), 1)
+    reference = jax.jit(_scaled_fn.fn, static_argnames=("flag",))
+    outs = {}
+    for scale in (3.0, 4.0, 5.0):
+      outs[scale] = np.asarray(_scaled_fn(x, scale), np.float32)
+      np.testing.assert_array_equal(outs[scale], np.asarray(reference(x, scale), np.float32))
+    self.assertFalse(np.array_equal(outs[3.0], outs[4.0]), "the value recorded at save time must not be baked in")
+    self.assertEqual(_scaled_fn(x, 3.0).dtype, jnp.bfloat16)
+    self.assertFalse(entry._adapters, "every value must hit the deserialized executable, not jit")
+    self.assertFalse(entry._pending)
+
+  def test_static_scalar_values_still_get_own_executables(self):
+    """Static args are baked into the graph, so each value keeps its own executable."""
+    self._install()
+    x = jnp.ones((4, 4), jnp.float32)
+    np.testing.assert_allclose(np.asarray(_scaled_fn(x, 2.0, flag=True)), np.asarray(x * 2.0 + 1.0))
+    np.testing.assert_allclose(np.asarray(_scaled_fn(x, 2.0, flag=False)), np.asarray(x * 2.0))
+    self.assertEqual(aot_cache.save_pending(), 2)
+
+  def test_scalar_placement_memo_is_bounded(self):
+    """Values that no longer fork the executable can vary without limit; their placements must not."""
+    self._install()
+    entry = _entry("._scaled_fn")
+    x = jnp.ones((4, 4), jnp.float32)
+    with aot_cache.warmup_mode():
+      _scaled_fn(x, 0.0)
+    for i in range(aot_cache._SCALAR_CACHE_MAX + 8):
+      _scaled_fn(x, float(i))
+    self.assertEqual(len(entry._scalar_cache), aot_cache._SCALAR_CACHE_MAX)
+    # 7.0 was evicted; it must be placed again with the right value.
+    np.testing.assert_allclose(np.asarray(_scaled_fn(x, 7.0)), np.asarray(x * 7.0))
+
+  def test_format_version_bump_skips_older_executables(self):
+    """Executables written under an older signature scheme are never loaded."""
+    from unittest import mock
+
+    with mock.patch.object(aot_cache, "_FORMAT_VERSION", aot_cache._FORMAT_VERSION - 1):
+      self._install()
+      _toy_fn(self._a, self._b, True)
+      self.assertEqual(aot_cache.save_pending(), 1)
+    self._install()
+    self.assertFalse(_entry("._toy_fn")._on_disk)
+
+    _toy_fn(self._a, self._b, True)
+    self.assertEqual(aot_cache.save_pending(), 1)
+    self._install()
+    self.assertEqual(len(_entry("._toy_fn")._on_disk), 1)
 
 
 if __name__ == "__main__":

@@ -258,7 +258,8 @@ class WanTrainer2_2(BaseWanTrainer):
 
     if self.config.enable_ssim:
       posttrained_video_path = self.generate_sample(self.config, pipeline, filename_prefix="post-training-")
-      print_ssim(pretrained_video_path, posttrained_video_path)
+      if jax.process_index() == 0:
+        print_ssim(pretrained_video_path, posttrained_video_path)
 
   def training_loop_2_2(
       self,
