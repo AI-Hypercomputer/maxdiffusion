@@ -17,16 +17,18 @@ limitations under the License.
 """Unit tests for the fixed-m path of the custom RING attention.
 
 The ring path gates fixed-m globally against floor(W(N_total)/2) (accumulate
-merge when every (head, shard) passes) and otherwise PER (head, K-shard)
+merge when every (head, Q-block) passes) and otherwise per (head, Q-block)
 against floor(W(N_local)/2), merging the per-hop partials in LSE space
-(invariant to fixed-m's bound overshoot). These tests check, against an f32
+(invariant to fixed-m's bound overshoot). The per-hop gate uses the ring-wide
+max K norm, so it is the same on every hop. These tests check, against an f32
 dense-softmax reference:
 
   * the untouched online ring path (regression guard),
   * fixed-m with every (head, shard) eligible,
   * a sink head ineligible on every shard (all-online fallback),
-  * a head eligible on one shard but not the other -- the mixed
-    fixed/online partial case that requires the LSE merge.
+  * a head whose keys are large on one shard only (the LSE path; because the
+    per-hop gate uses the ring-wide K max, that head runs online on every hop),
+  * GQA (4 Q heads, 2 KV heads) with a ragged last KV block.
 """
 
 import functools
@@ -98,6 +100,10 @@ class RingFixedMTest(unittest.TestCase):
   def _reference(self, q_in, k_in, v):
     """Dense f32 log2-domain softmax on the kernel's own bf16 inputs."""
     qf, kf, vf = (x.astype(jnp.float32) for x in (q_in, k_in, v))
+    if qf.shape[0] != kf.shape[0]:
+      q_heads_per_kv = qf.shape[0] // kf.shape[0]
+      kf = jnp.repeat(kf, q_heads_per_kv, axis=0)
+      vf = jnp.repeat(vf, q_heads_per_kv, axis=0)
     logits = jnp.einsum("hqd,hkd->hqk", qf, kf)  # LOG2E & scale pre-folded
     return jax.nn.softmax(logits * math.log(2.0), axis=-1) @ vf
 
@@ -135,7 +141,7 @@ class RingFixedMTest(unittest.TestCase):
           # The V/dtype safety verdict the production caller computes. It is
           # global, so it is reduced across the ring before use.
           v_max_sq = (vl.astype(jnp.float32) ** 2).max()
-          recenter, _ = custom_splash.get_fixed_m_constants(self.shard_len * _RING_SIZE)
+          recenter, _ = custom_splash.get_fixed_m_constants(kl.shape[1] * _RING_SIZE)
           dtype_safe = custom_splash.fixed_m_dtype_is_safe(ql.dtype, recenter)
           v_ok_local = (v_max_sq <= (custom_splash.DEFAULT_MAX_V_BOUND**2)) & dtype_safe
           v_ok = jax.lax.pmin(v_ok_local, axis_name=_RING_AXIS)
@@ -143,8 +149,8 @@ class RingFixedMTest(unittest.TestCase):
           v_ok = v_ok_override
       ring = ring_attention_kernel.make_custom_ring_attention(
           block_sizes=self.block_sizes,
-          orig_q_seq_len=self.shard_len,
-          orig_kv_seq_len=self.shard_len,
+          orig_q_seq_len=ql.shape[1],
+          orig_kv_seq_len=kl.shape[1],
           use_base2_exp=True,
           ring_axis=_RING_AXIS,
           ring_size=_RING_SIZE,
@@ -168,15 +174,27 @@ class RingFixedMTest(unittest.TestCase):
     return sq.max(axis=-1)
 
   def _gate_per_shard(self, q_in, k_in):
-    """(heads, q_rank, k_shard) per-hop eligibility, as the kernel's LSE path computes it.
+    """(heads, q_rank, k_shard) eligibility of each local q against each K shard on its own.
 
-    Each rank gates its stationary local q against every K shard with the
-    two-sided bound for the local shard length, floor(W(shard_len)/2).
+    Uses the two-sided bound for the local shard length, floor(W(shard_len)/2).
+    This describes the test input. The kernel's per-hop gate is `_gate_hop`,
+    which uses the ring-wide K max instead of each shard's own.
     """
     _, per_shard_bound = custom_splash.get_fixed_m_constants(self.shard_len)
     qn_sq = self._shard_max_sq_norms(q_in)  # (heads, q_rank)
     kn_sq = self._shard_max_sq_norms(k_in)  # (heads, k_shard)
     return qn_sq[:, :, None] * kn_sq[:, None, :] <= per_shard_bound**2
+
+  def _gate_hop(self, q_in, k_in):
+    """(heads, q_rank) per-hop eligibility, as the kernel's LSE path computes it.
+
+    Each rank gates its local q against the ring-wide max K norm with
+    floor(W(shard_len)/2); the result is the same on every hop.
+    """
+    _, per_shard_bound = custom_splash.get_fixed_m_constants(self.shard_len)
+    qn_sq = self._shard_max_sq_norms(q_in)  # (heads, q_rank)
+    kn_sq = self._shard_max_sq_norms(k_in).max(axis=1)  # (heads,)
+    return qn_sq * kn_sq[:, None] <= per_shard_bound**2
 
   def _gate_global(self, q_in, k_in):
     """(heads,) global eligibility; all True means the kernel takes the accumulate merge."""
@@ -229,13 +247,18 @@ class RingFixedMTest(unittest.TestCase):
     self.assertLess(self._run_and_compare(q, k, v, use_fixed_m=True), 2e-2)
 
   def test_mixed_fixed_online_across_shards(self):
-    # Amplify head 0's keys on shard 1 only: head 0 is fixed on shard 0 but
-    # online on shard 1 -- the mixed-partial merge the LSE space exists for.
+    # Amplify head 0's keys on shard 1 only. On its own, shard 0 would be
+    # fixed-eligible for head 0 and shard 1 would not. The kernel's per-hop
+    # gate uses the ring-wide K max, so head 0 runs online on every hop while
+    # the other heads stay fixed, and the LSE merge combines them.
     q, k, v = self._random_qkv(k_gain=(0, slice(self.shard_len, self.shard_len * _RING_SIZE), 40.0))
     self.assertFalse(bool(self._global_gate(q, k)[0]))  # forces the per-hop LSE path
     gate = self._gate(q, k)
-    self.assertTrue(bool(jnp.all(gate[0, :, 0])))  # every rank: fixed on shard 0
-    self.assertFalse(bool(jnp.any(gate[0, :, 1])))  # every rank: online on shard 1
+    self.assertTrue(bool(jnp.all(gate[0, :, 0])))  # input: shard 0 alone is eligible
+    self.assertFalse(bool(jnp.any(gate[0, :, 1])))  # input: shard 1 alone is not
+    hop_gate = self._gate_hop(*self._scaled_inputs(q, k))
+    self.assertFalse(bool(jnp.any(hop_gate[0])))  # kernel: head 0 online on every hop
+    self.assertTrue(bool(jnp.all(hop_gate[1:])))  # kernel: other heads fixed
     self.assertLess(self._run_and_compare(q, k, v, use_fixed_m=True), 2e-2)
 
   @_SKIP_IN_GITHUB_ACTIONS
@@ -266,6 +289,23 @@ class RingFixedMTest(unittest.TestCase):
     out = self._run_ring(q_in, k_in, v, use_fixed_m=True, v_ok_override=False).astype(jnp.float32)
     self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
     self.assertLess(float(jnp.max(jnp.abs(out - self._reference(q_in, k_in, v)))), 2e-2)
+
+  @_SKIP_IN_GITHUB_ACTIONS
+  def test_gqa_ring_fixed_m_ragged_last_kv_block(self):
+    """GQA (4 Q heads, 2 KV heads) through the ring kernel with fixed-m.
+
+    Drives `make_custom_ring_attention` directly (not `_ulysses_ring_custom_attention`).
+    The 1536-token shard is 8-aligned; the only raggedness is the last KV block
+    (1536 % block_kv 1024 = 512). It does not exercise `kv_pad_size = 1`.
+    """
+    q_heads = 4
+    kv_heads = 2
+    ragged_len = 1536
+    total_len = ragged_len * _RING_SIZE
+    q = jax.random.normal(jax.random.PRNGKey(42), (q_heads, total_len, self.head_dim), jnp.bfloat16)
+    k = jax.random.normal(jax.random.PRNGKey(43), (kv_heads, total_len, self.head_dim), jnp.bfloat16)
+    v = jax.random.normal(jax.random.PRNGKey(44), (kv_heads, total_len, self.head_dim), jnp.bfloat16)
+    self.assertLess(self._run_and_compare(q, k, v, use_fixed_m=True), 2e-2)
 
 
 class RingFixedMContractTest(unittest.TestCase):
@@ -445,7 +485,7 @@ class RingRawKeyBoundUnsoundTest(unittest.TestCase):
     recenter, _ = custom_splash.get_fixed_m_constants(self.total_kv)
 
     k_mean = keys.mean(axis=0)
-    max_centered_logit = float(((keys - k_mean) @ query).max())
+    max_centered_logit = float(jnp.dot(keys - k_mean, query, precision=jax.lax.Precision.HIGHEST).max())
     fixed_m = float(jnp.linalg.norm(query)) * float(jnp.linalg.norm(keys, axis=-1).max())
 
     # fixed-m parks the max weight at 2**recenter, so the realised exponent is
@@ -465,9 +505,331 @@ class RingRawKeyBoundUnsoundTest(unittest.TestCase):
     # Correctly rejected, so this tile takes the online-softmax path.
     self.assertGreater(centered_bound, safe_bound)
     # And had it been admitted, the bound would genuinely cap the logit.
-    max_centered_logit = float((centered @ query).max())
+    max_centered_logit = float(jnp.dot(centered, query, precision=jax.lax.Precision.HIGHEST).max())
     self.assertLessEqual(max_centered_logit, centered_bound + 1e-3)
     self.assertLessEqual(max_centered_logit - centered_bound + recenter, 128.0)
+
+
+@unittest.skipIf(
+    len(jax.devices()) < 4,
+    f"UlyssesRingAttentionFlaxIntegrationTest requires >= 4 devices, got {len(jax.devices())}",
+)
+@_SKIP_IN_GITHUB_ACTIONS
+class UlyssesRingAttentionFlaxIntegrationTest(unittest.TestCase):
+  """End-to-end 4-device (U=2, R=2) tests for `_ulysses_ring_custom_attention`.
+
+  Exercises the R>1 production wrapper (`_ring_fixed_m_norms_pre_a2a`,
+  `pregathered_mk=True`, caller-supplied `all_fixed_global`, per_q_block Q-norm
+  all-to-all, K-centering `pmean` + virtual `k_mean_dev`, and `kv_pad_size=1`
+  ragged tail masking) against a dense float32 reference.
+  """
+
+  batch = 1
+  heads = 4
+  head_dim = 128
+  scale = 1.0 / math.sqrt(128)
+  ulysses_shards = 2
+  context_shards = 4
+
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    from flax import linen as nn
+    from maxdiffusion.common_types import BlockSizes
+    from maxdiffusion.models import attention_flax
+
+    cls.nn = nn
+    cls.attention_flax = attention_flax
+    cls.mesh = jax.sharding.Mesh(np.asarray(jax.devices()[:4]), ("context",))
+    cls.axis_names = (
+        attention_flax.BATCH,
+        attention_flax.SELF_ATTN_HEAD,
+        attention_flax.SELF_ATTN_Q_LENGTH,
+        attention_flax.D_KV,
+    )
+    cls.block_sizes = BlockSizes(
+        block_q=128,
+        block_kv_compute=128,
+        block_kv=128,
+        block_q_dkv=128,
+        block_kv_dkv=128,
+        block_kv_dkv_compute=128,
+        block_q_dq=128,
+        block_kv_dq=128,
+        use_fused_bwd_kernel=False,
+    )
+
+  def _dense_reference(self, q: jax.Array, k_scaled: jax.Array, v: jax.Array) -> jax.Array:
+    """Dense float32 reference on 4D `(B, H, S, D)` inputs (`k_scaled = k * scale`)."""
+    qf = q.astype(jnp.float32)
+    kf = k_scaled.astype(jnp.float32)
+    vf = v.astype(jnp.float32)
+    if qf.shape[1] != kf.shape[1]:
+      rep = qf.shape[1] // kf.shape[1]
+      kf = jnp.repeat(kf, rep, axis=1)
+      vf = jnp.repeat(vf, rep, axis=1)
+    logits = jnp.einsum("bhsd,bhtd->bhst", qf, kf, precision=jax.lax.Precision.HIGHEST)
+    weights = jax.nn.softmax(logits, axis=-1)
+    out = jnp.einsum("bhst,bhtd->bhsd", weights, vf, precision=jax.lax.Precision.HIGHEST)
+    # `_ulysses_ring_custom_attention` returns 3D `(B, S, H * D)`.
+    b, h, s, d = out.shape
+    return out.transpose(0, 2, 1, 3).reshape(b, s, h * d)
+
+  def _rel_l2(self, actual: jax.Array, expected: jax.Array) -> float:
+    af = actual.astype(jnp.float32)
+    ef = expected.astype(jnp.float32)
+    return float(jnp.linalg.norm(af - ef) / (jnp.linalg.norm(ef) + 1e-12))
+
+  def _eval_pre_a2a_predicates(
+      self,
+      q: jax.Array,
+      k_scaled: jax.Array,
+      v: jax.Array,
+      *,
+      per_q_block: bool,
+      use_k_centering: bool,
+  ) -> tuple[np.ndarray, np.ndarray]:
+    """Runs `_ring_fixed_m_norms_pre_a2a` across all 4 (R=2, U=2) shards and returns per-device `all_fixed_global`."""
+    af = self.attention_flax
+    internal_mesh = af._create_internal_ulysses_ring_mesh(self.mesh, 2, 2)
+    ring_axis, ulysses_axis = af.INTERNAL_RING_AXIS, af.INTERNAL_ULYSSES_AXIS
+    spec = jax.sharding.PartitionSpec(None, None, (ring_axis, ulysses_axis), None)
+    out_spec = jax.sharding.PartitionSpec((ring_axis, ulysses_axis))
+
+    @functools.partial(
+        jax.shard_map,
+        mesh=internal_mesh,
+        in_specs=(spec, spec, spec),
+        out_specs=(out_spec, out_spec),
+        check_vma=False,
+    )
+    def _probe(q_s, k_s, v_s):
+      _, _, v_ok, all_fixed_global, _ = af._ring_fixed_m_norms_pre_a2a(
+          q_s * af.LOG2E,
+          k_s,
+          v_s,
+          ulysses_axis=ulysses_axis,
+          ring_axis=ring_axis,
+          num_ulysses_shards=2,
+          num_ring_shards=2,
+          block_q=128,
+          per_q_block=per_q_block,
+          use_k_centering=use_k_centering,
+      )
+      return jnp.expand_dims(all_fixed_global, 0), jnp.expand_dims(v_ok, 0)
+
+    all_fixed_per_dev, v_ok_per_dev = _probe(q, k_scaled, v)
+    return np.asarray(all_fixed_per_dev), np.asarray(v_ok_per_dev)
+
+  def _run_ulysses_ring(
+      self,
+      q: jax.Array,
+      k_scaled: jax.Array,
+      v: jax.Array,
+      *,
+      kv_heads: int,
+      per_q_block: bool,
+      use_k_centering: bool,
+  ) -> jax.Array:
+    af = self.attention_flax
+    rules = [
+        (af.BATCH, None),
+        (af.SELF_ATTN_HEAD, None),
+        (af.SELF_ATTN_Q_LENGTH, "context"),
+        (af.SELF_ATTN_KV_LENGTH, "context"),
+        (af.D_KV, None),
+    ]
+    with self.mesh, self.nn.logical_axis_rules(rules):
+      return af._ulysses_ring_custom_attention(
+          q,
+          k_scaled,
+          v,
+          heads=self.heads,
+          mesh=self.mesh,
+          axis_names_q=self.axis_names,
+          axis_names_kv=self.axis_names,
+          flash_block_sizes=self.block_sizes,
+          dtype=jnp.bfloat16,
+          ulysses_shards=self.ulysses_shards,
+          use_base2_exp=True,
+          use_fixed_m=True,
+          per_q_block=per_q_block,
+          kv_heads=kv_heads,
+          use_k_centering=use_k_centering,
+      )
+
+  def test_u2_r2_grid_per_q_block_centering_and_gqa(self):
+    """Sweeps per_q_block x use_k_centering x GQA at U=2, R=2 against dense f32."""
+    total_seq = 512  # 128 per context shard; 256 per ring shard after Ulysses a2a (2 Q/KV blocks of 128)
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(101), 3)
+    q = jax.random.normal(k1, (self.batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+
+    for kv_heads in (4, 2):
+      k = jax.random.normal(k2, (self.batch, kv_heads, total_seq, self.head_dim), jnp.bfloat16)
+      v = jax.random.normal(k3, (self.batch, kv_heads, total_seq, self.head_dim), jnp.bfloat16)
+      k_scaled = (k.astype(jnp.float32) * self.scale).astype(jnp.bfloat16)
+      ref = self._dense_reference(q, k_scaled, v)
+
+      for per_q_block in (False, True):
+        for use_k_centering in (False, True):
+          with self.subTest(kv_heads=kv_heads, per_q_block=per_q_block, use_k_centering=use_k_centering):
+            all_fixed_devs, v_ok_devs = self._eval_pre_a2a_predicates(
+                q,
+                k_scaled,
+                v,
+                per_q_block=per_q_block,
+                use_k_centering=use_k_centering,
+            )
+            self.assertTrue(bool(np.all(v_ok_devs)))
+            # Normal-scale unit inputs must take the `_accumulate_scan` branch on all 4 devices.
+            self.assertTrue(bool(np.all(all_fixed_devs)))
+            out = self._run_ulysses_ring(
+                q,
+                k_scaled,
+                v,
+                kv_heads=kv_heads,
+                per_q_block=per_q_block,
+                use_k_centering=use_k_centering,
+            )
+            self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
+            self.assertLess(self._rel_l2(out, ref), 2e-2)
+
+  def test_u2_r2_ragged_kv_length_exercises_kv_pad_size_1(self):
+    """Ragged ring KV shard (272 tokens = 2 * 128 + 16) exercises `kv_pad_size=1` tail masking."""
+    # 4 context shards * 136 tokens/shard = 544 total tokens.
+    # After Ulysses (U=2) all-to-all, each ring shard has 272 tokens:
+    # 272 is 8-sublane aligned (`pad_kv_len == 0`) and `272 % block_kv(128) = 16 != 0`,
+    # so `_ulysses_ring_custom_attention` sets `kv_pad_size = 1` and masks the last KV tile.
+    total_seq = 544
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(202), 3)
+    q = jax.random.normal(k1, (self.batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    k = jax.random.normal(k2, (self.batch, 2, total_seq, self.head_dim), jnp.bfloat16)
+    v = jax.random.normal(k3, (self.batch, 2, total_seq, self.head_dim), jnp.bfloat16)
+    k_scaled = (k.astype(jnp.float32) * self.scale).astype(jnp.bfloat16)
+    ref = self._dense_reference(q, k_scaled, v)
+
+    for use_k_centering in (False, True):
+      with self.subTest(use_k_centering=use_k_centering):
+        out = self._run_ulysses_ring(
+            q,
+            k_scaled,
+            v,
+            kv_heads=2,
+            per_q_block=True,
+            use_k_centering=use_k_centering,
+        )
+        self.assertEqual(out.shape, (self.batch, total_seq, self.heads * self.head_dim))
+        self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
+        self.assertLess(self._rel_l2(out, ref), 2e-2)
+
+  def test_u2_r2_sink_head_forces_lse_scan_uniformly_across_mesh(self):
+    """A single sink head on Ulysses rank 0 forces `_lse_scan` uniformly across all 4 (U=2, R=2) devices."""
+    total_seq = 512
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(303), 3)
+    q = jax.random.normal(k1, (self.batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    # Head 0 (owned by Ulysses rank 0 post-a2a, while Ulysses rank 1 owns heads 2..3) exceeds the bound.
+    q = q.at[:, 0, :64, :].multiply(jnp.bfloat16(40.0))
+    k = jax.random.normal(k2, (self.batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    v = jax.random.normal(k3, (self.batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    k_scaled = (k.astype(jnp.float32) * self.scale).astype(jnp.bfloat16)
+    ref = self._dense_reference(q, k_scaled, v)
+
+    for per_q_block in (False, True):
+      for use_k_centering in (False, True):
+        with self.subTest(per_q_block=per_q_block, use_k_centering=use_k_centering):
+          all_fixed_devs, v_ok_devs = self._eval_pre_a2a_predicates(
+              q,
+              k_scaled,
+              v,
+              per_q_block=per_q_block,
+              use_k_centering=use_k_centering,
+          )
+          self.assertTrue(bool(np.all(v_ok_devs)))
+          # Crucial: all 4 devices (both Ulysses rank 0 and Ulysses rank 1) must agree
+          # that `all_fixed_global == False` so `lax.cond` takes `_lse_scan` mesh-wide.
+          self.assertEqual(all_fixed_devs.tolist(), [False, False, False, False])
+          out = self._run_ulysses_ring(
+              q,
+              k_scaled,
+              v,
+              kv_heads=self.heads,
+              per_q_block=per_q_block,
+              use_k_centering=use_k_centering,
+          )
+          self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
+          self.assertLess(self._rel_l2(out, ref), 2e-2)
+
+  def test_u2_r2_v_outlier_forces_fallback_uniformly_batch2(self):
+    """One |V| > DEFAULT_MAX_V_BOUND element on one device makes v_ok False on all 4 devices (B=2)."""
+    total_seq = 512
+    batch = 2
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(404), 3)
+    q = jax.random.normal(k1, (batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    k = jax.random.normal(k2, (batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    v = jax.random.normal(k3, (batch, self.heads, total_seq, self.head_dim), jnp.bfloat16)
+    # Last token (context shard 3), last head, second batch element only.
+    v = v.at[1, self.heads - 1, total_seq - 1, 0].set(jnp.bfloat16(2.0 * custom_splash.DEFAULT_MAX_V_BOUND))
+    k_scaled = (k.astype(jnp.float32) * self.scale).astype(jnp.bfloat16)
+    ref = self._dense_reference(q, k_scaled, v)
+
+    for per_q_block in (False, True):
+      with self.subTest(per_q_block=per_q_block):
+        all_fixed_devs, v_ok_devs = self._eval_pre_a2a_predicates(
+            q,
+            k_scaled,
+            v,
+            per_q_block=per_q_block,
+            use_k_centering=False,
+        )
+        self.assertEqual(v_ok_devs.tolist(), [False, False, False, False])
+        self.assertEqual(all_fixed_devs.tolist(), [False, False, False, False])
+        out = self._run_ulysses_ring(
+            q,
+            k_scaled,
+            v,
+            kv_heads=self.heads,
+            per_q_block=per_q_block,
+            use_k_centering=False,
+        )
+        self.assertEqual(out.shape, (batch, total_seq, self.heads * self.head_dim))
+        self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
+        self.assertLess(self._rel_l2(out, ref), 2e-2)
+
+  def test_u2_r2_accumulate_scan_batch2_and_sub_128_head_dim_k_mean_padding(self):
+    """Exercises vmap over batch>1 on _accumulate_scan and ring k_mean head-dim padding (d=64 -> 128)."""
+    total_seq = 512
+    batch = 2
+    sub_head_dim = 64
+    sub_scale = 1.0 / math.sqrt(sub_head_dim)
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(505), 3)
+    q = jax.random.normal(k1, (batch, self.heads, total_seq, sub_head_dim), jnp.bfloat16)
+    k = jax.random.normal(k2, (batch, self.heads, total_seq, sub_head_dim), jnp.bfloat16)
+    v = jax.random.normal(k3, (batch, self.heads, total_seq, sub_head_dim), jnp.bfloat16)
+    k_scaled = (k.astype(jnp.float32) * sub_scale).astype(jnp.bfloat16)
+    ref = self._dense_reference(q, k_scaled, v)
+
+    for per_q_block in (False, True):
+      with self.subTest(per_q_block=per_q_block):
+        all_fixed_devs, v_ok_devs = self._eval_pre_a2a_predicates(
+            q,
+            k_scaled,
+            v,
+            per_q_block=per_q_block,
+            use_k_centering=True,
+        )
+        self.assertEqual(v_ok_devs.tolist(), [True, True, True, True])
+        self.assertEqual(all_fixed_devs.tolist(), [True, True, True, True])
+        out = self._run_ulysses_ring(
+            q,
+            k_scaled,
+            v,
+            kv_heads=self.heads,
+            per_q_block=per_q_block,
+            use_k_centering=True,
+        )
+        self.assertEqual(out.shape, (batch, total_seq, self.heads * sub_head_dim))
+        self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
+        self.assertLess(self._rel_l2(out, ref), 2e-2)
 
 
 if __name__ == "__main__":

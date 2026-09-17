@@ -28,5 +28,11 @@ TESTS=(
   # Fixed-m custom splash kernel and ring (feat/fixed-m-kernel)
   "$T/custom_splash_fixed_m_test.py"
   "$T/ring_fixed_m_test.py"
+  # Ulysses x Ring attention (feat/ring-attention)
+  "$T/attention_config_guards_test.py"
+  "$T/custom_splash_unpadded_test.py"
+  "$T/dot_fallback_layout_test.py"
+  "$T/fused_producers_test.py"
+  "$T/tile_size_grid_search_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
