@@ -468,10 +468,27 @@ def delete_file(file_path: str):
     max_logging.log(f"The file '{file_path}' does not exist.")
 
 
-def get_git_commit_hash():
+def get_git_commit_hash(check_dirty: bool = True):
   """Tries to get the current Git commit hash, for run provenance."""
   try:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode("utf-8")
+    repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    commit = subprocess.check_output(["git", "-C", repo_dir, "rev-parse", "HEAD"]).strip().decode("utf-8")
+    if check_dirty:
+      status = (
+          subprocess.check_output([
+              "git",
+              "-C",
+              repo_dir,
+              "status",
+              "--porcelain",
+              "--untracked-files=no",
+          ])
+          .strip()
+          .decode("utf-8")
+      )
+      if status:
+        return f"{commit}-dirty"
+    return commit
   except subprocess.CalledProcessError:
     max_logging.log("Warning: 'git rev-parse HEAD' failed. Not running in a git repo?")
     return None
@@ -586,11 +603,16 @@ def create_device_mesh(config, devices=None, logging=True):
   if multi_slice_env:
     dcn_parallelism = fill_unspecified_mesh_axes(dcn_parallelism, num_slices, "DCN")
     mesh = mesh_utils.create_hybrid_device_mesh(
-        ici_parallelism, dcn_parallelism, devices, allow_split_physical_axes=config.allow_split_physical_axes
+        ici_parallelism,
+        dcn_parallelism,
+        devices,
+        allow_split_physical_axes=config.allow_split_physical_axes,
     )
   else:
     mesh = mesh_utils.create_device_mesh(
-        ici_parallelism, devices, allow_split_physical_axes=config.allow_split_physical_axes
+        ici_parallelism,
+        devices,
+        allow_split_physical_axes=config.allow_split_physical_axes,
     )
 
   if logging:

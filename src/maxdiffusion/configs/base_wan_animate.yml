@@ -81,9 +81,10 @@ jit_initializers: True
 # Set true to load weights from pytorch
 from_pt: True
 split_head_dim: True
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_ring
+attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block
 use_base2_exp: True
 use_experimental_scheduler: True
+use_k_centering: "auto"
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
@@ -253,6 +254,11 @@ dataset_config_name: ''
 jax_cache_dir: '.jax_cache'
 # Directory for per-shape AOT serialized executables ('' = disabled).
 aot_cache_dir: ''
+# Zero-execution warmup (warmup compiles the transformer passes without executing them)
+# needs the AOT cache; with aot_cache_dir empty it installs an ephemeral one. Off = plain jax.jit.
+enable_zero_execution_warmup: False
+aot_build_revision: ''
+wan_debug_cond_timers: False
 # Directory for memoized torch->flax converted weights ('' = disabled).
 converted_weights_dir: ''
 hf_data_dir: ''
