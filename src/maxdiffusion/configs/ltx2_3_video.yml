@@ -143,6 +143,8 @@ profiler_steps: 5
 enable_jax_named_scopes: False
 
 replicate_vae: False
+enable_vae_tiling: False
+enable_vae_slicing: False
 
 run_text_encoder_on_tpu: False
 # Dynamically disables VAE slicing and distributes the batch dimension to avoid HBM OOM for larger batch sizes.
