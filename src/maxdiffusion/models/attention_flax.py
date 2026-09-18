@@ -2078,20 +2078,20 @@ def _head_local_svg_attention(query, key, value, context):
       profile_key = jax.random.fold_in(profile_key, jnp.asarray(index, jnp.uint32))
   if cfg.get("svg_step_index") is None and cfg.get("svg_timestep") is not None:
     profile_key = jax.random.fold_in(profile_key, jnp.max(jnp.asarray(cfg["svg_timestep"])).astype(jnp.uint32))
-  with jax.named_scope("svg_routing"):
-    route = svg_attention.svg_profile_temporal_heads(
-        q,
-        k,
-        v,
+  if fold_batch:
+    q, k, v = (x.reshape(1, local_heads, *x.shape[2:]) for x in (q, k, v))
+
+  def route(q_local, k_local, v_local):
+    return svg_attention.svg_profile_temporal_heads(
+        q_local,
+        k_local,
+        v_local,
         grid,
         int(cfg["profile_query_count"]),
         profile_key,
         context["scale"],
         sample_max_row=int(cfg.get("sample_max_row", 10000)),
     )
-  if fold_batch:
-    q, k, v = (x.reshape(1, local_heads, *x.shape[2:]) for x in (q, k, v))
-    route = route.reshape(1, local_heads)
   # Sparse and dense attention use independently configured tiles.
   bq, bkv, bc, bci, hpt, vmem = _extract_custom_block_sizes(
       cfg.get("custom_flash_block_sizes") or context["flash_block_sizes"]
