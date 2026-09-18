@@ -108,7 +108,7 @@ namex>=0.1.0
 networkx>=3.6.1
 numpy-typing-compat>=20251206.2.0
 numpy>=2.0.2
-nvidia-cuda-cccl>=13.1.115
+nvidia-cuda-cccl>=13.1.115 ; sys_platform != 'darwin'
 oauthlib>=3.3.1
 opencv-python-headless>=4.13.0.92
 opt-einsum>=3.4.0
