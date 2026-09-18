@@ -381,7 +381,7 @@ def _extract_custom_block_sizes(flash_block_sizes):
   bq = 4864
   bkv = 1024
   bkv_compute = 1024
-  bkv_compute_in = 1024
+  bkv_compute_in = None
   heads_per_tile = 1
   vmem_limit_bytes = None
   if flash_block_sizes is not None:
@@ -390,14 +390,14 @@ def _extract_custom_block_sizes(flash_block_sizes):
       bq = get("block_q", None) or bq
       bkv = get("block_kv", None) or bkv
       bkv_compute = get("block_kv_compute", None) or bkv_compute
-      bkv_compute_in = get("block_kv_compute_in", None) or bkv_compute_in
+      bkv_compute_in = get("block_kv_compute_in", None)
       heads_per_tile = get("heads_per_tile", None) or heads_per_tile
       vmem_limit_bytes = get("vmem_limit_bytes", None) or vmem_limit_bytes
     else:
       bq = getattr(flash_block_sizes, "block_q", None) or bq
       bkv = getattr(flash_block_sizes, "block_kv", None) or bkv
       bkv_compute = getattr(flash_block_sizes, "block_kv_compute", None) or bkv_compute
-      bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", None) or bkv_compute_in
+      bkv_compute_in = getattr(flash_block_sizes, "block_kv_compute_in", None)
       heads_per_tile = getattr(flash_block_sizes, "heads_per_tile", None) or heads_per_tile
       vmem_limit_bytes = getattr(flash_block_sizes, "vmem_limit_bytes", None) or vmem_limit_bytes
   # A BlockSizes object carries heads_per_tile=None when the config dict omitted
@@ -405,7 +405,10 @@ def _extract_custom_block_sizes(flash_block_sizes):
   # to 1 (the custom-kernel default) to keep the `heads_per_tile > 1` guards safe.
   if heads_per_tile is None:
     heads_per_tile = 1
-  bkv_compute_in = min(bkv_compute, bkv_compute_in)
+  if bkv_compute_in is None:
+    bkv_compute_in = bkv_compute
+  else:
+    bkv_compute_in = min(bkv_compute, bkv_compute_in)
   return bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes
 
 

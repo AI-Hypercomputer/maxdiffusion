@@ -591,9 +591,11 @@ class LTX2Pipeline:
     if hasattr(self.vae, "enable_tiling"):
       self.vae.enable_tiling()
     self.vae.use_tiling = True
+    self.vae.use_framewise_decoding = True
 
   def disable_vae_tiling(self):
     self.vae.use_tiling = False
+    self.vae.use_framewise_decoding = False
 
   @classmethod
   def load_tokenizer(cls, config: HyperParameters):
