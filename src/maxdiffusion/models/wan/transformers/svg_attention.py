@@ -135,28 +135,36 @@ def svg_profile_temporal_heads(
         * scale
     )
 
-    dense_weights = jax.nn.softmax(sampled_qk, axis=-1)
+    dense_weights = jax.nn.softmax(sampled_qk, axis=-1).astype(value.dtype)
     dense_output = jnp.einsum(
         "bhqk,bhkd->bhqd",
-        dense_weights.astype(value.dtype),
+        dense_weights,
         value,
         preferred_element_type=jnp.float32,
     )
 
-    spatial_logits = jnp.where(spatial_mask[None, None, :, :], sampled_qk, -1e9)
-    spatial_weights = jax.nn.softmax(spatial_logits, axis=-1)
+    spatial_logits = jnp.where(
+        spatial_mask[None, None, :, :], sampled_qk, -1e9
+    )
+    spatial_weights = jax.nn.softmax(spatial_logits, axis=-1).astype(
+        value.dtype
+    )
     spatial_output = jnp.einsum(
         "bhqk,bhkd->bhqd",
-        spatial_weights.astype(value.dtype),
+        spatial_weights,
         value,
         preferred_element_type=jnp.float32,
     )
 
-    temporal_logits = jnp.where(temporal_mask[None, None, :, :], sampled_qk, -1e9)
-    temporal_weights = jax.nn.softmax(temporal_logits, axis=-1)
+    temporal_logits = jnp.where(
+        temporal_mask[None, None, :, :], sampled_qk, -1e9
+    )
+    temporal_weights = jax.nn.softmax(temporal_logits, axis=-1).astype(
+        value.dtype
+    )
     temporal_output = jnp.einsum(
         "bhqk,bhkd->bhqd",
-        temporal_weights.astype(value.dtype),
+        temporal_weights,
         value,
         preferred_element_type=jnp.float32,
     )

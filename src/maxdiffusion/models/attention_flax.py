@@ -2096,9 +2096,19 @@ def _head_local_svg_attention(query, key, value, context):
         sample_max_row=int(cfg.get("sample_max_row", 10000)),
     )
   # Sparse and dense attention use independently configured tiles.
+  custom_svg_blocks = cfg.get("custom_flash_block_sizes")
   bq, bkv, bc, bci, hpt, vmem = _extract_custom_block_sizes(
-      cfg.get("custom_flash_block_sizes") or context["flash_block_sizes"]
+      custom_svg_blocks or context["flash_block_sizes"]
   )
+  frame_size = int(grid[1] * grid[2])
+  if not custom_svg_blocks and q.shape[2] >= 15360 and frame_size > 0:
+    frame_tile_unit = math.lcm(frame_size, 128)
+    if frame_tile_unit <= 2560:
+      bkv = max(1, round(1920 / frame_tile_unit)) * frame_tile_unit
+      bq = 2 * bkv
+      bc = bkv
+      bci = bkv
+      vmem = max(vmem or 0, 67108864)
   if hpt != 1:
     raise ValueError("SVG requires heads_per_tile=1.")
   blocks = custom_svg_static_range_attention.SVGBlockSizes(
@@ -2107,10 +2117,12 @@ def _head_local_svg_attention(query, key, value, context):
       block_kv_compute=bc,
       block_kv_compute_in=bci,
   )
+  svg_use_base2_exp = bool(cfg.get("use_base2_exp", True))
+  svg_use_exp_sched = bool(cfg.get("use_experimental_scheduler", True))
 
   def core(q, k, v):
     k = k * context["scale"]
-    if context["use_base2_exp"]:
+    if svg_use_base2_exp:
       q = q * LOG2E
     q, dim, n = _pad_data_for_flash(q, q.shape[1], bq)
     k, _, nk = _pad_data_for_flash(k, k.shape[1], bkv)
@@ -2120,11 +2132,11 @@ def _head_local_svg_attention(query, key, value, context):
         orig_q_seq_len=n,
         orig_kv_seq_len=nk,
         band_width=int(cfg["band_width"]),
-        frame_size=int(grid[1] * grid[2]),
+        frame_size=frame_size,
         include_first_frame=bool(cfg.get("include_first_frame", True)),
         bkv_compute_in=bci,
-        use_base2_exp=context["use_base2_exp"],
-        use_experimental_scheduler=context["use_experimental_scheduler"],
+        use_base2_exp=svg_use_base2_exp,
+        use_experimental_scheduler=svg_use_exp_sched,
         vmem_limit_bytes=vmem,
     )
     # Report executed tile fraction, which differs from real attention-pair density.
