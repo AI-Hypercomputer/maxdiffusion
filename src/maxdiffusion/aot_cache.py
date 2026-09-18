@@ -79,27 +79,53 @@ def _metadata_fingerprint(meta: dict[str, Any]) -> str:
   return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
+def _format_static_val(val: Any) -> str:
+  if isinstance(val, dict):
+    items = [f"{k!r}:{_format_static_val(val[k])}" for k in sorted(val.keys(), key=str)]
+    return "{" + ",".join(items) + "}"
+  return re.sub(r"0x[0-9a-fA-F]+", "@", repr(val))
+
+
+def _extract_graphdef_statics(obj: Any, prefix: str = "") -> list[str]:
+  """Extracts deterministic static attributes from nnx.GraphDef objects."""
+  out = []
+  if hasattr(obj, "nodes") and hasattr(obj, "attributes"):
+    for i, attr_item in enumerate(getattr(obj, "attributes", ())):
+      if isinstance(attr_item, tuple) and len(attr_item) == 2:
+        k, v = attr_item
+        if isinstance(k, str) and k.startswith("_pytree"):
+          continue
+        if hasattr(v, "value"):
+          desc = _format_static_val(v.value)
+          out.append(f"{prefix}:attr[{i}].{k}={desc}")
+  elif isinstance(obj, (tuple, list)):
+    for i, item in enumerate(obj):
+      out.extend(_extract_graphdef_statics(item, f"{prefix}[{i}]"))
+  elif isinstance(obj, dict):
+    for k in sorted(obj.keys(), key=str):
+      out.extend(_extract_graphdef_statics(obj[k], f"{prefix}.{k}"))
+  return out
+
+
 def _dynamic_signature(args: tuple, kwargs: dict) -> str:
   """Deterministic digest of everything that selects an executable.
 
-  Structure is captured by each leaf's KEY PATH (names, order, count) --
-  NOT by ``repr(treedef)``: an nnx GraphDef's repr embeds object
-  addresses and hash-order-dependent content that differ per process and
-  made signatures never match across restarts (measured: every array
-  part stable, only the treedef part unstable). Static graph metadata
-  not visible in key paths (attention kernel, dtypes, model path) is
-  covered by the install-time config fingerprint in the filename.
-  Array leaves contribute shape/dtype; non-array leaves (python scalars,
-  None flags) contribute an address-stripped repr.
+  Structure is captured by each leaf's KEY PATH (names, order, count) plus
+  any static attributes inside ``nnx.GraphDef`` arguments (stripped of
+  object addresses and sorted by dict key so signatures remain stable across
+  processes). Array leaves contribute shape/dtype; non-array leaves (python
+  scalars, None flags) contribute an address-stripped repr.
   """
   leaves_with_paths = jax.tree_util.tree_flatten_with_path((args, kwargs))[0]
   parts = []
   for path, leaf in leaves_with_paths:
     if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
-      desc = f"{tuple(leaf.shape)}:{leaf.dtype}"
+      weak = getattr(leaf, "weak_type", False)
+      desc = f"{tuple(leaf.shape)}:{leaf.dtype}:weak={weak}"
     else:
       desc = re.sub(r"0x[0-9a-fA-F]+", "@", repr(leaf))
     parts.append(f"{jax.tree_util.keystr(path)}={desc}")
+  parts.extend(_extract_graphdef_statics((args, kwargs)))
   return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
 
 
@@ -116,6 +142,7 @@ class _AotEntry:
     self._out_specs: dict[str, Any] = {}
     self._pending: dict[str, tuple] = {}
     self._adapters: dict[str, Any] = {}
+    self._sig_cache: dict[tuple, str] = {}
     self._on_disk: set[str] = set()
     self._lock = threading.Lock()
 
@@ -197,7 +224,26 @@ class _AotEntry:
       # Under an outer trace a deserialized executable cannot be applied
       # and tracers must not be recorded -- inline like a nested jit.
       return self.jitted(**dynamic, **static)
-    signature = _dynamic_signature((), {**dynamic, **static})
+
+    # Fast-path signature cache: avoid tree_flatten_with_path + SHA256 string hashing on repeated steps
+    shapes_dtypes = tuple(
+        (leaf.shape, leaf.dtype, getattr(leaf, "weak_type", False))
+        if hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+        else (type(leaf), re.sub(r"0x[0-9a-fA-F]+", "@", repr(leaf)))
+        for leaf in leaves
+    )
+    cache_key = (treedef, shapes_dtypes, tuple(sorted(static.items())))
+    signature = getattr(self, "_sig_cache", {}).get(cache_key)
+    if signature is None:
+      signature = _dynamic_signature((), {**dynamic, **static})
+      with self._lock:
+        if not hasattr(self, "_sig_cache"):
+          self._sig_cache = {}
+        if len(self._sig_cache) < 64:
+          new_cache = dict(self._sig_cache)
+          new_cache[cache_key] = signature
+          self._sig_cache = new_cache
+
     if _STATE.warmup_only:
       # Compilation only needs avals; skip the (possibly seconds-long)
       # real execution and hand back correctly-shaped/sharded zeros so
@@ -213,16 +259,13 @@ class _AotEntry:
     compiled = self._compiled.get(signature)
     if compiled is not None:
       flat = self._align_inputs(compiled, leaves)
-      if flat is not None:
-        return compiled(flat)
-      # Fewer expected shardings than leaves: XLA pruned unused inputs
-      # (e.g. encoder params in a decode-only executable). Compiled keeps
-      # the full in_tree and prunes internally, so hand it the raw leaves;
-      # sharding/structure problems surface as catchable Python errors.
       try:
+        if flat is not None:
+          return compiled(flat)
         return compiled(leaves)
       except Exception as e:  # noqa: BLE001 - any failure means "use jit"
-        max_logging.log(f"[aot] {self.name}: compiled call failed ({e}); using jit")
+        max_logging.log(f"[aot] fast-path execution failed for {self.name}/{signature} ({e}); falling back to JIT")
+        return self.jitted(**dynamic, **static)
     with self._lock:
       if signature not in self._pending and signature not in self._compiled:
         self._pending[signature] = (leaves, treedef, static)
@@ -234,28 +277,31 @@ class _AotEntry:
     jit auto-commits mismatched inputs; a deserialized Compiled does not --
     a placement mismatch aborts inside PjRt (uncatchable C++). Weights
     already carry final shardings; in practice this only moves small
-    fresh-off-host activations. Returns the aligned leaf list, or None on
-    structural mismatch (caller falls back to jit).
+    fresh-off-host activations. Returns the aligned leaf list, or None when
+    XLA pruned unused inputs (caller retries via Compiled's own pruning path).
+    Raises loudly on sharding alignment errors rather than silently triggering
+    a mid-serving JIT recompile.
     """
-    try:
-      flat_expected = jax.tree_util.tree_leaves(compiled.input_shardings)
-      if len(flat_expected) != len(leaves):
-        # Fewer expected shardings than leaves = XLA pruned unused inputs;
-        # the caller retries via Compiled's own pruning path. Not an error.
-        return None
-      aligned = []
-      for leaf, expected in zip(leaves, flat_expected):
-        if not hasattr(leaf, "shape"):  # python scalar traced as weak array
-          leaf = jnp.asarray(leaf)
-        sharding = getattr(leaf, "sharding", None)
-        if sharding is not None and sharding.is_equivalent_to(expected, leaf.ndim):
-          aligned.append(leaf)
-        else:
-          aligned.append(jax.device_put(leaf, expected))
-      return aligned
-    except Exception as e:  # noqa: BLE001 - any failure means "use jit"
-      max_logging.log(f"[aot] {self.name}: cannot align inputs ({e}); using jit")
+    flat_expected = jax.tree_util.tree_leaves(compiled.input_shardings)
+    if len(flat_expected) != len(leaves):
+      # Fewer expected shardings than leaves = XLA pruned unused inputs;
+      # the caller retries via Compiled's own pruning path. Not an error.
       return None
+
+    # Fast path: check if all leaves already match expected sharding exactly
+    if all(getattr(leaf, "sharding", None) is expected for leaf, expected in zip(leaves, flat_expected)):
+      return leaves
+
+    aligned = []
+    for leaf, expected in zip(leaves, flat_expected):
+      if not hasattr(leaf, "shape"):  # python scalar traced as weak array
+        leaf = jnp.asarray(leaf)
+      sharding = getattr(leaf, "sharding", None)
+      if sharding is not None and (sharding is expected or sharding.is_equivalent_to(expected, leaf.ndim)):
+        aligned.append(leaf)
+      else:
+        aligned.append(jax.device_put(leaf, expected))
+    return aligned
 
   # ---------------------------------------------------------------- disk
   def _path_for(self, signature: str) -> str:

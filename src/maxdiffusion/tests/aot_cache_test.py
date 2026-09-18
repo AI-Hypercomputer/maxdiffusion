@@ -179,6 +179,76 @@ class AotCacheTest(unittest.TestCase):
     ]
     self.assertEqual(outs[0], outs[1])
 
+  def test_graphdef_static_attribute_changes_dynamic_signature(self):
+    """Toggling static attributes on nnx.GraphDef (such as use_k_centering) changes _dynamic_signature."""
+    from flax import nnx
+
+    class DummyBlock(nnx.Module):
+
+      def __init__(self, use_k_centering: bool):
+        self.attention_config = {"use_k_centering": use_k_centering}
+
+    gd_on, _ = nnx.split(DummyBlock(use_k_centering=True))
+    gd_off, _ = nnx.split(DummyBlock(use_k_centering=False))
+
+    sig_on = aot_cache._dynamic_signature((gd_on, jnp.ones((2, 4))), {})
+    sig_off = aot_cache._dynamic_signature((gd_off, jnp.ones((2, 4))), {})
+    self.assertNotEqual(sig_on, sig_off)
+
+  def test_wan_aot_metadata_includes_use_k_centering(self):
+    """Toggling use_k_centering changes the Wan AOT metadata fingerprint."""
+    import types
+    from maxdiffusion import generate_wan
+
+    cfg_on = types.SimpleNamespace(use_k_centering=True, attention="ulysses_ring_custom_fixed_m")
+    cfg_off = types.SimpleNamespace(use_k_centering=False, attention="ulysses_ring_custom_fixed_m")
+
+    meta_on = generate_wan._build_wan_aot_metadata(cfg_on, self._mesh, "rev1")
+    meta_off = generate_wan._build_wan_aot_metadata(cfg_off, self._mesh, "rev1")
+
+    self.assertEqual(meta_on["use_k_centering"], "True")
+    self.assertEqual(meta_off["use_k_centering"], "False")
+    self.assertNotEqual(
+        aot_cache._metadata_fingerprint(meta_on),
+        aot_cache._metadata_fingerprint(meta_off),
+    )
+
+  def test_wan_source_hash_includes_shared_modules_and_commit(self):
+    """Verifies _compute_wan_source_hash hashes shared modules (normalization_flax, embeddings_flax) and combines commit_hash."""
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+
+    base_hash = generate_wan._compute_wan_source_hash()
+    self.assertIsNotNone(base_hash)
+    self.assertTrue(base_hash.startswith("src:"))
+
+    # Simulate modifying models/normalization_flax.py or models/embeddings_flax.py
+    orig_open = open
+
+    def patched_open(path, *args, **kwargs):
+      f = orig_open(path, *args, **kwargs)
+      if str(path).endswith(("normalization_flax.py", "embeddings_flax.py")) and "rb" in args:
+        content = f.read()
+        f.close()
+        import io
+
+        return io.BytesIO(content + b"\n# modified for fingerprint test\n")
+      return f
+
+    with mock.patch("builtins.open", side_effect=patched_open):
+      mod_hash = generate_wan._compute_wan_source_hash()
+
+    self.assertNotEqual(base_hash, mod_hash)
+
+    # Verify commit_hash is combined with src_hash rather than shadowed
+    cfg = types.SimpleNamespace(aot_build_revision=None)
+    rev_a = generate_wan._resolve_wan_aot_source_revision(cfg, commit_hash="commit_aaa")
+    rev_b = generate_wan._resolve_wan_aot_source_revision(cfg, commit_hash="commit_bbb")
+    self.assertNotEqual(rev_a, rev_b)
+    self.assertIn("commit_aaa", rev_a)
+    self.assertIn("commit_bbb", rev_b)
+
 
 if __name__ == "__main__":
   unittest.main()

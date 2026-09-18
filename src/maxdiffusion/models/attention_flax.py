@@ -1613,7 +1613,7 @@ def _ring_fixed_m_norms_pre_a2a(
 
   q_norm_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1)
   qn_head_local = q_norm_sq.max(axis=-1)
-  vn_local = (value.astype(jnp.float32) ** 2).max(axis=(2, 3))
+  vn_local = (value.astype(jnp.float32) ** 2).max()
 
   if use_k_centering:
     # Optional K-centering: computes global mean and subtracts before a2a.
@@ -1666,7 +1666,7 @@ def _ring_fixed_m_norms_pre_a2a(
   qn_dev = _slice_own_ulysses_heads(qn_all, ulysses_axis, num_ulysses_shards, axis=1)
   qn_head_global_dev = _slice_own_ulysses_heads(qn_head_global, ulysses_axis, num_ulysses_shards, axis=1)
   mk_all_sq_dev = _slice_own_ulysses_heads(mk_all_sq, ulysses_axis, num_ulysses_shards, axis=2)
-  vn_dev = _slice_own_ulysses_heads(vn_global, ulysses_axis, num_ulysses_shards, axis=1)
+  vn_dev = vn_global
 
   num_q_heads_dev = qn_dev.shape[1]
   num_kv_heads_dev = mk_all_sq_dev.shape[2]
