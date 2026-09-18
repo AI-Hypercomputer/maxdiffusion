@@ -870,6 +870,7 @@ def _custom_ring_attention_forward(
     k_mean: jax.Array | None = None,
     uniform_fixed_m: bool | None = None,
     v_ok: jax.Array | bool | None = None,
+    all_fixed_global: jax.Array | bool | None = None,
 ) -> jax.Array:
   """Forward-only ring attention using the custom dense splash kernel.
 
@@ -936,13 +937,16 @@ def _custom_ring_attention_forward(
           f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA ring fixed-m."
       )
     q_heads_per_kv_head = num_q_heads // num_kv_heads
-    if k_mean is not None and k_mean.shape[0] == num_kv_heads:
-      k_mean = jnp.repeat(k_mean, q_heads_per_kv_head, axis=0)
+    if k_mean is not None and k_mean.shape[0] == num_q_heads:
+      k_mean = k_mean[::q_heads_per_kv_head]
 
-  if use_fixed_m and k_mean is not None and k_mean.shape[-1] < q.shape[-1]:
-    k_mean = jnp.pad(k_mean, ((0, 0), (0, q.shape[-1] - k_mean.shape[-1])))
+  if use_fixed_m and k_mean is not None:
+    pad_h = (custom_splash.NUM_SUBLANES - (k_mean.shape[0] % custom_splash.NUM_SUBLANES)) % custom_splash.NUM_SUBLANES
+    pad_d = max(0, q.shape[-1] - k_mean.shape[-1])
+    if pad_h > 0 or pad_d > 0:
+      k_mean = jnp.pad(k_mean, ((0, pad_h), (0, pad_d)))
 
-  global_recenter, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=False)
+  global_recenter, global_centered_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len, is_ring=True)
   local_recenter, per_shard_bound = custom_splash.get_fixed_m_constants(orig_kv_seq_len, is_ring=True)
   if bidirectional:
     if perm is not None or (ring_size is not None and ring_size != axis_size):
@@ -990,13 +994,14 @@ def _custom_ring_attention_forward(
     # the global mean across all ring ranks (k_mean = pmean(mean(k), ring_axis)).
     # Because logit centering guarantees max_j (q^T (k_j - k_mean)) >= 0 globally,
     # the centered Cauchy-Schwarz bound applies across the entire distributed sequence.
-    # We gather each rank's squared K-shard norms once before the scan: mk_all_sq (R, heads),
-    # and form mk_global_sq = mk_all_sq.max(axis=0). When all_fixed_global holds, every hop
-    # evaluates identical m_fixed, enabling direct FP32 (o_sum, l_sum) accumulation.
-    # In the hybrid fallback branch, individual hops do NOT have a zero-mean guarantee
-    # in isolation, so per-hop eligibility uses the conservative two-sided per_shard_bound.
-    # All Cauchy-Schwarz gating is computed in exact squared-norm space (|q|^2 * R_k^2 <= W^2)
-    # eliminating square roots from all query block and hop gating checks.
+    # Ring-wide max squared K-shard norm: mk_global_sq (heads,). When all_fixed_global
+    # holds, every hop evaluates identical m_fixed, enabling direct FP32 (o_sum, l_sum)
+    # accumulation. In the hybrid fallback branch, individual hops do NOT have a
+    # zero-mean guarantee in isolation, so eligibility uses the conservative two-sided
+    # per_shard_bound evaluated against mk_global_sq (see `_lse_scan` for why the
+    # per-hop index was removed). All Cauchy-Schwarz gating is computed in exact
+    # squared-norm space (|q|^2 * R_k^2 <= W^2) eliminating square roots from all
+    # query block and hop gating checks.
     if fixed_m_norms is None:
       raise ValueError("use_fixed_m on the ring path requires fixed_m_norms=(qn_max_sq, mk_h_sq).")
     # The V-magnitude / dtype safety verdict is NOT re-derivable from Q/K norms,
@@ -1030,17 +1035,18 @@ def _custom_ring_attention_forward(
     # exactly; a -inf init meeting an empty partial would produce inf - inf = NaN.
     lse_init = -1e30
 
-    # Every rank's squared K-shard norms, gathered ONCE before the scan: (R, heads).
-    # A pre-gathered array keeps the per-hop gate collective-free and avoids
-    # serializing a third ppermute alongside K/V transfers.
-    if pregathered_mk or (mk_h_init_sq.ndim == 2 and mk_h_init_sq.shape[0] == axis_size):
-      mk_all_sq = mk_h_init_sq
+    # Ring-wide max K norm: (heads,). When `mk_h_init_sq` is passed as a 2D
+    # `(R, heads)` array, collapse the hop axis directly. When 1D `(heads,)`,
+    # either it is already ring-reduced (`pregathered_mk=True`) or reduce across
+    # `ring_axis` via `pmax` rather than `all_gather(...).max(axis=0)`.
+    if mk_h_init_sq.ndim == 2:
+      mk_global_sq = mk_h_init_sq.max(axis=0)
+    elif pregathered_mk:
+      mk_global_sq = mk_h_init_sq
     else:
-      mk_all_sq = lax.all_gather(mk_h_init_sq, ring_axis)  # (axis_size, heads)
-    my_ring_index = lax.axis_index(ring_axis)
+      mk_global_sq = lax.pmax(mk_h_init_sq, ring_axis)
 
     num_q_blocks = (orig_q_seq_len + block_sizes.block_q - 1) // block_sizes.block_q
-    mk_global_sq = mk_all_sq.max(axis=0)  # (heads,)
 
     # Validate the query-norm rank against `per_q_block`. Both gates below
     # multiply qn by `mk[:, None]`, so a (heads,) array supplied while
@@ -1072,24 +1078,28 @@ def _custom_ring_attention_forward(
 
     if not per_q_block:
       bound_sq_1d = qn_max_sq * mk_global_sq
-      all_fixed_local = jnp.all(bound_sq_1d <= global_centered_bound_sq) & v_gate
-      all_fixed_global = lax.pmin(all_fixed_local, ring_axis)
-      m_base_1d = jnp.ceil(jnp.sqrt(bound_sq_1d)) - global_recenter
-      m_base_expanded = jnp.broadcast_to(m_base_1d[:, None], (num_q_heads, num_q_blocks))
-      fixed_ok_expanded = jnp.ones_like(m_base_expanded)
-      mk_arr = jnp.stack([m_base_expanded, fixed_ok_expanded], axis=0)
       qn_blocks_sq = jnp.broadcast_to(qn_max_sq[:, None], (num_q_heads, num_q_blocks))
+      if uniform_fixed_m is None and all_fixed_global is None:
+        all_fixed_local = jnp.all(bound_sq_1d <= global_centered_bound_sq) & v_gate
+        all_fixed_global = lax.pmin(all_fixed_local, ring_axis)
     else:
       qn_blocks_sq = qn_max_sq
       bound_blocks_sq = qn_blocks_sq * mk_global_sq[:, None]
-      fixed_ok_local = bound_blocks_sq <= global_centered_bound_sq  # pylint: disable=protected-access
-      all_fixed_local = jnp.all(fixed_ok_local) & v_gate
-      all_fixed_global = lax.pmin(all_fixed_local, ring_axis)
-      m_base = jnp.ceil(jnp.sqrt(bound_blocks_sq)) - global_recenter
-      fixed_ok_expanded = jnp.ones_like(m_base)
-      mk_arr = jnp.stack([m_base, fixed_ok_expanded], axis=0)  # (2, heads, num_q_blocks)
+      if uniform_fixed_m is None and all_fixed_global is None:
+        fixed_ok_local = bound_blocks_sq <= global_centered_bound_sq  # pylint: disable=protected-access
+        all_fixed_local = jnp.all(fixed_ok_local) & v_gate
+        all_fixed_global = lax.pmin(all_fixed_local, ring_axis)
 
     def _accumulate_scan(_):
+      if not per_q_block:
+        m_base_1d = jnp.ceil(jnp.sqrt(bound_sq_1d)) - global_recenter
+        m_base_expanded = jnp.broadcast_to(m_base_1d[:, None], (num_q_heads, num_q_blocks))
+        fixed_ok_expanded = jnp.ones_like(m_base_expanded)
+        mk_arr = jnp.stack([m_base_expanded, fixed_ok_expanded], axis=0)
+      else:
+        m_base = jnp.ceil(jnp.sqrt(bound_blocks_sq)) - global_recenter
+        fixed_ok_expanded = jnp.ones_like(m_base)
+        mk_arr = jnp.stack([m_base, fixed_ok_expanded], axis=0)  # (2, heads, num_q_blocks)
       o_sum = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
       l_sum = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
       k_current, v_current = k, v
@@ -1139,7 +1149,7 @@ def _custom_ring_attention_forward(
       # the conditional, ~half of fixed-m's whole kernel win).
       return (o_sum * l_inv[..., None]).astype(q.dtype)
 
-    def fixed_body(carry, hop, is_last_hop):
+    def fixed_body(carry, is_last_hop, mk_arr):
       o_run, lse_run, k_current, v_current = carry
       # Prefetch the next shard while computing on this one. The last hop skips
       # it: nothing consumes the rotated shard, and the collective would still
@@ -1149,18 +1159,6 @@ def _custom_ring_attention_forward(
       else:
         k_next = shift(k_current)
         v_next = shift(v_current)
-
-      # perm src i -> dst i+1: after `hop` shifts this rank holds the K shard
-      # of ring rank (my_index - hop) mod R; its norms come from the local table.
-      mk_h_sq = jax.lax.dynamic_index_in_dim(mk_all_sq, (my_ring_index - hop) % axis_size, keepdims=False)
-      bound_hop_sq = qn_blocks_sq * mk_h_sq[:, None]
-      # `v_gate` is load-bearing here. The Cauchy-Schwarz term is per-hop, but
-      # V-magnitude and dtype safety are global; recomputing eligibility from
-      # Q/K norms alone would re-enable fixed-m on this hop even when the
-      # caller's global V check already rejected it, overflowing to inf.
-      fixed_ok = ((bound_hop_sq <= per_shard_bound_sq) & v_gate).astype(jnp.float32)  # pylint: disable=protected-access
-      m_base_hop = jnp.ceil(jnp.sqrt(bound_hop_sq)) - local_recenter
-      mk_arr = jnp.stack([m_base_hop, fixed_ok], axis=0)
 
       o_curr, m_curr, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
           q,
@@ -1194,17 +1192,63 @@ def _custom_ring_attention_forward(
       o_new = (w_run[..., None] * o_run + w_curr[..., None] * o_norm) / denom[..., None]
       return (o_new, lse_new + log_fn(denom), k_next, v_next), None
 
-    fixed_init = (
-        jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32),
-        jnp.full((num_q_heads, orig_q_seq_len), lse_init, jnp.float32),
-        k,
-        v,
-    )
-
     def _lse_scan(_):
-      carry = fixed_init
+      # Precompute the scalar-prefetch metadata BEFORE the ring loop so no VPU
+      # compute or SMEM scalar-prefetch barrier sits between `shift(k_current)`
+      # (`collective-permute-start`) and `_splash_attention_forward_ring`.
+      #
+      # The bound uses the ring-wide `mk_global_sq` rather than indexing
+      # `mk_all_sq` at `(my_ring_index - hop) % axis_size`:
+      #
+      #   * Correctness. Taking the max over hops can only enlarge the
+      #     Cauchy-Schwarz bound, so `fixed_ok` is never set where the per-hop
+      #     bound would have cleared it -- the gate gets strictly more
+      #     conservative, never less. Under the pregathered path (see
+      #     `_ring_fixed_m_norms_pre_a2a`) every hop already carries the
+      #     ring-wide max, so this is exact rather than merely safe.
+      #   * Performance. Worth ~5.7s per 40-step 720p denoise on a v7x-8
+      #     (120.6s -> 114.9s), and it is the collectives, confirmed by trace:
+      #
+      #       category                  main    before    after
+      #       collective-permute-done   38.0    2405.4     47.3   ms
+      #       all-to-all              2135.7    3920.5   2088.7   ms
+      #
+      #     `my_ring_index` is a traced `lax.axis_index`, so indexing with it
+      #     put the ring index on the kernel's scalar-prefetch operand. The
+      #     kernel could not be issued until that resolved, and the ~190 MiB
+      #     K/V `ppermute` issued just before it -- which exists precisely to
+      #     be hidden behind that kernel -- was left fully exposed, running at
+      #     43 GiB/s. It then contended with the output all-to-all, which fell
+      #     from 506 GiB/s to 173 GiB/s on a byte-identical transfer. Removing
+      #     the index restores both: the rotation hides again and the output
+      #     a2a returns to 535 GiB/s.
+      #
+      #     Why this costs so much when the branch runs only ~23% of the time:
+      #     the `lax.cond` boundary. XLA's latency-hiding scheduler will not
+      #     move a collective across a conditional, so a ppermute inside a
+      #     branch has only that branch's own body to hide behind -- and one
+      #     scalar-prefetch dependency is enough to consume all of it.
+      #     Consistent with that, pinning `uniform_fixed_m=False`, which takes
+      #     the `elif` below and emits no cond at all, independently recovers
+      #     most of the same time (measured 116.0s) despite running this branch
+      #     100% of the time.
+      #
+      # All hops therefore share one metadata array; it is still materialised
+      # per hop below to keep `fixed_body`'s signature unchanged.
+      bound_hop_sq = qn_blocks_sq * mk_global_sq[:, None]
+      fixed_ok = ((bound_hop_sq <= per_shard_bound_sq) & v_gate).astype(jnp.float32)  # pylint: disable=protected-access
+      m_base_hop = jnp.ceil(jnp.sqrt(bound_hop_sq)) - local_recenter
+      mk_arr_uniform = jnp.stack([m_base_hop, fixed_ok], axis=0)
+      mk_arr_hops = [mk_arr_uniform] * ring_size
+
+      carry = (
+          jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32),
+          jnp.full((num_q_heads, orig_q_seq_len), lse_init, jnp.float32),
+          k,
+          v,
+      )
       for hop in range(ring_size):
-        carry, _ = fixed_body(carry, hop, hop == ring_size - 1)
+        carry, _ = fixed_body(carry, hop == ring_size - 1, mk_arr_hops[hop])
       return carry[0].astype(q.dtype)
 
     if uniform_fixed_m is True:
@@ -1262,6 +1306,7 @@ def make_custom_ring_attention(
     block_sizes: "custom_splash._BlockSizes",
     orig_q_seq_len: int,
     orig_kv_seq_len: int,
+    *,
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
@@ -1278,6 +1323,7 @@ def make_custom_ring_attention(
     k_mean: jax.Array | None = None,
     uniform_fixed_m: bool | None = None,
     v_ok: jax.Array | bool | None = None,
+    all_fixed_global: jax.Array | bool | None = None,
 ):
   """Builds a forward-only ring-attention callable around the custom kernel.
 
@@ -1336,6 +1382,7 @@ def make_custom_ring_attention(
         k_mean=km,
         uniform_fixed_m=uniform_fixed_m,
         v_ok=v_ok,
+        all_fixed_global=all_fixed_global,
     )
 
   return _ring
