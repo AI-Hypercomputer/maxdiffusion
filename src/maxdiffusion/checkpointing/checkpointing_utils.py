@@ -74,9 +74,16 @@ def create_orbax_checkpoint_manager(
         "text_encoder_state": ocp.StandardCheckpointHandler(),
     }
   elif checkpoint_type == WAN_CHECKPOINT:
-    item_names = ("low_noise_transformer_state", "high_noise_transformer_state", "wan_state", "wan_config")
+    item_names = (
+        "low_noise_transformer_state",
+        "high_noise_transformer_state",
+        "wan_state",
+        "wan_config",
+        "wan_config_high",
+    )
     item_handlers = {
         "wan_config": ocp.JsonCheckpointHandler(),
+        "wan_config_high": ocp.JsonCheckpointHandler(),
         "wan_state": ocp.StandardCheckpointHandler(),
         "low_noise_transformer_state": ocp.StandardCheckpointHandler(),
         "high_noise_transformer_state": ocp.StandardCheckpointHandler(),

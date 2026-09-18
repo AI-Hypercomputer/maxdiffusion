@@ -317,7 +317,17 @@ def create_sharded_logical_transformer(
 
   # 1. Load config.
   if restored_checkpoint:
-    wan_config = restored_checkpoint["wan_config"]
+    if subfolder == "transformer" and "wan_config_high" in restored_checkpoint:
+      wan_config = dict(restored_checkpoint["wan_config_high"])
+    elif subfolder == "transformer" and hasattr(restored_checkpoint, "wan_config_high"):
+      wan_config = dict(getattr(restored_checkpoint, "wan_config_high"))
+    else:
+      raw_config = (
+          restored_checkpoint["wan_config"]
+          if isinstance(restored_checkpoint, dict)
+          else getattr(restored_checkpoint, "wan_config")
+      )
+      wan_config = dict(raw_config)
   else:
     with _HF_METADATA_LOCK:
       wan_config = WanModel.load_config(config.pretrained_model_name_or_path, subfolder=subfolder)

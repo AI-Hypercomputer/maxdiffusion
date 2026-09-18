@@ -387,7 +387,8 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
-    self.assertEqual(opt_state["learning_rate"], 0.001)
+    self.assertEqual(opt_state["low_noise_transformer"]["learning_rate"], 0.001)
+    self.assertIsNone(opt_state["high_noise_transformer"])
     self.assertEqual(step, 1)
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
@@ -429,8 +430,38 @@ class WanCheckpointer2_2Test(unittest.TestCase):
     )
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNotNone(opt_state)
-    self.assertEqual(opt_state["learning_rate"], 0.002)
+    self.assertIsNone(opt_state["low_noise_transformer"])
+    self.assertEqual(opt_state["high_noise_transformer"]["learning_rate"], 0.002)
     self.assertEqual(step, 1)
+
+  @patch("maxdiffusion.pipelines.wan.wan_pipeline.nnx.eval_shape")
+  def test_create_sharded_logical_transformer_reads_wan_config_high(self, mock_eval_shape):
+    """Test that create_sharded_logical_transformer uses wan_config_high for high expert."""
+    from maxdiffusion.pipelines.wan.wan_pipeline import create_sharded_logical_transformer
+
+    captured_configs = []
+
+    def fake_eval_shape(factory, *args, **kwargs):
+      captured_configs.append(factory.keywords["wan_config"])
+      raise StopIteration("Verified")
+
+    mock_eval_shape.side_effect = fake_eval_shape
+
+    restored = {
+        "wan_config": {"dim": 128},
+        "wan_config_high": {"dim": 256},
+    }
+    with self.assertRaises(StopIteration):
+      create_sharded_logical_transformer(
+          MagicMock(), MagicMock(), MagicMock(), self.config, restored_checkpoint=restored, subfolder="transformer"
+      )
+    self.assertEqual(captured_configs[-1]["dim"], 256)
+
+    with self.assertRaises(StopIteration):
+      create_sharded_logical_transformer(
+          MagicMock(), MagicMock(), MagicMock(), self.config, restored_checkpoint=restored, subfolder="transformer_2"
+      )
+    self.assertEqual(captured_configs[-1]["dim"], 128)
 
 
 class WanCheckpointerI2V_2_1Test(unittest.TestCase):
@@ -758,9 +789,64 @@ class WanCheckpointerEdgeCasesTest(unittest.TestCase):
     checkpointer = WanCheckpointer2_2(config=self.config)
     pipeline, opt_state, step = checkpointer.load_checkpoint(step=1)
 
-    # Should prioritize low_noise_transformer's optimizer state
+    # Should preserve both low_noise_transformer and high_noise_transformer optimizer states
     self.assertIsNotNone(opt_state)
-    self.assertEqual(opt_state["learning_rate"], 0.001)
+    self.assertEqual(opt_state["low_noise_transformer"]["learning_rate"], 0.001)
+    self.assertEqual(opt_state["high_noise_transformer"]["learning_rate"], 0.002)
+
+  @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
+  @patch.object(WanPipeline2_2, "from_checkpoint", autospec=True)
+  def test_load_checkpoint_with_dict_mapping_and_wan_config_high(self, mock_from_checkpoint, mock_create_manager):
+    """Test loading checkpoint when Orbax returns standard dictionaries for metadata and checkpoint."""
+    mock_manager = MagicMock()
+    mock_manager.latest_step.return_value = 5
+    mock_manager.item_metadata.return_value = {
+        "low_noise_transformer_state": {},
+        "high_noise_transformer_state": {},
+        "wan_config_high": {"dim": 256},
+    }
+
+    mock_manager.restore.return_value = {
+        "low_noise_transformer_state": {"params": {}, "opt_state": {"lr": 0.0001}, "step": 10},
+        "high_noise_transformer_state": {"params": {}, "opt_state": {"lr": 0.0002}, "step": 20},
+        "wan_config": {"dim": 128},
+        "wan_config_high": {"dim": 256},
+    }
+
+    mock_create_manager.return_value = mock_manager
+    mock_pipeline_instance = MagicMock()
+    mock_from_checkpoint.return_value = mock_pipeline_instance
+
+    checkpointer = WanCheckpointer2_2(config=self.config)
+    pipeline, opt_state, step = checkpointer.load_checkpoint(step=5)
+
+    self.assertEqual(step, 5)
+    self.assertIsNotNone(opt_state)
+    self.assertEqual(opt_state["low_noise_transformer"]["lr"], 0.0001)
+    self.assertEqual(opt_state["high_noise_transformer"]["lr"], 0.0002)
+    self.assertEqual(opt_state["low_noise_step"], 10)
+    self.assertEqual(opt_state["high_noise_step"], 20)
+
+  def test_get_item_helper(self):
+    """Test _get_item handles dicts, objects, None, and default fallbacks."""
+    from maxdiffusion.checkpointing.wan_checkpointer_2_2 import _get_item
+
+    self.assertIsNone(_get_item(None, "key"))
+    self.assertEqual(_get_item(None, "key", default=42), 42)
+
+    d = {"a": 1, "b": None}
+    self.assertEqual(_get_item(d, "a"), 1)
+    self.assertIsNone(_get_item(d, "b"))
+    self.assertEqual(_get_item(d, "missing", default="def"), "def")
+
+    class Obj:
+      x = 100
+      y = None
+
+    obj = Obj()
+    self.assertEqual(_get_item(obj, "x"), 100)
+    self.assertIsNone(_get_item(obj, "y"))
+    self.assertEqual(_get_item(obj, "z", default="fallback"), "fallback")
 
 
 if __name__ == "__main__":
