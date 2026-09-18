@@ -845,6 +845,30 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     else:
       encoder_hidden_states = encoder_hidden_states_out.astype(hidden_states.dtype)
 
+    # Isolate pre-block embeddings (`patch_embedding` and `condition_embedder`)
+    # from the block scan loop so custom Pallas kernels inside `self.blocks`
+    # cannot alter GSPMD/XLA lowering of upstream convolutions/projections.
+    hidden_states = jax.lax.with_sharding_constraint(
+        hidden_states,
+        nn.logical_to_mesh_axes(("activation_batch", None, None)),
+    )
+    encoder_hidden_states = jax.lax.with_sharding_constraint(
+        encoder_hidden_states,
+        nn.logical_to_mesh_axes(("activation_batch", None, "embed")),
+    )
+    if not per_token_t:
+      timestep_proj = jax.lax.with_sharding_constraint(
+          timestep_proj,
+          nn.logical_to_mesh_axes(("activation_batch", None, None)),
+      )
+      temb = jax.lax.with_sharding_constraint(
+          temb,
+          nn.logical_to_mesh_axes(("activation_batch", "embed")),
+      )
+    hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb = jax.lax.optimization_barrier(
+        (hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb)
+    )
+
     def _run_all_blocks(h):
       if self.scan_layers:
 
