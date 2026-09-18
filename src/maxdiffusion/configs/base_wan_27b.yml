@@ -102,6 +102,15 @@ attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cud
 use_base2_exp: True
 use_experimental_scheduler: True
 use_k_centering: False
+# Fused RMSNorm+RoPE+head-transpose Pallas producer for self-attention QK.
+# Off by default: it is bit-exact against the jitted XLA producer at the Wan
+# shard shape, but that equality is a property of XLA codegen rather than a
+# guarantee, so it must be hash-verified end to end per platform before use.
+use_fused_rope_kernel: False
+# Sequence block size for the fused RoPE kernel grid.
+fused_rope_block_s: 1024
+# Heads processed per grid step; -1 means "all heads in one step".
+fused_rope_head_block: -1
 # For attention=ulysses_ring*, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

@@ -342,12 +342,17 @@ def create_sharded_logical_transformer(
   wan_config["mask_padding_tokens"] = config.mask_padding_tokens
   wan_config["scan_layers"] = config.scan_layers
   wan_config["enable_jax_named_scopes"] = config.enable_jax_named_scopes
+  fused_rope_head_block = getattr(config, "fused_rope_head_block", -1)
   wan_config["attention_config"] = {
       "use_base2_exp": config.use_base2_exp,
       "use_experimental_scheduler": config.use_experimental_scheduler,
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
       "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
       "use_k_centering": getattr(config, "use_k_centering", False),
+      "use_fused_rope_kernel": getattr(config, "use_fused_rope_kernel", False),
+      "fused_rope_block_s": getattr(config, "fused_rope_block_s", 1024),
+      # -1 is the YAML spelling of "let the kernel pick" (i.e. all heads).
+      "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,
   }
 
   # 2. eval_shape - will not use flops or create weights on device

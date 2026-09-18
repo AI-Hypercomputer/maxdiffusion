@@ -29,6 +29,7 @@ from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tok
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from maxdiffusion.kernels.fused_producers import fused_rmsnorm_rope
+from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import fused_rmsnorm_rope_pallas
 from einops import rearrange
 from .. import common_types, max_logging
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
@@ -3109,8 +3110,24 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_shards": -1,
         "ulysses_attention_chunks": 1,
         "use_k_centering": False,
+        # Fused RMSNorm+RoPE+head-transpose Pallas producer. Off by default:
+        # it is bit-exact against the jitted XLA producer at the Wan shard
+        # shape, but that equality is contingent on XLA codegen rather than
+        # guaranteed, so it must be hash-verified end to end before being
+        # turned on for a given platform.
+        "use_fused_rope_kernel": False,
+        "fused_rope_block_s": 1024,
+        "fused_rope_head_block": None,
         **(attention_config or {}),
     }
+
+    # Assigned before the check below, which references it: without this the
+    # validation raises AttributeError instead of the intended message.
+    self.mesh = mesh
+
+    self.use_fused_rope_kernel = attention_config["use_fused_rope_kernel"]
+    self.fused_rope_block_s = attention_config["fused_rope_block_s"]
+    self.fused_rope_head_block = attention_config["fused_rope_head_block"]
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -3353,6 +3370,126 @@ class FlaxWanAttention(nnx.Module):
 
     return xq_out, xk_out
 
+  def _fused_rope_producer(self):
+    """Selects the RMSNorm+RoPE+transpose producer, falling back when unsafe.
+
+    The Pallas kernel is a pure fusion of `fused_rmsnorm_rope`: ~1.9x faster at
+    the Wan shard shape, and bit-exact against the *jitted* XLA producer there.
+    It is opt-in because that bit-exactness rests on XLA contracting the
+    reference's multiply-adds the same way in both graphs, which is a codegen
+    property rather than a guarantee, so it must be hash-verified per platform.
+
+    Returns the stock producer unless every precondition holds:
+      * a mesh is available to wrap the custom call in `shard_map` -- a raw
+        `pallas_call` on sharded operands would make GSPMD all-gather them;
+      * the feature axis is unsharded. RMSNorm reduces across `heads * dim_head`
+        and RoPE pairs lanes within a head, so a sharded feature axis would
+        silently produce a per-shard norm instead of the true one;
+      * `dim_head` is a whole number of lanes, which the kernel requires;
+      * the batch and sequence dimensions divide evenly by the mesh axes they
+        are sharded over, which `shard_map` requires but GSPMD does not.
+    """
+    if not self.use_fused_rope_kernel or self.mesh is None or self.dim_head % 128 != 0:
+      if self.use_fused_rope_kernel:
+        _warn_once(
+            "fused_rope_kernel_unusable",
+            f"fused RoPE kernel requested but unusable (mesh={self.mesh is not None}, dim_head={self.dim_head}); "
+            "using the XLA producer.",
+        )
+      return fused_rmsnorm_rope
+
+    in_spec = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+    feature_axis = in_spec[2]
+    if feature_axis is not None:
+      axes = (feature_axis,) if isinstance(feature_axis, str) else tuple(feature_axis)
+      if any(self.mesh.shape[a] > 1 for a in axes):
+        _warn_once(
+            "fused_rope_kernel_sharded_feature",
+            f"fused RoPE kernel disabled: the feature axis is sharded over {axes}, which would turn the RMSNorm "
+            "reduction into a per-shard norm; using the XLA producer.",
+        )
+        return fused_rmsnorm_rope
+
+    replicated = jax.sharding.PartitionSpec()
+    block_s = self.fused_rope_block_s
+    head_block = self.fused_rope_head_block
+    mesh = self.mesh
+
+    def _shards_over(axis) -> int:
+      """Total mesh width a single PartitionSpec entry splits a dimension by."""
+      if axis is None:
+        return 1
+      names = (axis,) if isinstance(axis, str) else tuple(axis)
+      return math.prod(mesh.shape[n] for n in names)
+
+    batch_axis, seq_axis = in_spec[0], in_spec[1]
+    batch_shards = _shards_over(batch_axis)
+    seq_shards = _shards_over(seq_axis)
+
+    def producer(q, k, q_scale, k_scale, freqs, *, q_heads, dim_head, eps):
+      # `shard_map` demands exact divisibility on every sharded dimension,
+      # whereas the surrounding GSPMD program pads uneven splits. Wan runs a
+      # global batch of 1 over a multi-way data axis, which GSPMD degenerates
+      # into replication anyway -- so declare it replicated here rather than
+      # giving up the kernel over a dimension no device actually splits.
+      local_batch_axis = batch_axis if q.shape[0] % batch_shards == 0 else None
+      divides = (
+          q.shape[1] % seq_shards == 0
+          and k.shape[1] % seq_shards == 0
+          # Each shard rotates its own contiguous window of positions, which
+          # only lines up if q, k and the table are split the same way.
+          and freqs.shape[2] == q.shape[1]
+          and q.shape[1] == k.shape[1]
+      )
+      if not divides:
+        _warn_once(
+            "fused_rope_kernel_indivisible",
+            f"fused RoPE kernel disabled: q={q.shape} k={k.shape} freqs={freqs.shape} are not all splittable "
+            f"{seq_shards} ways on the sequence axis; using the XLA producer.",
+        )
+        return fused_rmsnorm_rope(q, k, q_scale, k_scale, freqs, q_heads=q_heads, dim_head=dim_head, eps=eps)
+
+      act_spec = jax.sharding.PartitionSpec(local_batch_axis, seq_axis, in_spec[2])
+      # [B, S, H*D] -> [B, H, S, D]: the head axis inherits the feature axis'
+      # sharding (unsharded, per the guard above) and `dim_head` is never split.
+      out_spec = jax.sharding.PartitionSpec(local_batch_axis, in_spec[2], seq_axis, None)
+      # `freqs_cis` is `[1, 1, S, dim_head // 2]` and reaches this point
+      # replicated, but each shard owns a contiguous window of positions.
+      # Splitting it on the same axis as the activations is what GSPMD does
+      # implicitly for the reference's elementwise multiply; leaving it
+      # replicated would make every shard rotate by positions [0, S_local),
+      # which is right only on the first shard.
+      freqs_spec = jax.sharding.PartitionSpec(None, None, seq_axis, None)
+
+      _warn_once(
+          "fused_rope_kernel_active",
+          f"fused RoPE Pallas kernel ACTIVE: q={q.shape}, per-shard seq={q.shape[1] // seq_shards}, "
+          f"batch_spec={local_batch_axis}, block_s={block_s}, head_block={head_block or q_heads}.",
+      )
+      sharded = jax.shard_map(
+          functools.partial(
+              fused_rmsnorm_rope_pallas,
+              q_heads=q_heads,
+              dim_head=dim_head,
+              eps=eps,
+              norm_mode="exact",
+              # The model is traced under jit, where XLA contracts the
+              # reference's RoPE multiply-adds into FMAs. "f32" reproduces that
+              # single rounding; "dtype" rounds each product and diverges on
+              # ~30% of elements.
+              rope_accum="f32",
+              block_s=block_s,
+              head_block=head_block,
+          ),
+          mesh=mesh,
+          in_specs=(act_spec, act_spec, replicated, replicated, freqs_spec),
+          out_specs=(out_spec, out_spec),
+          check_vma=False,
+      )
+      return sharded(q, k, q_scale, k_scale, freqs)
+
+    return producer
+
   def conditional_named_scope(self, name: str):
     """Return a JAX named scope if enabled, otherwise a null context."""
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
@@ -3406,7 +3543,8 @@ class FlaxWanAttention(nnx.Module):
         with self.conditional_named_scope("fused_rmsnorm_rope"):
           q_scale = self.norm_q.scale[...]
           k_scale = self.norm_k.scale[...]
-          query_proj, key_proj = fused_rmsnorm_rope(
+          producer = self._fused_rope_producer()
+          query_proj, key_proj = producer(
               query_proj,
               key_proj,
               q_scale,
