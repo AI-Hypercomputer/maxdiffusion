@@ -1362,91 +1362,14 @@ class WanPipeline:
     pass
 
 
-@aot_cache.cached_jit
-def wan_pre_blocks_pass(
-    graphdef,
-    sharded_state,
-    rest_of_state,
-    latents,
-    timestep,
-    prompt_embeds,
-    encoder_hidden_states_image=None,
-    kv_cache=None,
-    rotary_emb=None,
-    encoder_attention_mask=None,
-):
-  """Computes pre-block convolutions and embeddings as an independent XLA executable."""
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  return wan_transformer.pre_blocks(
-      hidden_states=latents,
-      timestep=timestep,
-      encoder_hidden_states=prompt_embeds,
-      encoder_hidden_states_image=encoder_hidden_states_image,
-      kv_cache=kv_cache,
-      rotary_emb=rotary_emb,
-      encoder_attention_mask=encoder_attention_mask,
-  )
-
-
 @partial(
     aot_cache.cached_jit,
     static_argnames=(
-        "dim_info",
         "do_classifier_free_guidance",
         "return_residual",
         "skip_blocks",
     ),
 )
-def wan_blocks_and_head_pass(
-    graphdef,
-    sharded_state,
-    rest_of_state,
-    hidden_states,
-    encoder_hidden_states,
-    timestep_proj,
-    temb,
-    rotary_emb,
-    encoder_attention_mask,
-    dim_info,
-    do_classifier_free_guidance,
-    guidance_scale,
-    skip_blocks=None,
-    cached_residual=None,
-    return_residual=False,
-    kv_cache=None,
-):
-  """Runs transformer blocks, norm_out, proj_out, and unpatchify as an independent XLA executable."""
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  outputs = wan_transformer.blocks_and_head(
-      hidden_states=hidden_states,
-      encoder_hidden_states=encoder_hidden_states,
-      timestep_proj=timestep_proj,
-      temb=temb,
-      rotary_emb=rotary_emb,
-      encoder_attention_mask=encoder_attention_mask,
-      dim_info=dim_info,
-      skip_blocks=skip_blocks,
-      cached_residual=cached_residual,
-      return_residual=return_residual,
-      kv_cache=kv_cache,
-  )
-
-  if return_residual:
-    noise_pred, residual_x = outputs
-  else:
-    noise_pred = outputs
-
-  if do_classifier_free_guidance:
-    bsz = hidden_states.shape[0] // 2
-    noise_cond = noise_pred[:bsz]  # First half = conditional
-    noise_uncond = noise_pred[bsz:]  # Second half = unconditional
-    noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
-
-  if return_residual:
-    return noise_pred, residual_x
-  return noise_pred
-
-
 def transformer_forward_pass(
     graphdef,
     sharded_state,
@@ -1466,46 +1389,34 @@ def transformer_forward_pass(
 ):
   if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
     latents = jnp.concatenate([latents, latents], axis=0)
-
-  (
-      h,
-      enc_h,
-      t_proj,
-      temb,
-      r_emb,
-      enc_mask,
-      dim_info,
-  ) = wan_pre_blocks_pass(
-      graphdef,
-      sharded_state,
-      rest_of_state,
-      latents,
-      timestep,
-      prompt_embeds,
+  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+  outputs = wan_transformer(
+      hidden_states=latents,
+      timestep=timestep,
+      encoder_hidden_states=prompt_embeds,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      skip_blocks=skip_blocks,
+      cached_residual=cached_residual,
+      return_residual=return_residual,
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
   )
 
-  return wan_blocks_and_head_pass(
-      graphdef,
-      sharded_state,
-      rest_of_state,
-      h,
-      enc_h,
-      t_proj,
-      temb,
-      r_emb,
-      enc_mask,
-      dim_info,
-      do_classifier_free_guidance=do_classifier_free_guidance,
-      guidance_scale=guidance_scale,
-      skip_blocks=skip_blocks,
-      cached_residual=cached_residual,
-      return_residual=return_residual,
-      kv_cache=kv_cache,
-  )
+  if return_residual:
+    noise_pred, residual_x = outputs
+  else:
+    noise_pred = outputs
+
+  if do_classifier_free_guidance:
+    bsz = latents.shape[0] // 2
+    noise_cond = noise_pred[:bsz]  # First half = conditional
+    noise_uncond = noise_pred[bsz:]  # Second half = unconditional
+    noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+
+  if return_residual:
+    return noise_pred, residual_x
+  return noise_pred
 
 
 @aot_cache.cached_jit
@@ -1535,47 +1446,7 @@ def vae_decode_pass(graphdef, state, rest_of_state, latents):
   return video
 
 
-@partial(
-    aot_cache.cached_jit,
-    static_argnames=(
-        "dim_info",
-    ),
-)
-def wan_blocks_and_head_pass_full_cfg(
-    graphdef,
-    sharded_state,
-    rest_of_state,
-    hidden_states,
-    encoder_hidden_states,
-    timestep_proj,
-    temb,
-    rotary_emb,
-    encoder_attention_mask,
-    dim_info,
-    guidance_scale: float,
-    kv_cache=None,
-):
-  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  bsz = hidden_states.shape[0] // 2
-  noise_pred = wan_transformer.blocks_and_head(
-      hidden_states=hidden_states,
-      encoder_hidden_states=encoder_hidden_states,
-      timestep_proj=timestep_proj,
-      temb=temb,
-      rotary_emb=rotary_emb,
-      encoder_attention_mask=encoder_attention_mask,
-      dim_info=dim_info,
-      skip_blocks=False,
-      cached_residual=None,
-      return_residual=False,
-      kv_cache=kv_cache,
-  )
-  noise_cond = noise_pred[:bsz]
-  noise_uncond = noise_pred[bsz:]
-  noise_pred_merged = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
-  return noise_pred_merged, noise_cond, noise_uncond
-
-
+@aot_cache.cached_jit
 def transformer_forward_pass_full_cfg(
     graphdef,
     sharded_state,
@@ -1589,41 +1460,31 @@ def transformer_forward_pass_full_cfg(
     rotary_emb=None,
     encoder_attention_mask=None,
 ):
-  """Full CFG forward pass executed via 2-stage JIT compiler isolation."""
-  (
-      h,
-      enc_h,
-      t_proj,
-      temb,
-      r_emb,
-      enc_mask,
-      dim_info,
-  ) = wan_pre_blocks_pass(
-      graphdef,
-      sharded_state,
-      rest_of_state,
-      latents_doubled,
-      timestep,
-      prompt_embeds_combined,
+  """Full CFG forward pass.
+
+  Accepts pre-doubled latents and pre-concatenated [cond, uncond] prompt embeds.
+  Returns the merged noise_pred plus raw noise_cond and noise_uncond for
+  CFG cache storage.  Keeping cond/uncond separate avoids a second forward
+  pass on cache steps.
+  """
+  wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
+  bsz = latents_doubled.shape[0] // 2
+  noise_pred = wan_transformer(
+      hidden_states=latents_doubled,
+      timestep=timestep,
+      encoder_hidden_states=prompt_embeds_combined,
       encoder_hidden_states_image=encoder_hidden_states_image,
+      skip_blocks=False,
+      cached_residual=None,
+      return_residual=False,
       kv_cache=kv_cache,
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
   )
-  return wan_blocks_and_head_pass_full_cfg(
-      graphdef,
-      sharded_state,
-      rest_of_state,
-      h,
-      enc_h,
-      t_proj,
-      temb,
-      r_emb,
-      enc_mask,
-      dim_info,
-      guidance_scale=guidance_scale,
-      kv_cache=kv_cache,
-  )
+  noise_cond = noise_pred[:bsz]
+  noise_uncond = noise_pred[bsz:]
+  noise_pred_merged = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+  return noise_pred_merged, noise_cond, noise_uncond
 
 
 @aot_cache.cached_jit
