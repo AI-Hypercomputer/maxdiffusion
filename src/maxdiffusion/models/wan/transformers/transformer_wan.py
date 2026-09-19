@@ -759,30 +759,28 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     return kv_cache, encoder_attention_mask
 
-  @jax.named_scope("WanModel")
-  def __call__(
+  def pre_blocks(
       self,
       hidden_states: jax.Array,
       timestep: jax.Array,
       encoder_hidden_states: jax.Array,
       encoder_hidden_states_image: Optional[jax.Array] = None,
-      return_dict: bool = True,
-      attention_kwargs: Optional[Dict[str, Any]] = None,
-      deterministic: bool = True,
-      rngs: Optional[nnx.Rngs] = None,
-      skip_blocks: Optional[jax.Array] = None,
-      cached_residual: Optional[jax.Array] = None,
-      return_residual: bool = False,
       kv_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
-  ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
+  ) -> Tuple[
+      jax.Array,
+      jax.Array,
+      jax.Array,
+      jax.Array,
+      jax.Array,
+      Optional[jax.Array],
+      Tuple[int, int, int, int, int, int, int, bool],
+  ]:
+    """Computes patch embedding, rope, and condition embeddings before the transformer blocks."""
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
-    post_patch_num_frames = num_frames // p_t
-    post_patch_height = height // p_h
-    post_patch_width = width // p_w
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     with self.conditional_named_scope("rotary_embedding"):
@@ -794,9 +792,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     per_token_t = timestep.ndim == 2  # [B, seq_len] for TI2V
     with self.conditional_named_scope("condition_embedder"):
       if per_token_t:
-        # Per-token timestep: process time and text embeddings separately.
-        # This matches the official WAN 2.2 TI2V pipeline where first-frame
-        # tokens receive timestep=0 (clean) and other tokens receive timestep=t.
         bt, sl = timestep.shape
         t_flat = timestep.reshape(-1)  # [B*seq_len]
         t_sinusoidal = self.condition_embedder.timesteps_proj(t_flat)  # [B*sl, freq_dim]
@@ -805,7 +800,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         with jax.named_scope("time_proj"):
           timestep_proj = self.condition_embedder.time_proj(self.condition_embedder.act_fn(temb))  # [B, sl, dim*6]
         timestep_proj = timestep_proj.reshape(bt, sl, 6, -1)  # [B, sl, 6, dim]
-        # Text processing
         if kv_cache is None:
           encoder_hidden_states_out = self.condition_embedder.text_embedder(encoder_hidden_states)
         else:
@@ -845,9 +839,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     else:
       encoder_hidden_states = encoder_hidden_states_out.astype(hidden_states.dtype)
 
-    # Isolate pre-block embeddings (`patch_embedding` and `condition_embedder`)
-    # from the block scan loop so custom Pallas kernels inside `self.blocks`
-    # cannot alter GSPMD/XLA lowering of upstream convolutions/projections.
     hidden_states = jax.lax.with_sharding_constraint(
         hidden_states,
         nn.logical_to_mesh_axes(("activation_batch", None, None)),
@@ -868,6 +859,31 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb = jax.lax.optimization_barrier(
         (hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb)
     )
+
+    dim_info = (batch_size, num_frames, height, width, p_t, p_h, p_w, per_token_t)
+    return hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb, encoder_attention_mask, dim_info
+
+  def blocks_and_head(
+      self,
+      hidden_states: jax.Array,
+      encoder_hidden_states: jax.Array,
+      timestep_proj: jax.Array,
+      temb: jax.Array,
+      rotary_emb: jax.Array,
+      encoder_attention_mask: Optional[jax.Array],
+      dim_info: Tuple[int, int, int, int, int, int, int, bool],
+      deterministic: bool = True,
+      rngs: Optional[nnx.Rngs] = None,
+      skip_blocks: Optional[jax.Array] = None,
+      cached_residual: Optional[jax.Array] = None,
+      return_residual: bool = False,
+      kv_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
+  ) -> Union[jax.Array, Tuple[jax.Array, jax.Array]]:
+    """Runs all transformer blocks, norm_out, proj_out, and unpatchify."""
+    batch_size, num_frames, height, width, p_t, p_h, p_w, per_token_t = dim_info
+    post_patch_num_frames = num_frames // p_t
+    post_patch_height = height // p_h
+    post_patch_width = width // p_w
 
     def _run_all_blocks(h):
       if self.scan_layers:
@@ -954,11 +970,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     residual_x = hidden_states - hidden_states_before_blocks
 
     if per_token_t:
-      # temb: [B, seq_len, dim] — per-token modulation for final head
-      combined_head = jnp.expand_dims(self.scale_shift_table, 0) + jnp.expand_dims(temb, 2)  # [B, sl, 2, dim]
+      combined_head = jnp.expand_dims(self.scale_shift_table, 0) + jnp.expand_dims(temb, 2)
       shift, scale = jnp.split(combined_head, 2, axis=2)
-      shift = shift.squeeze(2)  # [B, sl, dim]
-      scale = scale.squeeze(2)  # [B, sl, dim]
+      shift = shift.squeeze(2)
+      scale = scale.squeeze(2)
     else:
       shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
 
@@ -967,7 +982,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = self.proj_out(hidden_states)
 
     if p_t == 1:
-      # Lossless HLO optimization: collapse p_t=1 dimension to avoid 8D non-contiguous stride copies
       hidden_states = hidden_states.reshape(
           batch_size,
           post_patch_num_frames,
@@ -996,3 +1010,54 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if return_residual:
       return hidden_states, residual_x
     return hidden_states
+
+  @jax.named_scope("WanModel")
+  def __call__(
+      self,
+      hidden_states: jax.Array,
+      timestep: jax.Array,
+      encoder_hidden_states: jax.Array,
+      encoder_hidden_states_image: Optional[jax.Array] = None,
+      return_dict: bool = True,
+      attention_kwargs: Optional[Dict[str, Any]] = None,
+      deterministic: bool = True,
+      rngs: Optional[nnx.Rngs] = None,
+      skip_blocks: Optional[jax.Array] = None,
+      cached_residual: Optional[jax.Array] = None,
+      return_residual: bool = False,
+      kv_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
+      rotary_emb: Optional[jax.Array] = None,
+      encoder_attention_mask: Optional[jax.Array] = None,
+  ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
+    (
+        hidden_states,
+        encoder_hidden_states,
+        timestep_proj,
+        temb,
+        rotary_emb,
+        encoder_attention_mask,
+        dim_info,
+    ) = self.pre_blocks(
+        hidden_states=hidden_states,
+        timestep=timestep,
+        encoder_hidden_states=encoder_hidden_states,
+        encoder_hidden_states_image=encoder_hidden_states_image,
+        kv_cache=kv_cache,
+        rotary_emb=rotary_emb,
+        encoder_attention_mask=encoder_attention_mask,
+    )
+    return self.blocks_and_head(
+        hidden_states=hidden_states,
+        encoder_hidden_states=encoder_hidden_states,
+        timestep_proj=timestep_proj,
+        temb=temb,
+        rotary_emb=rotary_emb,
+        encoder_attention_mask=encoder_attention_mask,
+        dim_info=dim_info,
+        deterministic=deterministic,
+        rngs=rngs,
+        skip_blocks=skip_blocks,
+        cached_residual=cached_residual,
+        return_residual=return_residual,
+        kv_cache=kv_cache,
+    )
