@@ -130,17 +130,24 @@ def _pair_swap(x: jax.Array) -> jax.Array:
   handle is a lane-stride-2 relayout which Mosaic lowers very poorly, whereas
   `tpu.DynamicRotate` is a single cheap lane rotation.
 
+  On TPU 7x, tpu.DynamicRotate requires 32-bit data, so we ensure 32-bit width
+  during rotation.
+
   The rotation is circular, but because `dim_head` is even the wrap-around
   lanes land exactly where the swap needs them:
     * lane 0 takes `roll_left[0] = x[1]`, the partner of lane 0.
     * lane D-1 takes `roll_right[D-1] = x[D-2]`, the partner of lane D-1.
   """
+  orig_dtype = x.dtype
+  if orig_dtype != jnp.float32 and orig_dtype != jnp.int32:
+    x = x.astype(jnp.float32)
   dim = x.shape[-1]
   axis = x.ndim - 1
   roll_right = pltpu.roll(x, 1, axis)  # roll_right[i] = x[i - 1]
   roll_left = pltpu.roll(x, dim - 1, axis)  # roll_left[i]  = x[i + 1]
   lane = jax.lax.broadcasted_iota(jnp.int32, x.shape, axis)
-  return jnp.where(jax.lax.rem(lane, 2) == 0, roll_left, roll_right)
+  res = jnp.where(jax.lax.rem(lane, 2) == 0, roll_left, roll_right)
+  return res.astype(orig_dtype)
 
 
 def _rope_tables(freqs_cis: jax.Array, seq_len: int, dtype: jnp.dtype) -> Tuple[jax.Array, jax.Array]:
