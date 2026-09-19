@@ -1467,6 +1467,13 @@ def transformer_forward_pass(
   if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
     latents = jnp.concatenate([latents, latents], axis=0)
 
+  batch_size = int(latents.shape[0])
+  num_frames = int(latents.shape[2])
+  height = int(latents.shape[3])
+  width = int(latents.shape[4])
+  per_token_t = bool(timestep.ndim == 2)
+  dim_info = (batch_size, num_frames, height, width, 1, 2, 2, per_token_t)
+
   (
       h,
       enc_h,
@@ -1474,7 +1481,6 @@ def transformer_forward_pass(
       temb,
       r_emb,
       enc_mask,
-      dim_info,
   ) = wan_pre_blocks_pass(
       graphdef,
       sharded_state,
@@ -1590,6 +1596,13 @@ def transformer_forward_pass_full_cfg(
     encoder_attention_mask=None,
 ):
   """Full CFG forward pass executed via 2-stage JIT compiler isolation."""
+  batch_size = int(latents_doubled.shape[0])
+  num_frames = int(latents_doubled.shape[2])
+  height = int(latents_doubled.shape[3])
+  width = int(latents_doubled.shape[4])
+  per_token_t = bool(timestep.ndim == 2)
+  dim_info = (batch_size, num_frames, height, width, 1, 2, 2, per_token_t)
+
   (
       h,
       enc_h,
@@ -1597,7 +1610,6 @@ def transformer_forward_pass_full_cfg(
       temb,
       r_emb,
       enc_mask,
-      dim_info,
   ) = wan_pre_blocks_pass(
       graphdef,
       sharded_state,

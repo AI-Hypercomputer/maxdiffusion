@@ -775,7 +775,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       jax.Array,
       jax.Array,
       Optional[jax.Array],
-      Tuple[int, int, int, int, int, int, int, bool],
   ]:
     """Computes patch embedding, rope, and condition embeddings before the transformer blocks."""
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
@@ -860,8 +859,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         (hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb)
     )
 
-    dim_info = (batch_size, num_frames, height, width, p_t, p_h, p_w, per_token_t)
-    return hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb, encoder_attention_mask, dim_info
+    return hidden_states, encoder_hidden_states, timestep_proj, temb, rotary_emb, encoder_attention_mask
 
   def blocks_and_head(
       self,
@@ -1029,6 +1027,11 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
   ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
+    batch_size, _, num_frames, height, width = hidden_states.shape
+    p_t, p_h, p_w = self.config.patch_size
+    per_token_t = timestep.ndim == 2
+    dim_info = (batch_size, num_frames, height, width, p_t, p_h, p_w, per_token_t)
+
     (
         hidden_states,
         encoder_hidden_states,
@@ -1036,7 +1039,6 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         temb,
         rotary_emb,
         encoder_attention_mask,
-        dim_info,
     ) = self.pre_blocks(
         hidden_states=hidden_states,
         timestep=timestep,
