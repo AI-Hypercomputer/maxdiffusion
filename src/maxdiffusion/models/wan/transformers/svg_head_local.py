@@ -34,14 +34,22 @@ def _reject_derivative(primals, tangents):
 
 def exchange_local(q, k, v, route, *, mesh, qspec, kvspec, ulysses_axis, place, restore, core):
   """Route sharding follows the exact head blocks selected by all_to_all."""
-  if qspec != kvspec or qspec[1] is not None:
+  kv_replicated_seq = kvspec[0] == qspec[0] and kvspec[1:] == (None, None, None)
+  if (qspec != kvspec and not kv_replicated_seq) or qspec[1] is not None:
     raise ValueError("Require identical sequence-sharded QKV with unsharded heads")
   route_spec = P(qspec[0], ulysses_axis)
 
   @partial(jax.shard_map, mesh=mesh, in_specs=(qspec, kvspec, kvspec, route_spec), out_specs=qspec, check_vma=False)
   def local(q, k, v, route):
     a2a = partial(jax.lax.all_to_all, axis_name=ulysses_axis, tiled=True)
-    q, k, v = (a2a(x, split_axis=1, concat_axis=2) for x in (q, k, v))
+    q = a2a(q, split_axis=1, concat_axis=2)
+    if kv_replicated_seq:
+      h_idx = jax.lax.axis_index(ulysses_axis)
+      k = jax.lax.dynamic_slice_in_dim(k, h_idx * q.shape[1], q.shape[1], axis=1)
+      v = jax.lax.dynamic_slice_in_dim(v, h_idx * q.shape[1], q.shape[1], axis=1)
+    else:
+      k = a2a(k, split_axis=1, concat_axis=2)
+      v = a2a(v, split_axis=1, concat_axis=2)
     with jax.named_scope("head_local_placement"):
       q, k, v = place(q, k, v, route)
     out = core(q, k, v)
