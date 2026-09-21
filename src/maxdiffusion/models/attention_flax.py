@@ -2032,6 +2032,8 @@ def _apply_attention(
 
   if spatiotemporal_config and spatiotemporal_config.get("use_svg_attention"):
     if effective_attention_kernel not in (
+        "flash",
+        "tokamax_flash",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
         "ulysses_ring_custom",
@@ -2073,7 +2075,11 @@ def _head_local_svg_attention(query, key, value, context):
   q, k, v = (svg_head_local.inference_only(x) for x in (q, k, v))
   qspec = nn.logical_to_mesh_axes(context["axis_names_q"])
   kvspec = nn.logical_to_mesh_axes(context["axis_names_kv"])
-  if qspec != kvspec or qspec[1:] != (None, CONTEXT, None):
+  if (
+      qspec[0] != kvspec[0]
+      or qspec[1:] != (None, CONTEXT, None)
+      or kvspec[1:] not in ((None, CONTEXT, None), (None, None, None))
+  ):
     raise ValueError("Head-local SVG requires sequence sharding and unsharded heads.")
   profile_key = jax.random.PRNGKey(int(cfg["profile_seed"]))
   for index in (cfg.get("svg_layer_index"), cfg.get("svg_step_index")):
