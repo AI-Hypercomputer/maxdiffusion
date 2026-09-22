@@ -102,6 +102,34 @@ attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cud
 
 use_base2_exp: True
 use_experimental_scheduler: True
+# use_k_centering: "auto" turns K-centering on for the non-ring
+# ulysses_custom_fixed_m* kernels (virtual: q.k_mean folded into the kernel, no
+# collective, no HBM copy) and off for ring kernels (materialized: a pmean plus a
+# full-size K subtraction per layer). Set True/False to force either path.
+use_k_centering: "auto"
+# Fused RMSNorm+RoPE+head-transpose Pallas producer for self-attention QK.
+# Off by default; only measured on tpu7x and v6e. See base_wan_27b.yml.
+use_fused_rope_kernel: False
+# Fused RoPE kernel grid: sequence block size, and heads per grid step (-1 =
+# all). Tuned at the Wan 2.2 27B shard shape; re-measure for this model.
+fused_rope_block_s: 1024
+fused_rope_head_block: -1
+# Wan inference switches. These change the compiled graph, so they are part of
+# the AOT cache fingerprint. (They used to be WAN_* environment variables; the
+# env vars are still honoured only when no config is loaded, e.g. in unit tests.)
+# RMSNorm reduction for the fused RoPE producer: "exact" (XLA reduction,
+# bit-identical to the jitted XLA producer) or "fused" (in-kernel, <=1 bf16 ULP).
+wan_rope_norm_mode: "exact"
+# Fold log2(e) into Q and 1/sqrt(d) into K inside the fused RoPE producer.
+wan_fuse_qk_prescale: True
+# Have the splash kernel write its output as [B, H, S, D] (instead of [B, H, D, S]), removing the post-kernel swap. Off by default.
+wan_splash_transpose_out: False
+# Apply classifier-free guidance before unpatchify (halves the unpatchify work).
+wan_cfg_before_unpatchify: True
+# Pre-scale cached cross-attention K by 1/sqrt(d) once per video.
+wan_cross_attn_prescale_kv: False
+# Fused RoPE accumulation: "auto" (measured per-platform default), "dtype", "f32".
+wan_rope_accum: "auto"
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

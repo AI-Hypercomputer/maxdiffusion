@@ -356,6 +356,7 @@ class WanTransformerBlock(nnx.Module):
       mask_padding_tokens: bool = True,
       enable_jax_named_scopes: bool = False,
       attention_config: Optional[dict] = None,
+      split_head_dim: bool = True,
   ):
     self.enable_jax_named_scopes = enable_jax_named_scopes
     attention_config = {
@@ -377,6 +378,7 @@ class WanTransformerBlock(nnx.Module):
         qk_norm=qk_norm,
         eps=eps,
         flash_min_seq_length=flash_min_seq_length,
+        split_head_dim=split_head_dim,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
         dtype=dtype,
@@ -402,6 +404,7 @@ class WanTransformerBlock(nnx.Module):
         added_kv_proj_dim=added_kv_proj_dim,
         image_seq_len=image_seq_len,
         flash_min_seq_length=flash_min_seq_length,
+        split_head_dim=split_head_dim,
         flash_block_sizes=flash_block_sizes,
         mesh=mesh,
         dtype=dtype,
@@ -585,6 +588,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       scan_layers: bool = True,
       enable_jax_named_scopes: bool = False,
       attention_config: Optional[dict] = None,
+      split_head_dim: bool = True,
   ):
     inner_dim = num_attention_heads * attention_head_dim
     out_channels = out_channels or in_channels
@@ -659,6 +663,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           added_kv_proj_dim=added_kv_proj_dim,
           image_seq_len=image_seq_len,
           attention_config=attention_config,
+          split_head_dim=split_head_dim,
       )
 
     self.gradient_checkpoint = GradientCheckpointType.from_str(remat_policy)
@@ -688,6 +693,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
             attention=attention,
             enable_jax_named_scopes=enable_jax_named_scopes,
             attention_config=attention_config,
+            split_head_dim=split_head_dim,
         )
         blocks.append(block)
       self.blocks = nnx.data(blocks)
@@ -785,6 +791,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      unpatchify: bool = True,
   ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
@@ -962,6 +969,24 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)
 
+    if not unpatchify:
+      if return_residual:
+        return hidden_states, residual_x
+      return hidden_states
+
+    hidden_states = self.unpatchify_tokens(hidden_states, num_frames, height, width)
+
+    if return_residual:
+      return hidden_states, residual_x
+    return hidden_states
+
+  def unpatchify_tokens(self, hidden_states: jax.Array, num_frames: int, height: int, width: int) -> jax.Array:
+    batch_size = hidden_states.shape[0]
+    p_t, p_h, p_w = self.config.patch_size
+    post_patch_num_frames = num_frames // p_t
+    post_patch_height = height // p_h
+    post_patch_width = width // p_w
+
     if p_t == 1:
       # Lossless HLO optimization: collapse p_t=1 dimension to avoid 8D non-contiguous stride copies
       hidden_states = hidden_states.reshape(
@@ -974,7 +999,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           -1,
       )
       hidden_states = jnp.transpose(hidden_states, (0, 6, 1, 2, 4, 3, 5))
-      hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
+      return hidden_states.reshape(batch_size, -1, num_frames, height, width)
     else:
       hidden_states = hidden_states.reshape(
           batch_size,
@@ -987,8 +1012,4 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
           -1,
       )
       hidden_states = jnp.transpose(hidden_states, (0, 7, 1, 4, 2, 5, 3, 6))
-      hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
-
-    if return_residual:
-      return hidden_states, residual_x
-    return hidden_states
+      return hidden_states.reshape(batch_size, -1, num_frames, height, width)
