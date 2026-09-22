@@ -24,11 +24,18 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from maxdiffusion import wan_runtime_options
 from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from maxdiffusion.kernels.fused_producers import fused_rmsnorm_rope
+from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import (
+    fused_rmsnorm_rope_pallas,
+    resolve_rope_accum,
+    rope_accum_is_measured,
+    with_xla_backward,
+)
 from einops import rearrange
 from .. import common_types, max_logging
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
@@ -1075,6 +1082,8 @@ def _ulysses_attention(
     ulysses_shards: int = -1,
     kernel_name: str = "ulysses_custom",
     use_k_centering: bool = True,
+    qk_prescaled: bool = False,
+    transpose_out: bool = False,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -1088,6 +1097,7 @@ def _ulysses_attention(
   """
   if kv_heads is None:
     kv_heads = heads
+  transpose_out = bool(transpose_out)
   if not use_custom_kernel and kv_heads != heads:
     raise NotImplementedError(f"{kernel_name} does not support GQA (got heads={heads}, kv_heads={kv_heads}).")
   axis_name = CONTEXT
@@ -1140,7 +1150,7 @@ def _ulysses_attention(
     # so this is bit-identical. Done after the a2a it sat between the collective
     # and the kernel and XLA wrapped it in relayout copies; done before, it fuses
     # into the producer of Q and its 185MB round-trip disappears.
-    if use_custom_kernel and use_base2_exp:
+    if use_custom_kernel and use_base2_exp and not qk_prescaled:
       query = query * LOG2E
     # Swap sharding: each device gives up a slice of heads and gathers
     # a slice of sequence, so the local kernel sees the full sequence.
@@ -1211,7 +1221,7 @@ def _ulysses_attention(
             k_mean=k_mean,
             # Use the unpadded V: `all_fixed` gates the whole kernel through a
             # lax.cond, so anything feeding it sits on the critical path. Reading
-            # the padded copy chained a 193MB pad + reduction behind the V
+            # the padded copy chained a 193.5MB (per batch element) pad + reduction behind the V
             # all-to-all and left that collective fully exposed. The padding is
             # zeros and the check is a max of squares, so this is output-invariant.
             value=raw_value,
@@ -1230,6 +1240,7 @@ def _ulysses_attention(
             vmem_limit_bytes=vmem_limit_bytes,
             use_fixed_m=True,
             uniform_fixed_m=True,
+            transpose_out=transpose_out,
         )
         splash_kernel_hybrid = custom_splash.make_splash_mha(
             block_sizes=bsizes,
@@ -1241,6 +1252,7 @@ def _ulysses_attention(
             vmem_limit_bytes=vmem_limit_bytes,
             use_fixed_m=True,
             uniform_fixed_m=False,
+            transpose_out=transpose_out,
         )
 
         def _run_uniform(q, k, v, m, km):
@@ -1270,19 +1282,32 @@ def _ulysses_attention(
             vmem_limit_bytes=vmem_limit_bytes,
             use_fixed_m=False,
             residual_checkpoint_name=residual_checkpoint_name,
+            transpose_out=transpose_out,
         )
         vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
         attention_output = vmapped_splash(query, key, value)
-      attention_output = attention_output[:, :, :kv_size, :context_q_seq_len].astype(query.dtype)
-      # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
-      # Sequence axis is at index 3, heads axis is at index 1.
-      attention_output = jax.lax.all_to_all(
-          attention_output,
-          axis_name=axis_name,
-          split_axis=3,
-          concat_axis=1,
-          tiled=True,
-      )
+      if transpose_out:
+        attention_output = attention_output[:, :, :context_q_seq_len, :kv_size].astype(query.dtype)
+        # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
+        # Sequence axis is at index 2 (sublanes), heads axis is at index 1.
+        attention_output = jax.lax.all_to_all(
+            attention_output,
+            axis_name=axis_name,
+            split_axis=2,
+            concat_axis=1,
+            tiled=True,
+        )
+      else:
+        attention_output = attention_output[:, :, :kv_size, :context_q_seq_len].astype(query.dtype)
+        # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
+        # Sequence axis is at index 3, heads axis is at index 1.
+        attention_output = jax.lax.all_to_all(
+            attention_output,
+            axis_name=axis_name,
+            split_axis=3,
+            concat_axis=1,
+            tiled=True,
+        )
       return attention_output
     else:
       # Run the same local splash kernel as standard TPU flash attention, but now
@@ -1372,9 +1397,9 @@ def _ulysses_attention(
     effective_num_heads = num_heads
 
   out_q_axis_names = (
-      jax.sharding.PartitionSpec(q_axis_names[0], q_axis_names[1], q_axis_names[3], q_axis_names[2])
-      if use_custom_kernel
-      else q_axis_names
+      q_axis_names
+      if (not use_custom_kernel or transpose_out)
+      else jax.sharding.PartitionSpec(q_axis_names[0], q_axis_names[1], q_axis_names[3], q_axis_names[2])
   )
 
   if attention_mask is None:
@@ -1411,7 +1436,7 @@ def _ulysses_attention(
       run_ulysses_attention,
   )
 
-  if use_custom_kernel:
+  if use_custom_kernel and not transpose_out:
     if fold_batch:
       x = x.reshape(batch, num_heads, *x.shape[2:])
     x = x[:, :, :, :orig_q_seq_len]
@@ -1916,10 +1941,13 @@ def _ulysses_ring_custom_attention(
     per_q_block: bool = True,
     kv_heads: int | None = None,
     use_k_centering: bool = False,
+    qk_prescaled: bool = False,
+    transpose_out: bool = False,
 ) -> jax.Array:
   """2D USP attention (Ulysses + Ring) using custom splash kernel with exact Fixed-m support."""
   if kv_heads is None:
     kv_heads = heads
+  transpose_out = bool(transpose_out)
 
   if attention_mask is not None:
     raise NotImplementedError("ulysses_ring_custom does not support attention_mask.")
@@ -1991,7 +2019,7 @@ def _ulysses_ring_custom_attention(
     # so this is bit-identical. Done after the a2a it sat between the collective
     # and the kernel and XLA wrapped it in relayout copies; done before, it fuses
     # into the producer of Q and its 185MB round-trip disappears.
-    if use_base2_exp:
+    if use_base2_exp and not qk_prescaled:
       query = query * LOG2E
 
     # (0) R>1 fixed-m reductions and global eligibility predicates, computed
@@ -2084,6 +2112,7 @@ def _ulysses_ring_custom_attention(
             vmem_limit_bytes=vmem_limit_bytes,
             use_fixed_m=True,
             uniform_fixed_m=True,
+            transpose_out=transpose_out,
         )
         splash_kernel_hybrid = custom_splash.make_splash_mha(
             block_sizes=bsizes,
@@ -2095,6 +2124,7 @@ def _ulysses_ring_custom_attention(
             vmem_limit_bytes=vmem_limit_bytes,
             use_fixed_m=True,
             uniform_fixed_m=False,
+            transpose_out=transpose_out,
         )
 
         def _run_uniform(q, k, v, m, km):
@@ -2115,9 +2145,13 @@ def _ulysses_ring_custom_attention(
             vmem_limit_bytes=vmem_limit_bytes,
             use_fixed_m=False,
             residual_checkpoint_name=residual_checkpoint_name,
+            transpose_out=transpose_out,
         )
         raw_out = jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value)
-      attention_output = jnp.swapaxes(raw_out, 2, 3)
+      if transpose_out:
+        attention_output = raw_out
+      else:
+        attention_output = jnp.swapaxes(raw_out, 2, 3)
 
     # (2b) Ring: Cross-chip ppermute schedule with custom ring kernel
     else:
@@ -2233,6 +2267,9 @@ def _apply_attention_dot(
     use_memory_efficient_attention: bool,
     attention_mask: Array = None,
     kv_heads: int | None = None,
+    qk_prescaled: bool = False,
+    k_prescaled: bool = False,
+    use_base2_exp: bool = False,
 ):
   """Apply Attention."""
   effective_kv_heads = kv_heads if kv_heads is not None else heads
@@ -2283,9 +2320,14 @@ def _apply_attention_dot(
     if float32_qk_product:
       query_states = query_states.astype(jnp.float32)
       key_states = key_states.astype(jnp.float32)
-    query_states = query_states.transpose(1, 0, 2)
-    key_states = key_states.transpose(1, 0, 2)
-    value_states = value_states.transpose(1, 0, 2)
+    if k_prescaled or qk_prescaled:
+      key_states = key_states / jnp.asarray(scale, dtype=key_states.dtype)
+    if qk_prescaled and use_base2_exp:
+      query_states = query_states / jnp.asarray(LOG2E, dtype=query_states.dtype)
+    if not split_head_dim:
+      query_states = query_states.transpose(1, 0, 2)
+      key_states = key_states.transpose(1, 0, 2)
+      value_states = value_states.transpose(1, 0, 2)
 
     # this if statement create a chunk size for each layer of the unet
     # the chunk size is equal to the query_length dimension of the deepest layer of the unet
@@ -2308,7 +2350,13 @@ def _apply_attention_dot(
         key_chunk_size=4096 * 4,
     )
 
-    hidden_states = hidden_states.transpose(1, 0, 2)
+    if split_head_dim:
+      b = hidden_states.shape[0]
+      hidden_states = jnp.reshape(hidden_states, (b, -1, heads * dim_head))
+    else:
+      hidden_states = hidden_states.transpose(1, 0, 2)
+      hidden_states = _reshape_batch_dim_to_heads(hidden_states, heads)
+    hidden_states = hidden_states.astype(dtype)
   else:
     preferred_element_type = jnp.float32 if float32_qk_product else None
     if split_head_dim:
@@ -2326,7 +2374,13 @@ def _apply_attention_dot(
           preferred_element_type=preferred_element_type,
       )
 
-    attention_scores = attention_scores * scale
+    if qk_prescaled:
+      if use_base2_exp:
+        attention_scores = attention_scores / jnp.asarray(LOG2E, dtype=attention_scores.dtype)
+    elif k_prescaled:
+      pass
+    elif scale != 1.0:
+      attention_scores = attention_scores * scale
     if attention_mask is not None:
       attention_scores = attention_scores + attention_mask.astype(attention_scores.dtype)
     attention_probs = nn.softmax(attention_scores, axis=-1 if split_head_dim else 2)
@@ -2394,14 +2448,18 @@ def dot_product_kernel(q, k, v, context):
       context["use_memory_efficient_attention"],
       context["attention_mask"],
       kv_heads=context.get("kv_heads", None),
+      qk_prescaled=context.get("qk_prescaled", False),
+      k_prescaled=context.get("k_prescaled", False),
+      use_base2_exp=context.get("use_base2_exp", False),
   )
 
 
 @register_kernel("ulysses_custom")
 def ulysses_custom_kernel(q, k, v, context):
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2421,14 +2479,17 @@ def ulysses_custom_kernel(q, k, v, context):
       kv_heads=context.get("kv_heads", None),
       ulysses_shards=context.get("ulysses_shards", -1),
       kernel_name="ulysses_custom",
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
 @register_kernel("ulysses_ring_custom")
 def ulysses_ring_custom_kernel(q, k, v, context):
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_ring_custom_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2444,22 +2505,18 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
       kv_heads=context.get("kv_heads", None),
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
 @register_kernel("ulysses_ring_custom_fixed_m")
 def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
-  """Fixed-m variant of ulysses_ring_custom.
-
-  Reduces squared Q/K row norms and V-magnitude safety predicates before the
-  Ulysses all-to-all (overlapping with the collective) and gathers K-shard
-  norms across the ring axis. When all heads pass the global Cauchy-Schwarz
-  bound, ring hops use a uniform fixed shift `m` and merge by direct FP32
-  accumulation; otherwise each hop gates independently and merges in LSE space.
-  """
+  """Fixed-m variant of ulysses_ring_custom with monolithic per-head gating."""
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_ring_custom_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2478,15 +2535,18 @@ def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
       ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
       kv_heads=context.get("kv_heads", None),
       use_k_centering=resolve_k_centering(context.get("use_k_centering"), ring=True),
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
 @register_kernel("ulysses_ring_custom_fixed_m_per_q_block")
 def ulysses_ring_custom_fixed_m_per_q_block_kernel(q, k, v, context):
   """fixed-m variant of ulysses_ring_custom with per-Q-block gating."""
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_ring_custom_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2505,6 +2565,8 @@ def ulysses_ring_custom_fixed_m_per_q_block_kernel(q, k, v, context):
       ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
       kv_heads=context.get("kv_heads", None),
       use_k_centering=resolve_k_centering(context.get("use_k_centering"), ring=True),
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
@@ -2513,9 +2575,10 @@ def ulysses_ring_custom_bidir_kernel(q, k, v, context):
   """Wrap-free (bidirectional) variant of ulysses_ring_custom: the ring streams
   K/V both directions one hop at a time, avoiding the diameter-length wrap hop
   on a non-wrapping ring axis. Same USP split as ulysses_ring_custom otherwise."""
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_ring_custom_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2532,14 +2595,17 @@ def ulysses_ring_custom_bidir_kernel(q, k, v, context):
       bidirectional=True,
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
       kv_heads=context.get("kv_heads", None),
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
 @register_kernel("ulysses_custom_fixed_m")
 def ulysses_custom_fixed_m_kernel(q, k, v, context):
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2560,14 +2626,17 @@ def ulysses_custom_fixed_m_kernel(q, k, v, context):
       ulysses_shards=context.get("ulysses_shards", -1),
       kernel_name="ulysses_custom_fixed_m",
       use_k_centering=resolve_k_centering(context.get("use_k_centering"), ring=False),
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
 @register_kernel("ulysses_custom_fixed_m_per_q_block")
 def ulysses_custom_fixed_m_per_q_block_kernel(q, k, v, context):
+  qk_prescaled = context.get("qk_prescaled", False)
   return _ulysses_attention(
       q,
-      k * context["scale"],
+      k if (qk_prescaled or context.get("k_prescaled", False)) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2588,6 +2657,8 @@ def ulysses_custom_fixed_m_per_q_block_kernel(q, k, v, context):
       ulysses_shards=context.get("ulysses_shards", -1),
       kernel_name="ulysses_custom_fixed_m_per_q_block",
       use_k_centering=resolve_k_centering(context.get("use_k_centering"), ring=False),
+      qk_prescaled=qk_prescaled,
+      transpose_out=bool(context.get("transpose_out")),
   )
 
 
@@ -2595,7 +2666,7 @@ def ulysses_custom_fixed_m_per_q_block_kernel(q, k, v, context):
 def ulysses_kernel(q, k, v, context):
   return _ulysses_attention(
       q,
-      k * context["scale"],
+      k if context.get("k_prescaled", False) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2618,7 +2689,7 @@ def ulysses_kernel(q, k, v, context):
 def ulysses_ring_kernel(q, k, v, context):
   return _ulysses_ring_attention(
       q,
-      k * context["scale"],
+      k if context.get("k_prescaled", False) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2642,7 +2713,7 @@ def ulysses_ring_kernel(q, k, v, context):
 def flash_kernel(q, k, v, context):
   return _tpu_flash_attention(
       q,
-      k * context["scale"],
+      k if context.get("k_prescaled", False) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2666,7 +2737,7 @@ def flash_kernel(q, k, v, context):
 def tokamax_flash_kernel(q, k, v, context):
   return _tpu_flash_attention(
       q,
-      k * context["scale"],
+      k if context.get("k_prescaled", False) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2692,7 +2763,7 @@ def tokamax_flash_kernel(q, k, v, context):
 def tokamax_ring_kernel(q, k, v, context):
   return _tpu_flash_attention(
       q,
-      k * context["scale"],
+      k if context.get("k_prescaled", False) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2716,7 +2787,7 @@ def tokamax_ring_kernel(q, k, v, context):
 def tokamax_ring_custom_kernel(q, k, v, context):
   return _tpu_flash_attention(
       q,
-      k * context["scale"],
+      k if context.get("k_prescaled", False) else k * context["scale"],
       v,
       context["heads"],
       context["mesh"],
@@ -2737,7 +2808,21 @@ def tokamax_ring_custom_kernel(q, k, v, context):
 
 @register_kernel("cudnn_flash_te")
 def cudnn_flash_te_kernel(q, k, v, context):
+  if context.get("k_prescaled", False):
+    k = k / jnp.asarray(context["scale"], dtype=k.dtype)
   return _cudnn_flash_attention(q, k, v, context["heads"], context["mesh"], context["dpa_layer"])
+
+
+_QK_PRESCALE_SUPPORTED_KERNELS = {
+    "dot_product",
+    "ulysses_custom",
+    "ulysses_ring_custom",
+    "ulysses_ring_custom_fixed_m",
+    "ulysses_ring_custom_fixed_m_per_q_block",
+    "ulysses_ring_custom_bidir",
+    "ulysses_custom_fixed_m",
+    "ulysses_custom_fixed_m_per_q_block",
+}
 
 
 def _apply_attention(
@@ -2771,6 +2856,9 @@ def _apply_attention(
     spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
     kv_heads: Optional[int] = None,
     use_k_centering: bool | str = "auto",
+    qk_prescaled: bool = False,
+    k_prescaled: bool = False,
+    transpose_out: bool = False,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -2813,6 +2901,12 @@ def _apply_attention(
   effective_attention_kernel = attention_kernel
   if attention_kernel == "dot_product" or use_memory_efficient_attention or not can_use_flash_attention:
     effective_attention_kernel = "dot_product"
+
+  if qk_prescaled and effective_attention_kernel not in _QK_PRESCALE_SUPPORTED_KERNELS:
+    raise ValueError(
+        f"qk_prescaled=True is only supported by {sorted(_QK_PRESCALE_SUPPORTED_KERNELS)}, "
+        f"got {effective_attention_kernel!r}."
+    )
 
   # Masks enter the dispatcher as canonical [B, K] keep masks. Adapt them
   # only after fallback selection because a configured flash kernel may use
@@ -2858,6 +2952,9 @@ def _apply_attention(
       "spatiotemporal_config": spatiotemporal_config,
       "spatiotemporal_shape": spatiotemporal_shape,
       "use_k_centering": use_k_centering,
+      "qk_prescaled": qk_prescaled,
+      "k_prescaled": k_prescaled,
+      "transpose_out": transpose_out,
   }
 
   if spatiotemporal_config and spatiotemporal_config.get("use_svg_attention"):
@@ -2882,6 +2979,11 @@ def _apply_attention(
 
 
 def _head_local_svg_attention(query, key, value, context):
+  if context.get("qk_prescaled", False) or context.get("k_prescaled", False):
+    raise ValueError(
+        "Head-local SVG does not support prescaled Q/K (`qk_prescaled` / `k_prescaled`) "
+        "because `svg_profile_temporal_heads` applies `scale` during routing."
+    )
   cfg = context["spatiotemporal_config"]
   grid = context["spatiotemporal_shape"]
   mesh = context["mesh"]
@@ -3210,6 +3312,7 @@ class NNXAttentionOp(nnx.Module):
       ulysses_attention_chunks: int = 1,
       kv_heads: Optional[int] = None,
       use_k_centering: bool | str = "auto",
+      transpose_out: bool = False,
   ):
     self.dpa_layer = None
     self.use_base2_exp = use_base2_exp
@@ -3217,6 +3320,7 @@ class NNXAttentionOp(nnx.Module):
     self.ulysses_shards = ulysses_shards
     self.ulysses_attention_chunks = ulysses_attention_chunks
     self.use_k_centering = use_k_centering
+    self.transpose_out = bool(transpose_out)
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
@@ -3265,6 +3369,8 @@ class NNXAttentionOp(nnx.Module):
       preserve_asymmetric_block_sizes: bool = False,
       spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
       sparse_config_override: Optional[dict] = None,
+      qk_prescaled: bool = False,
+      k_prescaled: bool = False,
   ):
     return _apply_attention(
         query=query,
@@ -3296,6 +3402,9 @@ class NNXAttentionOp(nnx.Module):
         spatiotemporal_shape=spatiotemporal_shape,
         kv_heads=self.kv_heads,
         use_k_centering=getattr(self, "use_k_centering", "auto"),
+        qk_prescaled=qk_prescaled,
+        k_prescaled=k_prescaled,
+        transpose_out=getattr(self, "transpose_out", False),
     )
 
 
@@ -3321,6 +3430,7 @@ class AttentionOp(nn.Module):
   is_causal: bool = False
   kv_heads: Optional[int] = None
   use_k_centering: bool | str = "auto"
+  transpose_out: bool = False
 
   def setup(self):
     self.dpa_layer = None
@@ -3355,6 +3465,8 @@ class AttentionOp(nn.Module):
       preserve_asymmetric_block_sizes: bool = False,
       spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
       sparse_config_override: Optional[dict] = None,
+      qk_prescaled: bool = False,
+      k_prescaled: bool = False,
   ):
     return _apply_attention(
         query=query,
@@ -3385,7 +3497,70 @@ class AttentionOp(nn.Module):
         spatiotemporal_shape=spatiotemporal_shape,
         kv_heads=self.kv_heads,
         use_k_centering=getattr(self, "use_k_centering", "auto"),
+        qk_prescaled=qk_prescaled,
+        k_prescaled=k_prescaled,
+        transpose_out=getattr(self, "transpose_out", False),
     )
+
+
+@functools.lru_cache(maxsize=64)
+def _build_sharded_fused_rope_producer(
+    kernel_fn: Callable,
+    mesh: jax.sharding.Mesh,
+    act_spec: jax.sharding.PartitionSpec,
+    replicated_spec: jax.sharding.PartitionSpec,
+    freqs_spec: jax.sharding.PartitionSpec,
+    out_spec: jax.sharding.PartitionSpec,
+    q_heads: int,
+    dim_head: int,
+    eps: float,
+    k_eps: Optional[float],
+    norm_mode: str,
+    rope_accum: str,
+    block_s: Optional[int],
+    head_block: Optional[int],
+    q_prescale: float,
+    k_prescale: float,
+):
+  """Builds and caches the `with_xla_backward(jax.shard_map(...))` RoPE producer."""
+  sharded = jax.shard_map(
+      functools.partial(
+          kernel_fn,
+          q_heads=q_heads,
+          dim_head=dim_head,
+          eps=eps,
+          k_eps=k_eps,
+          norm_mode=norm_mode,
+          # Under jit, XLA on v6e contracts the reference's RoPE multiply-adds
+          # into FP32 FMAs ("f32"), while XLA on tpu7x emits native bf16
+          # multiply-adds ("dtype"). Matching the platform's contraction
+          # yields 0-ULP bit-identical output on both v6e and tpu7x.
+          rope_accum=rope_accum,
+          block_s=block_s,
+          head_block=head_block,
+          q_prescale=q_prescale,
+          k_prescale=k_prescale,
+          mesh=mesh,
+      ),
+      mesh=mesh,
+      in_specs=(act_spec, act_spec, replicated_spec, replicated_spec, freqs_spec),
+      out_specs=(out_spec, out_spec),
+      check_vma=False,
+  )
+
+  def xla_equivalent(q, k, q_scale, k_scale, freqs):
+    """The same producer in unfused primitives, prescaling included."""
+    out_q, out_k = fused_rmsnorm_rope(
+        q, k, q_scale, k_scale, freqs, q_heads=q_heads, dim_head=dim_head, eps=eps, k_eps=k_eps
+    )
+    if q_prescale != 1.0:
+      out_q = out_q * jnp.asarray(q_prescale, out_q.dtype)
+    if k_prescale != 1.0:
+      out_k = out_k * jnp.asarray(k_prescale, out_k.dtype)
+    return out_q, out_k
+
+  # `pallas_call` has no transpose rule; forward stays the kernel.
+  return with_xla_backward(sharded, xla_equivalent)
 
 
 class FlaxWanAttention(nnx.Module):
@@ -3429,6 +3604,19 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_shards": -1,
         "ulysses_attention_chunks": 1,
         "use_k_centering": "auto",
+        # Fused RMSNorm+RoPE+head-transpose Pallas producer. Off by default:
+        # 0-ULP against the separately-jitted XLA producer on measured platforms,
+        # but end-to-end output is equivalent, not identical (XLA fuses the
+        # unfused producer differently). Enabled only where
+        # rope_accum_is_measured() holds.
+        "use_fused_rope_kernel": False,
+        "fused_rope_block_s": 1024,
+        "fused_rope_head_block": None,
+        "wan_rope_norm_mode": None,
+        "wan_fuse_qk_prescale": None,
+        "wan_splash_transpose_out": None,
+        "wan_cross_attn_prescale_kv": None,
+        "wan_rope_accum": None,
         **(attention_config or {}),
     }
 
@@ -3440,6 +3628,34 @@ class FlaxWanAttention(nnx.Module):
     for name, value in svg_config.items():
       setattr(self, name, value)
     self.is_self_attention = is_self_attention
+    # Assigned before the check below, which references it: without this the
+    # validation raises AttributeError instead of the intended message.
+    self.mesh = mesh
+
+    self.use_fused_rope_kernel = bool(attention_config["use_fused_rope_kernel"])
+    self.fused_rope_block_s = int(attention_config["fused_rope_block_s"])
+    if self.fused_rope_block_s <= 0 or self.fused_rope_block_s % 8 != 0:
+      raise ValueError(f"fused_rope_block_s={self.fused_rope_block_s} must be a positive multiple of 8.")
+    hb = attention_config["fused_rope_head_block"]
+    if hb in (None, -1):
+      self.fused_rope_head_block = None
+    elif int(hb) <= 0 or heads % int(hb) != 0:
+      raise ValueError(f"fused_rope_head_block={hb} must be -1/None or a positive divisor of heads={heads}.")
+    else:
+      self.fused_rope_head_block = int(hb)
+
+    # Graph-changing Wan switches. Resolved here, at build time, so they live
+    # on the GraphDef (and in the AOT cache key); a missing entry means the
+    # built-in default, never process-global state read at trace time.
+    def _wan_opt(name):
+      value = attention_config[name]
+      return wan_runtime_options.default(name) if value is None else wan_runtime_options.coerce(name, value)
+
+    self.wan_rope_norm_mode = _wan_opt("wan_rope_norm_mode")
+    self.wan_fuse_qk_prescale = _wan_opt("wan_fuse_qk_prescale")
+    self.wan_splash_transpose_out = _wan_opt("wan_splash_transpose_out")
+    self.wan_cross_attn_prescale_kv = _wan_opt("wan_cross_attn_prescale_kv")
+    self.wan_rope_accum = _wan_opt("wan_rope_accum")
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -3511,6 +3727,7 @@ class FlaxWanAttention(nnx.Module):
         ulysses_shards=attention_config["ulysses_shards"],
         ulysses_attention_chunks=attention_config["ulysses_attention_chunks"],
         use_k_centering=attention_config["use_k_centering"],
+        transpose_out=self.wan_splash_transpose_out,
     )
     # None axes corresponds to the stacked weights across all blocks
     # because of the use of nnx.vmap and nnx.scan.
@@ -3642,6 +3859,12 @@ class FlaxWanAttention(nnx.Module):
               ("norm",),
           ),
       )
+    _prescale_unsupported_kernels = {"cudnn_flash_te"}
+    self.cross_attn_prescale_kv = bool(
+        self.wan_cross_attn_prescale_kv
+        and getattr(self.attention_op, "attention_kernel", "") not in _prescale_unsupported_kernels
+        and not getattr(self.attention_op, "use_memory_efficient_attention", False)
+    )
 
   def _apply_rope(self, xq: jax.Array, xk: jax.Array, freqs_cis: jax.Array) -> Tuple[jax.Array, jax.Array]:
     # 1. Extract cos and sin, keeping them in native bfloat16
@@ -3668,6 +3891,166 @@ class FlaxWanAttention(nnx.Module):
     xk_out = jnp.concatenate([xk_out_0[..., None], xk_out_1[..., None]], axis=-1).reshape(xk.shape)
 
     return xq_out, xk_out
+
+  def _fused_rope_producer(self):
+    """Selects the RMSNorm+RoPE+transpose producer.
+
+    The Pallas kernel is a pure fusion of `fused_rmsnorm_rope`: 1.9x-2.1x faster
+    in isolation on v6e at the Wan shard shape (40 heads, per-shard seq 9450 /
+    18900), and 0 ULP against the *separately jitted* XLA
+    producer on both v6e and tpu7x. That equality does not survive inlining -- inside the
+    40-layer graph XLA fuses the unfused producer with its neighbours and rounds
+    it differently (720p/81f, 40 steps: pre-decode bf16 latent PSNR is
+    53.8 dB after 1 step and 34.1 dB after 40 steps on v6e seed 12345; post-VAE
+    decoded uint8 video PSNR / SSIM with peak=255 at stack tip is 25.71 dB /
+    0.9125 on v6e seed 777, 17.92 dB / 0.6556 on v6e seed 12345, and 17.69 dB /
+    0.6918 on tpu7x seed 12345). Equivalent, not identical; hence opt-in, on measured hardware only.
+
+    Always returns a callable returning `((q_out, k_out), qk_prescaled: bool)`.
+    When `self.use_fused_rope_kernel` is False, returns `fused_rmsnorm_rope` with
+    `qk_prescaled=False`. When `self.use_fused_rope_kernel` is True, requires
+    every precondition below and raises `ValueError` otherwise:
+      * the mesh devices are TPUs (the Pallas kernel uses Mosaic TPU primitives)
+        and `rope_accum_is_measured(self.mesh)` holds;
+      * a mesh is available to wrap the custom call in `shard_map` -- a raw
+        `pallas_call` on sharded operands would make GSPMD all-gather them;
+      * the feature axis is unsharded. RMSNorm reduces across `heads * dim_head`
+        and RoPE pairs lanes within a head, so a sharded feature axis would
+        silently produce a per-shard norm instead of the true one;
+      * `dim_head` is a whole number of lanes, which the kernel requires;
+      * at call time inside the returned wrapper, the sequence dimension must
+        divide evenly by its mesh axis (an indivisible batch dimension is
+        treated as replicated).
+    """
+
+    def _xla_fallback(q, k, q_scale, k_scale, freqs, *, q_heads, dim_head, eps, k_eps=None):
+      return (
+          fused_rmsnorm_rope(q, k, q_scale, k_scale, freqs, q_heads=q_heads, dim_head=dim_head, eps=eps, k_eps=k_eps),
+          False,
+      )
+
+    if not self.use_fused_rope_kernel:
+      return _xla_fallback
+
+    is_tpu = self.mesh is not None and all(getattr(d, "platform", None) == "tpu" for d in self.mesh.devices.flat)
+    # Matching the XLA producer's rounding is a per-platform property: on v4 the
+    # kernel drifts by up to one bf16 ULP. Unverified hardware is rejected when
+    # use_fused_rope_kernel=True is explicitly requested.
+    rounding_verified = is_tpu and rope_accum_is_measured(self.mesh)
+    if not is_tpu or self.mesh is None or self.dim_head % 128 != 0 or not rounding_verified:
+      kinds = sorted({getattr(d, "device_kind", "?") for d in self.mesh.devices.flat}) if self.mesh is not None else []
+      raise ValueError(
+          f"use_fused_rope_kernel=True requires a TPU mesh with measured RoPE rounding and dim_head % 128 == 0; "
+          f"got is_tpu={is_tpu}, mesh={self.mesh is not None}, dim_head={self.dim_head}, "
+          f"rounding_verified={rounding_verified}, device_kind={kinds}."
+      )
+
+    in_spec = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+    feature_axis = in_spec[2]
+    if feature_axis is not None:
+      axes = (feature_axis,) if isinstance(feature_axis, str) else tuple(feature_axis)
+      if any(self.mesh.shape[a] > 1 for a in axes):
+        raise ValueError(
+            f"use_fused_rope_kernel=True requires an unsharded feature axis, but the feature axis is sharded over {axes}."
+        )
+
+    replicated = jax.sharding.PartitionSpec()
+    block_s = self.fused_rope_block_s
+    head_block = self.fused_rope_head_block
+    mesh = self.mesh
+
+    def _shards_over(axis) -> int:
+      """Total mesh width a single PartitionSpec entry splits a dimension by."""
+      if axis is None:
+        return 1
+      names = (axis,) if isinstance(axis, str) else tuple(axis)
+      return math.prod(mesh.shape[n] for n in names)
+
+    batch_axis, seq_axis = in_spec[0], in_spec[1]
+    batch_shards = _shards_over(batch_axis)
+    seq_shards = _shards_over(seq_axis)
+
+    def producer(q, k, q_scale, k_scale, freqs, *, q_heads, dim_head, eps, k_eps=None):
+      # `shard_map` demands exact divisibility on every sharded dimension,
+      # whereas the surrounding GSPMD program pads uneven splits. Wan runs a
+      # global batch of 1 over a multi-way data axis, which GSPMD degenerates
+      # into replication anyway -- so declare it replicated here rather than
+      # giving up the kernel over a dimension no device actually splits.
+      local_batch_axis = batch_axis if q.shape[0] % batch_shards == 0 else None
+      divides = (
+          q.shape[1] % seq_shards == 0
+          and k.shape[1] % seq_shards == 0
+          # Each shard rotates its own contiguous window of positions, which
+          # only lines up if q, k and the table are split the same way.
+          and freqs.shape[2] == q.shape[1]
+          and q.shape[1] == k.shape[1]
+      )
+      if not divides:
+        raise ValueError(
+            f"use_fused_rope_kernel=True requires q={q.shape}, k={k.shape}, and freqs={freqs.shape} to be evenly "
+            f"splittable {seq_shards} ways on the sequence axis."
+        )
+
+      act_spec = jax.sharding.PartitionSpec(local_batch_axis, seq_axis, in_spec[2])
+      # [B, S, H*D] -> [B, H, S, D]: the head axis inherits the feature axis'
+      # sharding (unsharded, per the guard above) and `dim_head` is never split.
+      out_spec = jax.sharding.PartitionSpec(local_batch_axis, in_spec[2], seq_axis, None)
+      # `freqs_cis` is `[1, 1, S, dim_head // 2]` and reaches this point
+      # replicated, but each shard owns a contiguous window of positions.
+      # Splitting it on the same axis as the activations is what GSPMD does
+      # implicitly for the reference's elementwise multiply; leaving it
+      # replicated would make every shard rotate by positions [0, S_local),
+      # which is right only on the first shard.
+      freqs_spec = jax.sharding.PartitionSpec(None, None, seq_axis, None)
+
+      attn_kernel = getattr(self.attention_op, "attention_kernel", "dot_product")
+      min_seq_len = getattr(self.attention_op, "flash_min_seq_length", 4096)
+      use_mem_eff = getattr(self.attention_op, "use_memory_efficient_attention", False)
+      supported_custom_kernels = {
+          "ulysses_custom",
+          "ulysses_ring_custom",
+          "ulysses_ring_custom_fixed_m",
+          "ulysses_ring_custom_fixed_m_per_q_block",
+          "ulysses_ring_custom_bidir",
+          "ulysses_custom_fixed_m",
+          "ulysses_custom_fixed_m_per_q_block",
+      }
+      can_prescale = attn_kernel in supported_custom_kernels and not use_mem_eff and q.shape[1] >= min_seq_len
+      norm_mode_env = self.wan_rope_norm_mode
+      fuse_qk_prescale = bool(self.wan_fuse_qk_prescale and can_prescale)
+      q_prescale_val = float(LOG2E) if (fuse_qk_prescale and getattr(self.attention_op, "use_base2_exp", True)) else 1.0
+      k_prescale_val = float(self.attention_op.scale) if fuse_qk_prescale else 1.0
+      _warn_once(
+          "fused_rope_kernel_active",
+          f"fused RoPE Pallas kernel ACTIVE: q={q.shape}, per-shard seq={q.shape[1] // seq_shards}, "
+          f"batch_spec={local_batch_axis}, block_s={block_s}, head_block={head_block or q_heads}, "
+          f"norm_mode={norm_mode_env}, q_prescale={q_prescale_val}, k_prescale={k_prescale_val}.",
+      )
+      # Resolved through the shared helper so this and the AOT cache
+      # fingerprint in generate_wan.py cannot disagree about which mode was
+      # compiled (see `resolve_rope_accum`).
+      rope_accum_env = resolve_rope_accum(mesh, self.wan_rope_accum)
+      differentiable = _build_sharded_fused_rope_producer(
+          fused_rmsnorm_rope_pallas,
+          mesh,
+          act_spec,
+          replicated,
+          freqs_spec,
+          out_spec,
+          q_heads,
+          dim_head,
+          eps,
+          k_eps,
+          norm_mode_env,
+          rope_accum_env,
+          block_s,
+          head_block,
+          q_prescale_val,
+          k_prescale_val,
+      )
+      return differentiable(q, k, q_scale, k_scale, freqs), fuse_qk_prescale
+
+    return producer
 
   def conditional_named_scope(self, name: str):
     """Return a JAX named scope if enabled, otherwise a null context."""
@@ -3715,6 +4098,7 @@ class FlaxWanAttention(nnx.Module):
       with jax.named_scope("query_proj"):
         query_proj = self.query(hidden_states)
 
+      k_prescaled = False
       if is_self_attention:
         with jax.named_scope("key_proj"):
           key_proj = self.key(hidden_states)
@@ -3722,12 +4106,14 @@ class FlaxWanAttention(nnx.Module):
           value_proj = self.value(hidden_states)
       elif cached_kv is not None and "text" in cached_kv:
         key_proj, value_proj = cached_kv["text"]
+        k_prescaled = self.cross_attn_prescale_kv
       else:
         with jax.named_scope("key_proj"):
           key_proj = self.key(encoder_hidden_states)
         with jax.named_scope("value_proj"):
           value_proj = self.value(encoder_hidden_states)
 
+      qk_prescaled = False
       if rotary_emb is not None and self.qk_norm and is_self_attention:
         with self.conditional_named_scope("fused_rmsnorm_rope"):
           q_scale = self.norm_q.scale[...]
@@ -3735,17 +4121,34 @@ class FlaxWanAttention(nnx.Module):
           # norm_q is built with epsilon=eps; norm_k keeps flax's default (1e-6).
           q_eps = self.norm_q.epsilon
           k_eps = self.norm_k.epsilon
-          query_proj, key_proj = fused_rmsnorm_rope(
-              query_proj,
-              key_proj,
-              q_scale,
-              k_scale,
-              rotary_emb,
-              q_heads=self.heads,
-              dim_head=self.dim_head,
-              eps=q_eps,
-              k_eps=k_eps,
-          )
+          # The SVG sparse path does not understand prescaled Q/K, so SVG layers
+          # keep the XLA fused_rmsnorm_rope producer rather than the Pallas kernel.
+          if self.use_svg_attention:
+            query_proj, key_proj = fused_rmsnorm_rope(
+                query_proj,
+                key_proj,
+                q_scale,
+                k_scale,
+                rotary_emb,
+                q_heads=self.heads,
+                dim_head=self.dim_head,
+                eps=q_eps,
+                k_eps=k_eps,
+            )
+            qk_prescaled = False
+          else:
+            producer = self._fused_rope_producer()
+            (query_proj, key_proj), qk_prescaled = producer(
+                query_proj,
+                key_proj,
+                q_scale,
+                k_scale,
+                rotary_emb,
+                q_heads=self.heads,
+                dim_head=self.dim_head,
+                eps=q_eps,
+                k_eps=k_eps,
+            )
           value_proj = _unflatten_heads(value_proj, self.heads)
       else:
         if self.qk_norm:
@@ -3773,6 +4176,8 @@ class FlaxWanAttention(nnx.Module):
             key_proj,
             value_proj,
             attention_mask=encoder_attention_mask,
+            qk_prescaled=qk_prescaled,
+            k_prescaled=k_prescaled,
             **svg_kwargs,
         )
 
@@ -3828,6 +4233,7 @@ class FlaxWanAttention(nnx.Module):
       # Text K/V
       if cached_kv is not None and "text" in cached_kv:
         key_proj_text, value_proj_text = cached_kv["text"]
+        k_prescaled_text = self.cross_attn_prescale_kv
       else:
         with self.conditional_named_scope("proj_key"):
           key_proj_text = self.key(encoder_hidden_states_text)
@@ -3836,11 +4242,13 @@ class FlaxWanAttention(nnx.Module):
             key_proj_text = self.norm_k(key_proj_text)
         with self.conditional_named_scope("proj_value"):
           value_proj_text = self.value(encoder_hidden_states_text)
+        k_prescaled_text = False
 
       # Image K/V (only if image embeddings are present)
       if encoder_hidden_states_img is not None:
         if cached_kv is not None and "image" in cached_kv:
           key_proj_img, value_proj_img = cached_kv["image"]
+          k_prescaled_img = self.cross_attn_prescale_kv
         else:
           with self.conditional_named_scope("add_proj_k"):
             key_proj_img = self.add_k_proj(encoder_hidden_states_img)
@@ -3848,6 +4256,7 @@ class FlaxWanAttention(nnx.Module):
             key_proj_img = self.norm_added_k(key_proj_img)
           with self.conditional_named_scope("add_proj_v"):
             value_proj_img = self.add_v_proj(encoder_hidden_states_img)
+          k_prescaled_img = False
         query_proj_img = query_proj_raw
         # Check norm_added_k too
         # Checkpointing
@@ -3860,7 +4269,9 @@ class FlaxWanAttention(nnx.Module):
 
         # Attention - tensors are (B, S, D)
         with self.conditional_named_scope("cross_attn_text_apply"):
-          attn_output_text = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
+          attn_output_text = self.attention_op.apply_attention(
+              query_proj_text, key_proj_text, value_proj_text, k_prescaled=k_prescaled_text
+          )
         with self.conditional_named_scope("cross_attn_img_apply"):
           # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
           attn_output_img = self.attention_op.apply_attention(
@@ -3868,6 +4279,7 @@ class FlaxWanAttention(nnx.Module):
               key_proj_img,
               value_proj_img,
               attention_mask=encoder_attention_mask_img,
+              k_prescaled=k_prescaled_img,
           )
 
         attn_output = attn_output_text + attn_output_img
@@ -3878,7 +4290,9 @@ class FlaxWanAttention(nnx.Module):
         value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
 
         with self.conditional_named_scope("cross_attn_text_apply"):
-          attn_output = self.attention_op.apply_attention(query_proj_text, key_proj_text, value_proj_text)
+          attn_output = self.attention_op.apply_attention(
+              query_proj_text, key_proj_text, value_proj_text, k_prescaled=k_prescaled_text
+          )
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
@@ -3905,6 +4319,8 @@ class FlaxWanAttention(nnx.Module):
       if self.qk_norm:
         with self.conditional_named_scope("attn_k_norm"):
           key_proj = self.norm_k(key_proj)
+      if self.cross_attn_prescale_kv:
+        key_proj = key_proj * jnp.asarray(self.attention_op.scale, key_proj.dtype)
 
       return {"text": (key_proj, value_proj)}
     else:
@@ -3928,6 +4344,8 @@ class FlaxWanAttention(nnx.Module):
       if self.qk_norm:
         with self.conditional_named_scope("attn_k_norm"):
           key_proj_text = self.norm_k(key_proj_text)
+      if self.cross_attn_prescale_kv:
+        key_proj_text = key_proj_text * jnp.asarray(self.attention_op.scale, key_proj_text.dtype)
       with self.conditional_named_scope("proj_value"):
         value_proj_text = self.value(encoder_hidden_states_text)
 
@@ -3937,6 +4355,8 @@ class FlaxWanAttention(nnx.Module):
           key_proj_img = self.add_k_proj(encoder_hidden_states_img)
         with self.conditional_named_scope("norm_add_k"):
           key_proj_img = self.norm_added_k(key_proj_img)
+        if self.cross_attn_prescale_kv:
+          key_proj_img = key_proj_img * jnp.asarray(self.attention_op.scale, key_proj_img.dtype)
         with self.conditional_named_scope("add_proj_v"):
           value_proj_img = self.add_v_proj(encoder_hidden_states_img)
 
