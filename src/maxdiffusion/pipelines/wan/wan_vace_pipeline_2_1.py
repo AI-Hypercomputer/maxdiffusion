@@ -24,6 +24,7 @@ from flax.linen import partitioning as nn_partitioning
 from ...pyconfig import HyperParameters
 from ... import aot_cache
 from ... import max_logging
+from ... import wan_runtime_options
 from ...image_processor import PipelineImageInput
 from ...max_utils import get_flash_block_sizes, get_precision
 from ...models.wan.wan_utils import load_wan_transformer
@@ -91,6 +92,7 @@ def create_sharded_logical_transformer(
       "use_experimental_scheduler": config.use_experimental_scheduler,
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
       "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
+      **wan_runtime_options.attention_config_entries(config),
   }
 
   wan_config["scan_layers"] = False

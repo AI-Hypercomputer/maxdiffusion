@@ -60,7 +60,7 @@ from flax import linen as nn
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 
-from maxdiffusion import max_logging, max_utils, pyconfig
+from maxdiffusion import max_logging, max_utils, pyconfig, wan_runtime_options
 from maxdiffusion.models.wan.transformers.transformer_wan import WanModel
 from maxdiffusion.utils.tile_size_grid_search import (
     BenchResult,
@@ -217,6 +217,7 @@ class WanBlockBenchmark(BlockBenchmark):
   def _build_model(self, bq, bkv, cmp):
     c = self._config
     wan_config = dict(self._hf_cfg)
+    fused_rope_head_block = getattr(c, "fused_rope_head_block", -1)
     wan_config.update(
         mesh=self._mesh,
         dtype=c.activations_dtype,
@@ -237,7 +238,13 @@ class WanBlockBenchmark(BlockBenchmark):
             "use_base2_exp": c.use_base2_exp,
             "use_experimental_scheduler": c.use_experimental_scheduler,
             "ulysses_shards": c.ulysses_shards,
+            "use_fused_rope_kernel": getattr(c, "use_fused_rope_kernel", False),
+            "fused_rope_block_s": getattr(c, "fused_rope_block_s", 1024),
+            "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,
+            # Same graph-changing switches the pipelines pass (wan_runtime_options).
+            **wan_runtime_options.attention_config_entries(c),
         },
+        wan_cfg_before_unpatchify=wan_runtime_options.resolve_from_config(c, "wan_cfg_before_unpatchify"),
     )
     model = WanModel(**wan_config, rngs=nnx.Rngs(params=0))
     gd, state, rest = nnx.split(model, nnx.Param, ...)
