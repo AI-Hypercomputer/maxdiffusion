@@ -73,6 +73,77 @@ from maxdiffusion import max_logging
 _FORMAT_VERSION = 1
 
 
+def _is_graphdef(x: Any) -> bool:
+  return hasattr(x, "attributes") and hasattr(x, "nodes")
+
+
+def _graphdef_desc(gd: Any) -> str:
+  """Extracts a process-deterministic digest of static attributes in an nnx.GraphDef."""
+  items = []
+  for k, v in getattr(gd, "attributes", ()):
+    if str(k).startswith("_pytree__"):
+      continue
+    if hasattr(v, "value"):
+      try:
+        s = json.dumps(
+            v.value,
+            sort_keys=True,
+            default=lambda o: re.sub(r"0x[0-9a-fA-F]+", "@", repr(o)),
+        )
+      except Exception:  # noqa: BLE001
+        s = re.sub(r"0x[0-9a-fA-F]+", "@", repr(v.value))
+      items.append(f"{k}:{s}")
+  return "GraphDef(" + ",".join(items) + ")"
+
+
+def extract_svg_meta(config: Any, pipeline: Any = None) -> dict[str, Any]:
+  """Extracts all graph-affecting SVG configuration settings for AOT cache identity."""
+  svg_keys = (
+      "use_svg_attention",
+      "svg_implementation",
+      "svg_spatial_density",
+      "svg_high_noise_density",
+      "svg_low_noise_density",
+      "svg_sample_max_row",
+      "svg_profile_query_count",
+      "svg_profile_seed",
+      "svg_dense_layer_fraction",
+      "svg_dense_timestep_fraction",
+      "svg_active_start_step",
+      "svg_active_end_step",
+      "svg_active_start_layer",
+      "svg_active_end_layer",
+      "svg_num_train_timesteps",
+      "svg_num_layers",
+      "svg_include_first_frame",
+      "svg_global_stride",
+      "svg_global_offset",
+      "svg_flash_block_sizes",
+  )
+  meta: dict[str, Any] = {}
+  if config is not None:
+    for k in svg_keys:
+      val = getattr(config, k, None) if not isinstance(config, dict) else config.get(k, None)
+      if val is not None:
+        meta[k] = str(val)
+  if pipeline is not None:
+    for attr in ("transformer", "high_noise_transformer", "low_noise_transformer"):
+      t = getattr(pipeline, attr, None)
+      if t is not None:
+        t_cfg = getattr(t, "config", None)
+        attn_cfg = (
+            getattr(t_cfg, "attention_config", None)
+            or (t_cfg.get("attention_config") if isinstance(t_cfg, dict) else None)
+        )
+        if isinstance(attn_cfg, dict):
+          meta[f"{attr}_svg_config"] = json.dumps(
+              {k: v for k, v in attn_cfg.items() if "svg" in str(k)},
+              sort_keys=True,
+              default=str,
+          )
+  return meta
+
+
 def _metadata_fingerprint(meta: dict[str, Any]) -> str:
   """Returns the stable filename fingerprint for install-time metadata."""
   serialized = json.dumps(meta, sort_keys=True, default=str)
@@ -87,15 +158,18 @@ def _dynamic_signature(args: tuple, kwargs: dict) -> str:
   addresses and hash-order-dependent content that differ per process and
   made signatures never match across restarts (measured: every array
   part stable, only the treedef part unstable). Static graph metadata
-  not visible in key paths (attention kernel, dtypes, model path) is
-  covered by the install-time config fingerprint in the filename.
+  in GraphDef leaves is extracted deterministically via ``_graphdef_desc``.
   Array leaves contribute shape/dtype; non-array leaves (python scalars,
   None flags) contribute an address-stripped repr.
   """
-  leaves_with_paths = jax.tree_util.tree_flatten_with_path((args, kwargs))[0]
+  leaves_with_paths = jax.tree_util.tree_flatten_with_path(
+      (args, kwargs), is_leaf=_is_graphdef
+  )[0]
   parts = []
   for path, leaf in leaves_with_paths:
-    if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+    if _is_graphdef(leaf):
+      desc = _graphdef_desc(leaf)
+    elif hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
       desc = f"{tuple(leaf.shape)}:{leaf.dtype}"
     else:
       desc = re.sub(r"0x[0-9a-fA-F]+", "@", repr(leaf))

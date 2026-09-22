@@ -35,12 +35,15 @@ from maxdiffusion.max_utils import safe_getattr
 
 
 from ..kernels import custom_splash_attention as custom_splash
+from ..kernels import custom_svg_attention_dispatch
+from ..kernels import custom_svg_static_range_attention
 from . import quantizations
 from .modeling_flax_utils import get_activation
 
 LOG2E = math.log2(math.e)
 
 Array = common_types.Array
+
 Mesh = common_types.Mesh
 DType = common_types.DType
 BlockSizes = common_types.BlockSizes
@@ -402,6 +405,7 @@ def _extract_custom_block_sizes(flash_block_sizes):
   # to 1 (the custom-kernel default) to keep the `heads_per_tile > 1` guards safe.
   if heads_per_tile is None:
     heads_per_tile = 1
+  bkv_compute_in = min(bkv_compute, bkv_compute_in)
   return bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes
 
 
@@ -596,6 +600,8 @@ def _tpu_flash_attention(
     use_experimental_scheduler: bool = False,
     is_causal: bool = False,
     preserve_asymmetric_block_sizes: bool = False,
+    spatiotemporal_config: Optional[dict] = None,
+    spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
 ) -> jax.Array:
   """TPU Flash Attention"""
 
@@ -859,6 +865,8 @@ def _ulysses_attention(
     use_fixed_m: bool = False,
     ulysses_attention_chunks: int = 1,
     preserve_asymmetric_block_sizes: bool = False,
+    spatiotemporal_config: Optional[dict] = None,
+    spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -1676,6 +1684,8 @@ def ulysses_custom_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
+      spatiotemporal_config=context.get("spatiotemporal_config"),
+      spatiotemporal_shape=context.get("spatiotemporal_shape"),
   )
 
 
@@ -1863,6 +1873,8 @@ def tokamax_flash_kernel(q, k, v, context):
       use_experimental_scheduler=context["use_experimental_scheduler"],
       is_causal=context.get("is_causal", False),
       preserve_asymmetric_block_sizes=context.get("preserve_asymmetric_block_sizes", False),
+      spatiotemporal_config=context.get("spatiotemporal_config"),
+      spatiotemporal_shape=context.get("spatiotemporal_shape"),
   )
 
 
@@ -1942,6 +1954,8 @@ def _apply_attention(
     ulysses_attention_chunks: int = 1,
     is_causal: bool = False,
     preserve_asymmetric_block_sizes: bool = False,
+    spatiotemporal_config: Optional[dict] = None,
+    spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -2009,7 +2023,20 @@ def _apply_attention(
       "dpa_layer": dpa_layer,
       "is_causal": is_causal,
       "preserve_asymmetric_block_sizes": preserve_asymmetric_block_sizes,
+      "spatiotemporal_config": spatiotemporal_config,
+      "spatiotemporal_shape": spatiotemporal_shape,
   }
+
+  if spatiotemporal_config and spatiotemporal_config.get("use_svg_attention"):
+    if effective_attention_kernel not in (
+        "ulysses_custom",
+        "ulysses_custom_fixed_m",
+        "ulysses_ring_custom",
+        "ulysses_ring_custom_fixed_m",
+    ):
+      raise ValueError("Head-local SVG requires a custom Ulysses attention backend.")
+    # Dense uses its configured ring split; SVG exchanges over the full context axis.
+    return _head_local_svg_attention(query, key, value, context)
 
   # Module-level Registry lookup
   if effective_attention_kernel in KERNEL_REGISTRY:
@@ -2017,6 +2044,109 @@ def _apply_attention(
       return KERNEL_REGISTRY[effective_attention_kernel](query, key, value, context)
 
   raise ValueError(f"Unexpected attention kernel {effective_attention_kernel=}.")
+
+
+def _head_local_svg_attention(query, key, value, context):
+  from .wan.transformers import svg_attention, svg_head_local
+
+  cfg = context["spatiotemporal_config"]
+  grid = context["spatiotemporal_shape"]
+  mesh = context["mesh"]
+  cp = mesh.shape[CONTEXT]
+  if context["attention_mask"] is not None or cfg.get("global_stride", 0):
+    raise ValueError("Head-local SVG does not support external or periodic masks.")
+  if context["ulysses_attention_chunks"] != 1:
+    raise ValueError("Head-local SVG does not implement chunked Ulysses attention.")
+  q, k, v = (_unflatten_heads(x, context["heads"]) if x.ndim == 3 else x for x in (query, key, value))
+  if grid is None or q.shape != k.shape or q.shape != v.shape or q.shape[2] != math.prod(grid):
+    raise ValueError("Head-local SVG requires matched self-attention QKV and token grid.")
+  batch, heads = q.shape[0], q.shape[1]
+  # Fold unsharded batches into heads to match the dense Ulysses layout.
+  devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
+  fold_batch = batch > 1 and devices_in_batch_sharding == 1 and (batch * heads) % cp == 0
+  local_heads = batch * heads if fold_batch else heads
+  if local_heads % cp or q.shape[2] % cp:
+    raise ValueError("SVG heads and sequence length must divide evenly across Ulysses shards.")
+  q, k, v = (svg_head_local.inference_only(x) for x in (q, k, v))
+  qspec = nn.logical_to_mesh_axes(context["axis_names_q"])
+  kvspec = nn.logical_to_mesh_axes(context["axis_names_kv"])
+  if qspec != kvspec or qspec[1:] != (None, CONTEXT, None):
+    raise ValueError("Head-local SVG requires sequence sharding and unsharded heads.")
+  profile_key = jax.random.PRNGKey(int(cfg["profile_seed"]))
+  for index in (cfg.get("svg_layer_index"), cfg.get("svg_step_index")):
+    if index is not None:
+      profile_key = jax.random.fold_in(profile_key, jnp.asarray(index, jnp.uint32))
+  if cfg.get("svg_step_index") is None and cfg.get("svg_timestep") is not None:
+    profile_key = jax.random.fold_in(profile_key, jnp.max(jnp.asarray(cfg["svg_timestep"])).astype(jnp.uint32))
+  with jax.named_scope("svg_routing"):
+    route = svg_attention.svg_profile_temporal_heads(
+        q,
+        k,
+        v,
+        grid,
+        int(cfg["profile_query_count"]),
+        profile_key,
+        context["scale"],
+        sample_max_row=int(cfg.get("sample_max_row", 10000)),
+    )
+  if fold_batch:
+    q, k, v = (x.reshape(1, local_heads, *x.shape[2:]) for x in (q, k, v))
+    route = route.reshape(1, local_heads)
+  # Sparse and dense attention use independently configured tiles.
+  bq, bkv, bc, bci, hpt, vmem = _extract_custom_block_sizes(
+      cfg.get("custom_flash_block_sizes") or context["flash_block_sizes"]
+  )
+  if hpt != 1:
+    raise ValueError("SVG requires heads_per_tile=1.")
+  blocks = custom_svg_static_range_attention.SVGBlockSizes(
+      block_q=bq,
+      block_kv=bkv,
+      block_kv_compute=bc,
+      block_kv_compute_in=bci,
+  )
+
+  def core(q, k, v):
+    k = k * context["scale"]
+    if context["use_base2_exp"]:
+      q = q * LOG2E
+    q, dim, n = _pad_data_for_flash(q, q.shape[1], bq)
+    k, _, nk = _pad_data_for_flash(k, k.shape[1], bkv)
+    v, _, _ = _pad_data_for_flash(v, v.shape[1], bkv)
+    kernel = custom_svg_attention_dispatch.make_svg_static_range_mha(
+        block_sizes=blocks,
+        orig_q_seq_len=n,
+        orig_kv_seq_len=nk,
+        band_width=int(cfg["band_width"]),
+        frame_size=int(grid[1] * grid[2]),
+        include_first_frame=bool(cfg.get("include_first_frame", True)),
+        bkv_compute_in=bci,
+        use_base2_exp=context["use_base2_exp"],
+        use_experimental_scheduler=context["use_experimental_scheduler"],
+        vmem_limit_bytes=vmem,
+    )
+    # Report executed tile fraction, which differs from real attention-pair density.
+    executed = kernel.union_main_tiles + kernel.tail_cleanup_tiles
+    total = -(-n // bq) * -(-nk // bkv)
+    with jax.named_scope(f"svg_kernel_c_tiles{executed}of{total}_d{executed / total:.3f}"):
+      out = jax.vmap(kernel)(q, k, v)
+    return jnp.swapaxes(out, 2, 3)[:, :, :n, :dim].astype(q.dtype)
+
+  out = svg_head_local.exchange_local(
+      q,
+      k,
+      v,
+      route,
+      mesh=mesh,
+      qspec=qspec,
+      kvspec=kvspec,
+      ulysses_axis=CONTEXT,
+      place=lambda q, k, v, r: svg_attention.svg_placement_permute(q, k, v, r, grid),
+      restore=lambda o, r: svg_attention.svg_placement_unpermute(o, r, grid),
+      core=core,
+  )
+  if fold_batch:
+    out = out.reshape(batch, heads, *out.shape[2:])
+  return _reshape_heads_to_head_dim(out)
 
 
 def _query_chunk_attention(query, key, value, precision, key_chunk_size: int = 4096):
@@ -2296,6 +2426,8 @@ class NNXAttentionOp(nnx.Module):
       value: Array,
       attention_mask: Array = None,
       preserve_asymmetric_block_sizes: bool = False,
+      spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+      sparse_config_override: Optional[dict] = None,
   ):
     return _apply_attention(
         query=query,
@@ -2323,6 +2455,8 @@ class NNXAttentionOp(nnx.Module):
         ulysses_shards=(self.ulysses_shards if hasattr(self, "ulysses_shards") else -1),
         ulysses_attention_chunks=(self.ulysses_attention_chunks if hasattr(self, "ulysses_attention_chunks") else 1),
         preserve_asymmetric_block_sizes=preserve_asymmetric_block_sizes,
+        spatiotemporal_config=sparse_config_override,
+        spatiotemporal_shape=spatiotemporal_shape,
     )
 
 
@@ -2378,6 +2512,8 @@ class AttentionOp(nn.Module):
       value: Array,
       attention_mask: Array = None,
       preserve_asymmetric_block_sizes: bool = False,
+      spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+      sparse_config_override: Optional[dict] = None,
   ):
     return _apply_attention(
         query=query,
@@ -2404,6 +2540,8 @@ class AttentionOp(nn.Module):
         ulysses_attention_chunks=self.ulysses_attention_chunks,
         is_causal=self.is_causal,
         preserve_asymmetric_block_sizes=preserve_asymmetric_block_sizes,
+        spatiotemporal_config=sparse_config_override,
+        spatiotemporal_shape=spatiotemporal_shape,
     )
 
 
@@ -2447,8 +2585,50 @@ class FlaxWanAttention(nnx.Module):
         "use_experimental_scheduler": False,
         "ulysses_shards": -1,
         "ulysses_attention_chunks": 1,
+        "use_svg_attention": False,
+        "svg_implementation": "official_svg",
+        "svg_spatial_density": 0.25,
+        "svg_sample_max_row": 10000,
+        "svg_profile_query_count": 64,
+        "svg_profile_seed": 0,
+        "svg_dense_layer_fraction": 0.0,
+        "svg_dense_timestep_fraction": 0.0,
+        "svg_active_start_step": -1,
+        "svg_active_end_step": -1,
+        "svg_active_start_layer": -1,
+        "svg_active_end_layer": -1,
+        "svg_num_train_timesteps": 1000,
+        "svg_num_layers": 40,
+        "svg_include_first_frame": True,
+        "svg_global_stride": 0,
+        "svg_global_offset": 0,
+        "svg_high_noise_density": -1.0,
+        "svg_low_noise_density": -1.0,
+        "svg_flash_block_sizes": None,
         **(attention_config or {}),
     }
+
+    self.use_svg_attention = attention_config["use_svg_attention"]
+    self.svg_implementation = attention_config["svg_implementation"]
+    self.svg_spatial_density = attention_config["svg_spatial_density"]
+    self.svg_sample_max_row = attention_config["svg_sample_max_row"]
+    self.svg_profile_query_count = attention_config["svg_profile_query_count"]
+    self.svg_profile_seed = attention_config["svg_profile_seed"]
+    self.svg_dense_layer_fraction = attention_config["svg_dense_layer_fraction"]
+    self.svg_dense_timestep_fraction = attention_config["svg_dense_timestep_fraction"]
+    self.svg_active_start_step = attention_config["svg_active_start_step"]
+    self.svg_active_end_step = attention_config["svg_active_end_step"]
+    self.svg_active_start_layer = attention_config["svg_active_start_layer"]
+    self.svg_active_end_layer = attention_config["svg_active_end_layer"]
+    self.svg_num_train_timesteps = attention_config["svg_num_train_timesteps"]
+    self.svg_num_layers = attention_config["svg_num_layers"]
+    self.svg_include_first_frame = attention_config["svg_include_first_frame"]
+    self.svg_global_stride = attention_config["svg_global_stride"]
+    self.svg_global_offset = attention_config["svg_global_offset"]
+    self.svg_high_noise_density = attention_config["svg_high_noise_density"]
+    self.svg_low_noise_density = attention_config["svg_low_noise_density"]
+    self.svg_flash_block_sizes = attention_config["svg_flash_block_sizes"]
+    self.is_self_attention = is_self_attention
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -2693,12 +2873,25 @@ class FlaxWanAttention(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
       cached_kv: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
+      spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+      svg_layer_index: Optional[int | jax.Array] = None,
+      svg_timestep: Optional[int | float | jax.Array] = None,
+      svg_step_index: Optional[int | jax.Array] = None,
   ) -> jax.Array:
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
     if encoder_hidden_states is not None:
       encoder_hidden_states = nn.with_logical_constraint(encoder_hidden_states, (BATCH, LENGTH, HEAD))
     dtype = hidden_states.dtype
-    is_self_attention = encoder_hidden_states is None
+    is_self_attention = getattr(
+        self,
+        "is_self_attention",
+        encoder_hidden_states is None or encoder_hidden_states is hidden_states,
+    )
+    if self.use_svg_attention and is_self_attention:
+      if not deterministic:
+        raise ValueError("SVG attention supports deterministic inference only.")
+      if spatiotemporal_shape is None:
+        raise ValueError("SVG attention requires spatiotemporal_shape.")
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
@@ -2741,13 +2934,73 @@ class FlaxWanAttention(nnx.Module):
       key_proj = checkpoint_name(key_proj, "key_proj")
       value_proj = checkpoint_name(value_proj, "value_proj")
 
-      with jax.named_scope("apply_attention"):
-        attn_output = self.attention_op.apply_attention(
-            query_proj,
-            key_proj,
-            value_proj,
-            attention_mask=encoder_attention_mask,
+      if self.use_svg_attention and is_self_attention and spatiotemporal_shape is not None:
+        from .wan.transformers import svg_attention
+
+        is_active = svg_attention.is_svg_active(
+            step_index=svg_step_index,
+            layer_index=svg_layer_index,
+            timestep=svg_timestep,
+            start_step=self.svg_active_start_step,
+            end_step=self.svg_active_end_step,
+            start_layer=self.svg_active_start_layer,
+            end_layer=self.svg_active_end_layer,
+            dense_layer_fraction=self.svg_dense_layer_fraction,
+            dense_timestep_fraction=self.svg_dense_timestep_fraction,
+            num_train_timesteps=self.svg_num_train_timesteps,
+            num_layers=self.svg_num_layers,
         )
+
+        def run_dense(_):
+          return self.attention_op.apply_attention(
+              query_proj,
+              key_proj,
+              value_proj,
+              attention_mask=encoder_attention_mask,
+          )
+
+        def run_sparse_svg(_):
+          execution_band_width = svg_attention.svg_execution_band_width(
+              spatiotemporal_shape,
+              self.svg_spatial_density,
+          )
+          sparse_config = {
+              "use_svg_attention": True,
+              "mask_type": "svg_spatial",
+              "band_width": execution_band_width,
+              "include_first_frame": self.svg_include_first_frame,
+              "global_stride": self.svg_global_stride,
+              "global_offset": self.svg_global_offset,
+              "profile_query_count": self.svg_profile_query_count,
+              "profile_seed": self.svg_profile_seed,
+              "sample_max_row": self.svg_sample_max_row,
+              "custom_flash_block_sizes": self.svg_flash_block_sizes,
+              "svg_step_index": svg_step_index,
+              "svg_layer_index": svg_layer_index,
+              "svg_timestep": svg_timestep,
+          }
+          return self.attention_op.apply_attention(
+              query_proj,
+              key_proj,
+              value_proj,
+              attention_mask=encoder_attention_mask,
+              spatiotemporal_shape=spatiotemporal_shape,
+              sparse_config_override=sparse_config,
+          )
+
+        with jax.named_scope("apply_attention"):
+          if isinstance(is_active, bool):
+            attn_output = run_sparse_svg(None) if is_active else run_dense(None)
+          else:
+            attn_output = jax.lax.cond(is_active, run_sparse_svg, run_dense, operand=None)
+      else:
+        with jax.named_scope("apply_attention"):
+          attn_output = self.attention_op.apply_attention(
+              query_proj,
+              key_proj,
+              value_proj,
+              attention_mask=encoder_attention_mask,
+          )
 
     else:
       # NEW PATH for I2V CROSS-ATTENTION
