@@ -55,6 +55,7 @@ _import_structure = {
     "schedulers": [],
     "tpu_utils": [],
     "train_utils": [],
+    "wan_runtime_options": [],
     "utils": [
         "OptionalDependencyNotAvailable",
         "is_flax_available",

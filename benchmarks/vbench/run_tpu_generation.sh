@@ -57,6 +57,8 @@ WAN_OVERRIDES=(
   "use_batched_text_encoder|USE_BATCHED_TEXT_ENCODER|true"
   "flash_block_sizes|FLASH_BLOCK_SIZES|"
   "prompt_file|PROMPT_FILE|./benchmarks/vbench/prompts_110.txt"
+  # Matches the shipped config default; set USE_FUSED_ROPE_KERNEL=true to test it.
+  "use_fused_rope_kernel|USE_FUSED_ROPE_KERNEL|false"
 )
 
 usage() {
@@ -70,6 +72,9 @@ Common options:
   RUN_NAME           Generation run name (default: wan-inference; videos are saved to <RUN_NAME>/videos)
   PROMPT_FILE        Prompt file path (default: ./benchmarks/vbench/prompts_110.txt)
   CONFIG_FILE        WAN config file (default: src/maxdiffusion/configs/base_wan_27b.yml)
+  USE_FUSED_ROPE_KERNEL
+                     Enable the fused RMSNorm+RoPE Pallas producer (default: false).
+                     Only measured on TPU v6e and v7; refused elsewhere unless wan_rope_accum is set explicitly.
   EXTERNAL_DISK      Mounted disk root for large local files (default: /mnt/disks/external_disk)
   HF_CACHE_ROOT      Hugging Face cache root (default: \$EXTERNAL_DISK/hf_cache)
   HF_HOME            Hugging Face home directory (default: \$HF_CACHE_ROOT)

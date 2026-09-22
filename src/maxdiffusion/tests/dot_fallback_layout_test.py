@@ -71,6 +71,15 @@ def _reference_attention(query, key, value, scale):
 class DotFallbackLayoutTest(unittest.TestCase):
   """`_apply_attention_dot` must transpose, not reshape, 4-D inputs."""
 
+  def setUp(self):
+    super().setUp()
+    self._matmul_precision_ctx = jax.default_matmul_precision("float32")
+    self._matmul_precision_ctx.__enter__()
+
+  def tearDown(self):
+    self._matmul_precision_ctx.__exit__(None, None, None)
+    super().tearDown()
+
   def test_zero_logits_return_per_head_token_means(self):
     """The reviewer's counterexample, reproduced exactly.
 
@@ -144,6 +153,194 @@ class DotFallbackLayoutTest(unittest.TestCase):
         )
     )
     np.testing.assert_allclose(out, expected, rtol=1e-4, atol=1e-4)
+
+  def test_qk_prescaled_with_base2_matches_unscaled(self):
+    """When Q is scaled by log2(e) and K is scaled by scale, dot attention with
+    qk_prescaled=True and use_base2_exp=True must match to within 1e-5."""
+    heads, seq, dim_head = 4, 8, 16
+    shape = (2, heads, seq, dim_head)
+    query = jax.random.normal(jax.random.PRNGKey(10), shape, jnp.float32)
+    key = jax.random.normal(jax.random.PRNGKey(11), shape, jnp.float32)
+    value = jax.random.normal(jax.random.PRNGKey(12), shape, jnp.float32)
+    scale = 1.0 / math.sqrt(dim_head)
+    log2e = math.log2(math.e)
+
+    with jax.default_matmul_precision("float32"):
+      out_unscaled = _apply_attention_dot(
+          query=query,
+          key=key,
+          value=value,
+          dtype=jnp.float32,
+          heads=heads,
+          dim_head=dim_head,
+          scale=scale,
+          split_head_dim=True,
+          float32_qk_product=True,
+          use_memory_efficient_attention=False,
+          qk_prescaled=False,
+          use_base2_exp=False,
+      )
+
+      q_prescaled = query * log2e
+      k_prescaled = key * scale
+      out_prescaled = _apply_attention_dot(
+          query=q_prescaled,
+          key=k_prescaled,
+          value=value,
+          dtype=jnp.float32,
+          heads=heads,
+          dim_head=dim_head,
+          scale=scale,
+          split_head_dim=True,
+          float32_qk_product=True,
+          use_memory_efficient_attention=False,
+          qk_prescaled=True,
+          use_base2_exp=True,
+      )
+    np.testing.assert_allclose(np.asarray(out_prescaled), np.asarray(out_unscaled), rtol=1e-5, atol=1e-5)
+
+  def test_k_prescaled_matches_unscaled(self):
+    """When only K is prescaled by scale, dot attention with k_prescaled=True
+    must match to within 1e-5 without double-scaling."""
+    heads, seq, dim_head = 4, 8, 16
+    shape = (2, heads, seq, dim_head)
+    query = jax.random.normal(jax.random.PRNGKey(13), shape, jnp.float32)
+    key = jax.random.normal(jax.random.PRNGKey(14), shape, jnp.float32)
+    value = jax.random.normal(jax.random.PRNGKey(15), shape, jnp.float32)
+    scale = 1.0 / math.sqrt(dim_head)
+
+    out_unscaled = _apply_attention_dot(
+        query=query,
+        key=key,
+        value=value,
+        dtype=jnp.float32,
+        heads=heads,
+        dim_head=dim_head,
+        scale=scale,
+        split_head_dim=True,
+        float32_qk_product=True,
+        use_memory_efficient_attention=False,
+        qk_prescaled=False,
+        k_prescaled=False,
+    )
+
+    k_prescaled_arr = key * scale
+    out_k_prescaled = _apply_attention_dot(
+        query=query,
+        key=k_prescaled_arr,
+        value=value,
+        dtype=jnp.float32,
+        heads=heads,
+        dim_head=dim_head,
+        scale=scale,
+        split_head_dim=True,
+        float32_qk_product=True,
+        use_memory_efficient_attention=False,
+        qk_prescaled=False,
+        k_prescaled=True,
+    )
+    np.testing.assert_allclose(np.asarray(out_k_prescaled), np.asarray(out_unscaled), rtol=1e-5, atol=1e-5)
+
+  def test_uncached_unaffected_by_cross_attn_prescale_env(self):
+    """WAN_CROSS_ATTN_PRESCALE_KV=1 only marks cached cross-attn K as prescaled in FlaxWanAttention, not uncached calls."""
+    import os
+    from unittest import mock
+    from flax import nnx
+    from maxdiffusion import wan_runtime_options
+    from maxdiffusion.models.attention_flax import FlaxWanAttention
+
+    heads, seq, dim_head = 4, 8, 16
+    shape = (2, heads, seq, dim_head)
+    query = jax.random.normal(jax.random.PRNGKey(16), shape, jnp.float32)
+    key = jax.random.normal(jax.random.PRNGKey(17), shape, jnp.float32)
+    value = jax.random.normal(jax.random.PRNGKey(18), shape, jnp.float32)
+    scale = 1.0 / math.sqrt(dim_head)
+
+    wan_runtime_options.reset()
+    with mock.patch.dict(os.environ, {"WAN_CROSS_ATTN_PRESCALE_KV": "0"}):
+      attn0 = FlaxWanAttention(
+          rngs=nnx.Rngs(0),
+          query_dim=heads * dim_head,
+          heads=heads,
+          dim_head=dim_head,
+          attention_kernel="dot_product",
+          is_self_attention=False,
+      )
+      self.assertFalse(attn0.cross_attn_prescale_kv)
+      out_env0 = _apply_attention_dot(
+          query=query,
+          key=key,
+          value=value,
+          dtype=jnp.float32,
+          heads=heads,
+          dim_head=dim_head,
+          scale=scale,
+          split_head_dim=True,
+          float32_qk_product=True,
+          use_memory_efficient_attention=False,
+      )
+    with mock.patch.dict(os.environ, {"WAN_CROSS_ATTN_PRESCALE_KV": "1"}):
+      attn1 = FlaxWanAttention(
+          rngs=nnx.Rngs(0),
+          query_dim=heads * dim_head,
+          heads=heads,
+          dim_head=dim_head,
+          attention_kernel="dot_product",
+          is_self_attention=False,
+      )
+      self.assertTrue(attn1.cross_attn_prescale_kv)
+      out_env1 = _apply_attention_dot(
+          query=query,
+          key=key,
+          value=value,
+          dtype=jnp.float32,
+          heads=heads,
+          dim_head=dim_head,
+          scale=scale,
+          split_head_dim=True,
+          float32_qk_product=True,
+          use_memory_efficient_attention=False,
+      )
+    np.testing.assert_allclose(np.asarray(out_env1), np.asarray(out_env0), rtol=1e-6, atol=1e-6)
+
+  def test_memory_efficient_attention_with_prescaled_k(self):
+    """When use_memory_efficient_attention=True, k_prescaled=True must not double-scale."""
+    heads, seq, dim_head = 4, 8, 16
+    shape = (2, heads, seq, dim_head)
+    query = jax.random.normal(jax.random.PRNGKey(19), shape, jnp.float32)
+    key = jax.random.normal(jax.random.PRNGKey(20), shape, jnp.float32)
+    value = jax.random.normal(jax.random.PRNGKey(21), shape, jnp.float32)
+    scale = 1.0 / math.sqrt(dim_head)
+
+    out_unscaled = _apply_attention_dot(
+        query=query,
+        key=key,
+        value=value,
+        dtype=jnp.float32,
+        heads=heads,
+        dim_head=dim_head,
+        scale=scale,
+        split_head_dim=True,
+        float32_qk_product=True,
+        use_memory_efficient_attention=True,
+        qk_prescaled=False,
+        k_prescaled=False,
+    )
+    out_prescaled = _apply_attention_dot(
+        query=query,
+        key=key * scale,
+        value=value,
+        dtype=jnp.float32,
+        heads=heads,
+        dim_head=dim_head,
+        scale=scale,
+        split_head_dim=True,
+        float32_qk_product=True,
+        use_memory_efficient_attention=True,
+        qk_prescaled=False,
+        k_prescaled=True,
+    )
+    np.testing.assert_allclose(np.asarray(out_prescaled), np.asarray(out_unscaled), rtol=1e-5, atol=1e-5)
 
 
 class DispatcherLayoutContractTest(unittest.TestCase):

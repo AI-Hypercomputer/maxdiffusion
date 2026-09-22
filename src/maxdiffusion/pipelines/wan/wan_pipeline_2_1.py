@@ -475,7 +475,7 @@ def run_inference_2_1(
             svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
 
-      elif do_cfg:
+      elif do_cfg and use_cfg_cache:
         latents_doubled = jnp.concatenate([latents] * 2)
         timestep = jnp.broadcast_to(t, bsz * 2)
         (
@@ -489,6 +489,23 @@ def run_inference_2_1(
             latents_doubled,
             timestep,
             prompt_embeds_combined,
+            guidance_scale=guidance_scale,
+            kv_cache=kv_cache,
+            rotary_emb=rotary_emb,
+            encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
+        )
+
+      elif do_cfg:
+        timestep = jnp.broadcast_to(t, bsz * 2)
+        noise_pred = transformer_forward_pass(
+            graphdef,
+            sharded_state,
+            rest_of_state,
+            latents,
+            timestep,
+            prompt_embeds_combined,
+            do_classifier_free_guidance=True,
             guidance_scale=guidance_scale,
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
