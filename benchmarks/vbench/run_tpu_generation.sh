@@ -57,6 +57,8 @@ WAN_OVERRIDES=(
   "use_batched_text_encoder|USE_BATCHED_TEXT_ENCODER|true"
   "flash_block_sizes|FLASH_BLOCK_SIZES|"
   "prompt_file|PROMPT_FILE|./benchmarks/vbench/prompts_110.txt"
+  # Matches the shipped config default; set USE_FUSED_ROPE_KERNEL=true to test it.
+  "use_fused_rope_kernel|USE_FUSED_ROPE_KERNEL|false"
 )
 
 usage() {
@@ -70,6 +72,11 @@ Common options:
   RUN_NAME           Generation run name (default: wan-inference; videos are saved to <RUN_NAME>/videos)
   PROMPT_FILE        Prompt file path (default: ./benchmarks/vbench/prompts_110.txt)
   CONFIG_FILE        WAN config file (default: src/maxdiffusion/configs/base_wan_27b.yml)
+  USE_FUSED_ROPE_KERNEL
+                     Enable the fused RMSNorm+RoPE Pallas producer (default: false).
+                     Only measured on TPU v6e and v7; refused on other platforms.
+  FUSED_ROPE_BLOCK_S / FUSED_ROPE_HEAD_BLOCK
+                     Optional sequence and head tile overrides for the fused RoPE Pallas producer.
   EXTERNAL_DISK      Mounted disk root for large local files (default: /mnt/disks/external_disk)
   HF_CACHE_ROOT      Hugging Face cache root (default: \$EXTERNAL_DISK/hf_cache)
   HF_HOME            Hugging Face home directory (default: \$HF_CACHE_ROOT)
@@ -247,6 +254,8 @@ emit_remote_args() {
     emit_remote_arg "${var}"
   done
   emit_remote_arg_if_explicit VENV_DIR
+  emit_remote_arg_if_explicit FUSED_ROPE_BLOCK_S
+  emit_remote_arg_if_explicit FUSED_ROPE_HEAD_BLOCK
   for item in "${WAN_OVERRIDES[@]}"; do
     IFS='|' read -r key var value <<< "${item}"
     emit_remote_arg "${var}"
@@ -375,6 +384,8 @@ run_generation() {
     IFS='|' read -r key var value <<< "${item}"
     args+=("${key}=${!var}")
   done
+  [[ -n "${FUSED_ROPE_BLOCK_S:-}" ]] && args+=("fused_rope_block_s=${FUSED_ROPE_BLOCK_S}")
+  [[ -n "${FUSED_ROPE_HEAD_BLOCK:-}" ]] && args+=("fused_rope_head_block=${FUSED_ROPE_HEAD_BLOCK}")
   args+=("seed=12345" "base_output_directory=gs://${GCS_BUCKET}")
   "${args[@]}"
 }

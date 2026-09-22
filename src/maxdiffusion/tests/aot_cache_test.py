@@ -166,8 +166,8 @@ class AotCacheTest(unittest.TestCase):
         "os.environ['JAX_PLATFORMS'] = 'cpu'",
         "import jax",
         "import jax.numpy as jnp",
-        "from flax import nnx",
         "from maxdiffusion import aot_cache",
+        "from flax import nnx",
         "",
         "class T(nnx.Module):",
         "  def __init__(self, rngs):",
@@ -380,6 +380,131 @@ class AotCacheTest(unittest.TestCase):
         # Generation saw the ephemeral install but no persistent dir (so nothing is saved).
         self.assertEqual(calls, [("", ephemeral)])
         self.assertEqual(out, None if fail else ["out.mp4"])
+
+  def test_wan_aot_metadata_includes_runtime_switches(self):
+    """Runtime optimization switches (via config or env) must change the Wan AOT metadata fingerprint."""
+    import os
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+
+    cfg = types.SimpleNamespace(attention="ulysses_ring_custom_fixed_m")
+    base_meta = generate_wan._build_wan_aot_metadata(cfg, self._mesh, "rev1")
+    base_fp = aot_cache._metadata_fingerprint(base_meta)
+
+    switches = [
+        ("WAN_ROPE_NORM_MODE", "wan_rope_norm_mode", "fused"),
+        ("WAN_FUSE_QK_PRESCALE", "wan_fuse_qk_prescale", "0"),
+        ("WAN_SPLASH_TRANSPOSE_OUT", "wan_splash_transpose_out", "1"),
+        ("WAN_CFG_BEFORE_UNPATCHIFY", "wan_cfg_before_unpatchify", "0"),
+        ("WAN_CROSS_ATTN_PRESCALE_KV", "wan_cross_attn_prescale_kv", "1"),
+    ]
+    for env_var, attr_name, new_val in switches:
+      with mock.patch.dict(os.environ, {env_var: new_val}):
+        switched_meta = generate_wan._build_wan_aot_metadata(cfg, self._mesh, "rev1")
+        switched_fp = aot_cache._metadata_fingerprint(switched_meta)
+        self.assertNotEqual(
+            base_fp,
+            switched_fp,
+            f"Changing {env_var} to {new_val} did not invalidate the Wan AOT fingerprint.",
+        )
+      cfg_explicit = types.SimpleNamespace(attention="ulysses_ring_custom_fixed_m", **{attr_name: new_val})
+      explicit_meta = generate_wan._build_wan_aot_metadata(cfg_explicit, self._mesh, "rev1")
+      self.assertNotEqual(
+          base_fp,
+          aot_cache._metadata_fingerprint(explicit_meta),
+          f"Setting config.{attr_name}={new_val} did not invalidate the Wan AOT fingerprint.",
+      )
+
+  def test_wan_runtime_options_on_graphdef_change_dynamic_signature(self):
+    """FlaxWanAttention stores wan_* runtime options on graphdef so _dynamic_signature changes per module config."""
+    from flax import nnx
+    from maxdiffusion.models.attention_flax import FlaxWanAttention
+
+    attn_exact = FlaxWanAttention(
+        rngs=nnx.Rngs(0),
+        query_dim=64,
+        heads=2,
+        dim_head=32,
+        attention_kernel="dot_product",
+        attention_config={"wan_rope_norm_mode": "exact", "wan_fuse_qk_prescale": True},
+    )
+    attn_fused = FlaxWanAttention(
+        rngs=nnx.Rngs(0),
+        query_dim=64,
+        heads=2,
+        dim_head=32,
+        attention_kernel="dot_product",
+        attention_config={"wan_rope_norm_mode": "fused", "wan_fuse_qk_prescale": True},
+    )
+    gd_exact, _ = nnx.split(attn_exact)
+    gd_fused, _ = nnx.split(attn_fused)
+    self.assertNotEqual(
+        aot_cache._dynamic_signature((gd_exact, self._a), {}),
+        aot_cache._dynamic_signature((gd_fused, self._a), {}),
+    )
+
+  def test_wan_aot_metadata_includes_resolved_rope_accum(self):
+    """WAN_ROPE_ACCUM changes the lowered graph's rounding and must key the executable.
+
+    This is deliberately NOT folded into the generic switches list above. The
+    fingerprint records the *resolved* mode, whose default is
+    platform-dependent ("dtype" on tpu7x and CPU, "f32" on v6e and other TPUs). Asserting on a
+    fixed literal would be vacuous on whichever platform already defaults to
+    it -- e.g. WAN_ROPE_ACCUM="f32" is a no-op on v6e. So the override is
+    chosen to be the opposite of whatever this platform resolves to.
+    """
+    import os
+    import types
+    from unittest import mock
+    from maxdiffusion import generate_wan
+    from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import resolve_rope_accum
+
+    cfg = types.SimpleNamespace(attention="ulysses_ring_custom_fixed_m")
+
+    with mock.patch.dict(os.environ, {}, clear=False):
+      os.environ.pop("WAN_ROPE_ACCUM", None)
+      default_mode = resolve_rope_accum(self._mesh)
+      base_meta = generate_wan._build_wan_aot_metadata(cfg, self._mesh, "rev1")
+
+    self.assertIn(default_mode, ("dtype", "f32"))
+    self.assertEqual(base_meta["wan_rope_accum"], default_mode)
+
+    other_mode = "f32" if default_mode == "dtype" else "dtype"
+    with mock.patch.dict(os.environ, {"WAN_ROPE_ACCUM": other_mode}):
+      switched_meta = generate_wan._build_wan_aot_metadata(cfg, self._mesh, "rev1")
+    self.assertEqual(switched_meta["wan_rope_accum"], other_mode)
+    self.assertNotEqual(
+        aot_cache._metadata_fingerprint(base_meta),
+        aot_cache._metadata_fingerprint(switched_meta),
+        f"WAN_ROPE_ACCUM={other_mode} (platform default {default_mode}) did not invalidate the Wan AOT fingerprint.",
+    )
+
+    # An explicit override equal to the platform default describes the same
+    # executable and must NOT force a recompile.
+    with mock.patch.dict(os.environ, {"WAN_ROPE_ACCUM": default_mode}):
+      same_meta = generate_wan._build_wan_aot_metadata(cfg, self._mesh, "rev1")
+    self.assertEqual(
+        aot_cache._metadata_fingerprint(base_meta),
+        aot_cache._metadata_fingerprint(same_meta),
+        f"WAN_ROPE_ACCUM={default_mode} matches the platform default and must reuse the cache.",
+    )
+
+  def test_resolve_rope_accum_rejects_unknown_mode(self):
+    """An unrecognised rope-accum mode must fail loudly rather than silently defaulting."""
+    import os
+    import types
+    from unittest import mock
+    from maxdiffusion import wan_runtime_options
+    from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import resolve_rope_accum
+
+    with mock.patch.dict(os.environ, {"WAN_ROPE_ACCUM": "fp32"}):
+      with self.assertRaises(ValueError):
+        wan_runtime_options.resolve_from_config(types.SimpleNamespace(), "wan_rope_accum")
+    with self.assertRaises(ValueError):
+      wan_runtime_options.resolve_from_config(types.SimpleNamespace(wan_rope_accum="fp32"), "wan_rope_accum")
+    with self.assertRaises(ValueError):
+      resolve_rope_accum(self._mesh, rope_accum="fp32")
 
   def test_plan_rejects_gcs_and_uses_the_real_revision_resolver(self):
     """gs:// raises whatever the revision; only an explicitly dirty/unversioned revision downgrades."""
