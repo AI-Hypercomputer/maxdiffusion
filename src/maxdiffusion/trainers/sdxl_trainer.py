@@ -259,7 +259,11 @@ class StableDiffusionXLTrainer(StableDiffusionTrainer):
         difference_in_ms = time_difference.total_seconds() * 1000
         max_logging.log(f"Step time {difference_in_ms}ms")
         record_scalar_metrics(
-            train_metric, last_step_completion - start_step_time, self.per_device_tflops, unet_learning_rate_scheduler(step)
+            train_metric,
+            last_step_completion - start_step_time,
+            self.per_device_tflops,
+            unet_learning_rate_scheduler(step),
+            total_weights=num_model_parameters,
         )
         if self.config.write_metrics:
           write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)

@@ -34,7 +34,7 @@ MaxDiffusion integrates with Google Cloud ML Diagnostics to provide real-time te
 
 ### Predefined Metrics
 
-MaxDiffusion automatically translates internal scalar keys to canonical `MetricType` enums expected by the Control Plane UI:
+MaxDiffusion automatically translates internal scalar keys to canonical metric names expected by the Control Plane UI:
 
 - **Loss** (`loss`): Training loss value per step (mapped from `learning/loss`).
 - **Learning Rate** (`learning_rate`): Current optimizer learning rate (mapped from `learning/current_learning_rate`).
@@ -80,12 +80,16 @@ Inside the trainer's `training_loop()`:
 ```python
 from maxdiffusion import train_utils
 
-# Record standard step metrics (and any custom metrics in train_metric["scalar"]):
+# Optional: Add any custom metrics directly to the scalar dictionary
+train_metric["scalar"]["custom/my_metric"] = my_metric_value
+
+# Record standard step metrics:
 train_utils.record_scalar_metrics(
     train_metric,
     step_time_delta,
     self.per_device_tflops,
     learning_rate_scheduler(step),
+    total_weights=num_model_parameters,
 )
 
 if self.config.write_metrics:
