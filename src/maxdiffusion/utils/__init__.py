@@ -102,6 +102,7 @@ from .state_dict_utils import (
     convert_state_dict_to_peft,
     convert_unet_state_dict_to_peft,
 )
+from . import wan_runtime_options
 
 logger = get_logger(__name__)
 

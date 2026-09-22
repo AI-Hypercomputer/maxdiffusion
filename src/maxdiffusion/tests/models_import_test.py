@@ -59,6 +59,7 @@ class ModelsImportTest(unittest.TestCase):
         pyconfig,
         tpu_utils,
         train_utils,
+        wan_runtime_options,
     )
 
     self.assertIsNotNone(aot_cache)
@@ -72,6 +73,7 @@ class ModelsImportTest(unittest.TestCase):
     self.assertIsNotNone(pyconfig)
     self.assertIsNotNone(tpu_utils)
     self.assertIsNotNone(train_utils)
+    self.assertIsNotNone(wan_runtime_options)
 
   def test_mldiagnostics_import_and_usage(self):
     try:
