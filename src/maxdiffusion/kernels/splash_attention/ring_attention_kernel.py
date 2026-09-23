@@ -19,6 +19,7 @@ import functools
 from typing import Any
 
 import jax
+from jax import ad_checkpoint
 from jax import lax
 from jax import tree_util
 import jax.numpy as jnp
@@ -354,6 +355,10 @@ def _ring_attention_fwd(
       ring_axis=ring_axis,
       rotate_segment_ids=rotate_segment_ids,
   )
+  if config is not None and config.residual_checkpoint_name is not None:
+    out = ad_checkpoint.checkpoint_name(out, name=config.residual_checkpoint_name)
+    if logsumexp is not None:
+      logsumexp = ad_checkpoint.checkpoint_name(logsumexp, name=config.residual_checkpoint_name)
   residuals = (q, k, v, segment_ids, sinks, out, logsumexp, dkv_mask_info)
   return out, residuals
 
@@ -431,6 +436,8 @@ def _ring_attention_custom(
       ring_axis=ring_axis,
       rotate_segment_ids=rotate_segment_ids,
   )
+  if config is not None and config.residual_checkpoint_name is not None:
+    out = ad_checkpoint.checkpoint_name(out, name=config.residual_checkpoint_name)
   return out
 
 
@@ -859,8 +866,9 @@ def _custom_ring_attention_forward(
     bidirectional: bool = False,
     use_fixed_m: bool = False,
     fixed_m_norms: tuple[jax.Array, jax.Array] | None = None,
-) -> jax.Array:
-  """Forward-only ring attention using the custom dense splash kernel.
+    save_residuals: bool = False,
+) -> jax.Array | tuple[jax.Array, jax.Array]:
+  """Ring attention using the custom dense splash kernel.
 
   Args:
     q: Query shard, shape `(num_q_heads, q_seq_len, head_dim_qk)`. Stationary
@@ -870,7 +878,6 @@ def _custom_ring_attention_forward(
       the ring axis.
     v: Value shard, shape `(num_kv_heads, kv_seq_len, head_dim_v)`. Rotated.
     block_sizes: Custom-kernel block sizes (block_q / block_kv / block_kv_compute).
-    bkv_compute_in: Inner VPU register-tiling step for the custom kernel.
     orig_q_seq_len: Un-padded local query length (grid bound).
     orig_kv_seq_len: Un-padded local key/value length (grid bound). Assumed equal
       across all shards (uniform per-shard padding), matching the
@@ -888,9 +895,12 @@ def _custom_ring_attention_forward(
     perm: Explicit `ppermute` permutation. Defaults to a full-axis +1 rotation.
       For the hybrid split, pass a perm that rotates K/V *within each ring
       sub-group only* (built by the caller from the U x R factorization).
+    save_residuals: If True, returns `(out, lse)` where `lse` is the global
+      logsumexp of shape `(num_q_heads, orig_q_seq_len)`.
 
   Returns:
-    Normalized attention output, shape `(num_q_heads, q_seq_len, head_dim_v)`.
+    Normalized attention output of shape `(num_q_heads, q_seq_len, head_dim_v)`,
+    or `(out, lse)` if `save_residuals=True`.
   """
   axis_size = lax.axis_size(ring_axis)
   if bidirectional:
@@ -901,6 +911,8 @@ def _custom_ring_attention_forward(
       )
     if use_fixed_m:
       raise NotImplementedError("fixed-m is not yet supported on the bidirectional ring path.")
+    if save_residuals:
+      raise NotImplementedError("save_residuals is not yet supported on the bidirectional ring path.")
     return _custom_bidirectional_ring_forward(
         q,
         k,
@@ -922,6 +934,7 @@ def _custom_ring_attention_forward(
   shift = partial(lax.ppermute, axis_name=ring_axis, perm=perm)
 
   exp_fn = jnp.exp2 if use_base2_exp else jnp.exp
+  log_fn = jnp.log2 if use_base2_exp else jnp.log
 
   num_q_heads = q.shape[0]
   head_dim_v = v.shape[-1]
@@ -936,9 +949,10 @@ def _custom_ring_attention_forward(
     # invariant to the kernel's m convention, so overshoot cancels exactly.
     # The K-shard norms rotate WITH K/V (a (heads,)-sized ppermute) instead of
     # being re-reduced per hop, which would stall the kernel's scalar prefetch.
+    if save_residuals:
+      raise NotImplementedError("save_residuals is not supported with use_fixed_m.")
     if fixed_m_norms is None:
       raise ValueError("use_fixed_m on the ring path requires fixed_m_norms=(qn_max, mk_h).")
-    log_fn = jnp.log2 if use_base2_exp else jnp.log
     qn_max, mk_h_init = fixed_m_norms
     tiny = jnp.finfo(jnp.float32).tiny
     # Finite (not -inf) init: the first merge computes exp(init - lse_new) = 0.0
@@ -1128,7 +1142,213 @@ def _custom_ring_attention_forward(
 
   l_inv = jnp.where(l_final == 0.0, 0.0, 1.0 / l_final)
   out = (o_final * l_inv[..., None]).astype(q.dtype)
+  if save_residuals:
+    lse = m_final + log_fn(jnp.maximum(l_final, jnp.finfo(jnp.float32).tiny))
+    lse = jnp.where(l_final == 0.0, mask_value, lse)
+    return out, lse
   return out
+
+
+def _custom_ring_attention_backward(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    out: jax.Array,
+    lse: jax.Array,
+    do: jax.Array,
+    *,
+    block_sizes: "custom_splash._BlockSizes",
+    orig_q_seq_len: int,
+    orig_kv_seq_len: int,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    ring_axis: str,
+    ring_size: int | None = None,
+    perm: list[tuple[int, int]] | tuple[tuple[int, int], ...] | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+  """Backward ring attention using the custom dense splash backward kernel."""
+  axis_size = lax.axis_size(ring_axis)
+  if ring_size is None:
+    ring_size = axis_size
+  if perm is None:
+    perm = [(i, (i + 1) % axis_size) for i in range(axis_size)]
+
+  shift = partial(lax.ppermute, axis_name=ring_axis, perm=perm)
+
+  di_vec = jnp.sum(out.astype(jnp.float32) * do.astype(jnp.float32), axis=-1)
+  di_expanded = jnp.broadcast_to(di_vec[:, None, :], (q.shape[0], custom_splash.NUM_SUBLANES, orig_q_seq_len))
+  out_swapped = jnp.swapaxes(out, 1, 2)
+  do_swapped = jnp.swapaxes(do, 1, 2)
+  lse_expanded = jnp.broadcast_to(lse[:, None, :], (q.shape[0], custom_splash.NUM_SUBLANES, orig_q_seq_len))
+
+  dq_accum = jnp.zeros_like(q, dtype=jnp.float32)
+  dk_accum = jnp.zeros_like(k, dtype=jnp.float32)
+  dv_accum = jnp.zeros_like(v, dtype=jnp.float32)
+
+  k_current, v_current = k, v
+  for hop in range(ring_size):
+    if hop != ring_size - 1:
+      k_next = shift(k_current)
+      v_next = shift(v_current)
+
+    dq_i, dk_i, dv_i = custom_splash._splash_attention_backward(  # pylint: disable=protected-access
+        q,
+        k_current,
+        v_current,
+        out_swapped,
+        lse_expanded,
+        do_swapped,
+        block_sizes,
+        q_seq_len=orig_q_seq_len,
+        kv_seq_len=orig_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
+        di=di_expanded,
+    )
+    dq_accum = dq_accum + dq_i.astype(jnp.float32)
+    dk_accum = dk_accum + dk_i.astype(jnp.float32)
+    dv_accum = dv_accum + dv_i.astype(jnp.float32)
+
+    if ring_size > 1:
+      dk_accum = shift(dk_accum)
+      dv_accum = shift(dv_accum)
+    if hop != ring_size - 1:
+      k_current, v_current = k_next, v_next
+
+  return dq_accum.astype(q.dtype), dk_accum.astype(k.dtype), dv_accum.astype(v.dtype)
+
+
+@partial(
+    jax.custom_vjp,
+    nondiff_argnames=(
+        "block_sizes",
+        "orig_q_seq_len",
+        "orig_kv_seq_len",
+        "use_base2_exp",
+        "use_experimental_scheduler",
+        "vmem_limit_bytes",
+        "mask_value",
+        "ring_axis",
+        "ring_size",
+        "perm",
+        "residual_checkpoint_name",
+    ),
+)
+def _custom_ring_attention_custom(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    block_sizes: "custom_splash._BlockSizes",
+    orig_q_seq_len: int,
+    orig_kv_seq_len: int,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    mask_value: float,
+    ring_axis: str,
+    ring_size: int | None,
+    perm: tuple[tuple[int, int], ...] | None,
+    residual_checkpoint_name: str | None = None,
+) -> jax.Array:
+  out = _custom_ring_attention_forward(
+      q,
+      k,
+      v,
+      block_sizes=block_sizes,
+      orig_q_seq_len=orig_q_seq_len,
+      orig_kv_seq_len=orig_kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      mask_value=mask_value,
+      ring_axis=ring_axis,
+      ring_size=ring_size,
+      perm=list(perm) if perm is not None else None,
+      save_residuals=False,
+  )
+  if residual_checkpoint_name is not None:
+    out = ad_checkpoint.checkpoint_name(out, name=residual_checkpoint_name)
+  return out
+
+
+def _custom_ring_attention_fwd(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    block_sizes: "custom_splash._BlockSizes",
+    orig_q_seq_len: int,
+    orig_kv_seq_len: int,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    mask_value: float,
+    ring_axis: str,
+    ring_size: int | None,
+    perm: tuple[tuple[int, int], ...] | None,
+    residual_checkpoint_name: str | None = None,
+):
+  out, lse = _custom_ring_attention_forward(
+      q,
+      k,
+      v,
+      block_sizes=block_sizes,
+      orig_q_seq_len=orig_q_seq_len,
+      orig_kv_seq_len=orig_kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      mask_value=mask_value,
+      ring_axis=ring_axis,
+      ring_size=ring_size,
+      perm=list(perm) if perm is not None else None,
+      save_residuals=True,
+  )
+  if residual_checkpoint_name is not None:
+    out = ad_checkpoint.checkpoint_name(out, name=residual_checkpoint_name)
+    lse = ad_checkpoint.checkpoint_name(lse, name=residual_checkpoint_name)
+  return out, (q, k, v, out, lse)
+
+
+def _custom_ring_attention_bwd(
+    block_sizes: "custom_splash._BlockSizes",
+    orig_q_seq_len: int,
+    orig_kv_seq_len: int,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    mask_value: float,
+    ring_axis: str,
+    ring_size: int | None,
+    perm: tuple[tuple[int, int], ...] | None,
+    residual_checkpoint_name: str | None,
+    residuals,
+    do: jax.Array,
+):
+  del mask_value, residual_checkpoint_name
+  q, k, v, out, lse = residuals
+  dq, dk, dv = _custom_ring_attention_backward(
+      q,
+      k,
+      v,
+      out,
+      lse,
+      do,
+      block_sizes=block_sizes,
+      orig_q_seq_len=orig_q_seq_len,
+      orig_kv_seq_len=orig_kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      ring_axis=ring_axis,
+      ring_size=ring_size,
+      perm=list(perm) if perm is not None else None,
+  )
+  return dq, dk, dv
+
+
+_custom_ring_attention_custom.defvjp(_custom_ring_attention_fwd, _custom_ring_attention_bwd)
 
 
 def make_custom_ring_attention(
@@ -1146,8 +1366,9 @@ def make_custom_ring_attention(
     bidirectional: bool = False,
     use_fixed_m: bool = False,
     fixed_m_norms: tuple[jax.Array, jax.Array] | None = None,
+    residual_checkpoint_name: str | None = None,
 ):
-  """Builds a forward-only ring-attention callable around the custom kernel.
+  """Builds a ring-attention callable around the custom kernel (supports forward & backward).
 
   The returned function takes a single (un-batched) `(q, k, v)` triple of shape
   `(num_heads, seq, head_dim)` and is meant to be `jax.vmap`-ped over the batch
@@ -1162,9 +1383,29 @@ def make_custom_ring_attention(
   one hop at a time) for a NON-wrapping ring axis, avoiding the diameter-length
   wrap hop. Requires `perm=None` and the full real ring axis (no sub-group).
   """
+  perm_tuple = tuple(tuple(x) for x in perm) if perm is not None else None
 
   def _ring(q, k, v):
-    return _custom_ring_attention_forward(
+    if use_fixed_m or bidirectional:
+      return _custom_ring_attention_forward(
+          q,
+          k,
+          v,
+          block_sizes=block_sizes,
+          orig_q_seq_len=orig_q_seq_len,
+          orig_kv_seq_len=orig_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
+          mask_value=mask_value,
+          ring_axis=ring_axis,
+          ring_size=ring_size,
+          perm=perm,
+          bidirectional=bidirectional,
+          use_fixed_m=use_fixed_m,
+          fixed_m_norms=fixed_m_norms,
+      )
+    return _custom_ring_attention_custom(
         q,
         k,
         v,
@@ -1177,10 +1418,8 @@ def make_custom_ring_attention(
         mask_value=mask_value,
         ring_axis=ring_axis,
         ring_size=ring_size,
-        perm=perm,
-        bidirectional=bidirectional,
-        use_fixed_m=use_fixed_m,
-        fixed_m_norms=fixed_m_norms,
+        perm=perm_tuple,
+        residual_checkpoint_name=residual_checkpoint_name,
     )
 
   return _ring
