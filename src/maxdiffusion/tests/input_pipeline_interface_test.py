@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pathlib
 import shutil
 import subprocess
+import tempfile
 import unittest
 import pytest
 from absl.testing import absltest
@@ -75,7 +76,8 @@ class InputPipelineInterface(unittest.TestCase):
   def test_make_dreambooth_train_iterator(self):
     instance_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/instance_class"
     class_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/class_class"
-    local_dir = "/tmp/"
+    local_dir = tempfile.mkdtemp()
+    self.addCleanup(shutil.rmtree, local_dir, ignore_errors=True)
     instance_class_local_dir = max_utils.download_blobs(instance_class_gcs_dir, local_dir)
     class_class_local_dir = max_utils.download_blobs(class_class_gcs_dir, local_dir)
 
