@@ -314,7 +314,9 @@ def download_blobs(source_gcs_folder, local_destination):
     if len(file_split[-1]) <= 0:
       continue
     download_to_filename = os.path.join(directory, file_split[-1])
-    if not os.path.isfile(download_to_filename):
+    if not os.path.isfile(download_to_filename) or (
+        blob.size is not None and os.path.getsize(download_to_filename) != blob.size
+    ):
       blob.download_to_filename(download_to_filename)
   return os.path.join(local_destination, prefix_name)
 
@@ -819,6 +821,16 @@ class CustomFlashBlockSizes:
   block_kv: int | None = None
   block_kv_compute: int | None = None
   block_kv_compute_in: int | None = None
+  block_q_dkv: int | None = None
+  block_kv_dkv: int | None = None
+  block_kv_dkv_compute: int | None = None
+  block_kv_dkv_compute_in: int | None = None
+  block_q_dq: int | None = None
+  block_kv_dq: int | None = None
+  block_kv_dq_compute: int | None = None
+  block_kv_dq_compute_in: int | None = None
+  use_fused_bwd_kernel: bool = True
+  dq_reduction_steps: int | None = 3
   heads_per_tile: int | None = None
   vmem_limit_bytes: int | None = None
 
@@ -877,17 +889,26 @@ def get_flash_block_sizes(config):
           block_q=user_block_sizes.get("block_q"),
           block_kv=user_block_sizes.get("block_kv"),
           block_kv_compute=user_block_sizes.get("block_kv_compute"),
-          block_kv_compute_in=user_block_sizes.get("block_kv_compute_in"),
+          block_kv_compute_in=user_block_sizes.get("block_kv_compute_in", 256),
+          block_q_dkv=user_block_sizes.get("block_q_dkv", user_block_sizes.get("block_q")),
+          block_kv_dkv=user_block_sizes.get("block_kv_dkv", user_block_sizes.get("block_kv")),
+          block_kv_dkv_compute=user_block_sizes.get("block_kv_dkv_compute", user_block_sizes.get("block_kv_compute")),
+          block_kv_dkv_compute_in=user_block_sizes.get("block_kv_dkv_compute_in", user_block_sizes.get("block_kv_compute_in", 256)),
+          block_q_dq=user_block_sizes.get("block_q_dq", user_block_sizes.get("block_q")),
+          block_kv_dq=user_block_sizes.get("block_kv_dq", user_block_sizes.get("block_kv")),
+          block_kv_dq_compute=user_block_sizes.get("block_kv_dq_compute", user_block_sizes.get("block_kv_compute")),
+          block_kv_dq_compute_in=user_block_sizes.get("block_kv_dq_compute_in", user_block_sizes.get("block_kv_compute_in", 256)),
+          use_fused_bwd_kernel=bool(user_block_sizes.get("use_fused_bwd_kernel", True)),
+          dq_reduction_steps=user_block_sizes.get("dq_reduction_steps", 3),
           heads_per_tile=user_block_sizes.get("heads_per_tile"),
           vmem_limit_bytes=user_block_sizes.get("vmem_limit_bytes"),
       )
     if attention_is_tokamax:
       max_logging.log(
-          "Tokamax kernel specified, Note: Tokamax only supports fused backward kernel."
-          "Hence following flash block properties specified will be ignored:"
-          f"block_q: {user_block_sizes['block_q']},"
-          f"block_q_dq: {user_block_sizes.get('block_q_dq')},"
-          f"block_kv_dq: {user_block_sizes.get('block_kv_dq')},"
+          "Tokamax kernel specified, Note: Tokamax only supports fused backward kernel. "
+          "Hence following flash block properties specified will be ignored: "
+          f"block_q_dq: {user_block_sizes.get('block_q_dq')}, "
+          f"block_kv_dq: {user_block_sizes.get('block_kv_dq')}, "
           f"use_fused_bwd_kernel: {user_block_sizes.get('use_fused_bwd_kernel')}"
       )
     use_fused_bwd = True if attention_is_tokamax else bool(user_block_sizes.get("use_fused_bwd_kernel", False))
