@@ -72,16 +72,16 @@ INTERNAL_ULYSSES_AXIS = "ulysses"
 
 def _coerce_tokamax_block_sizes(block_sizes):
   # Tokamax requires fused bwd; convert if needed.
-  if getattr(block_sizes, "use_fused_bwd_kernel", False):
+  if isinstance(block_sizes, splash_attention_kernel.BlockSizes) and getattr(block_sizes, "use_fused_bwd_kernel", False):
     return block_sizes
 
   # Fall back if some fields are missing.
   bq = block_sizes.block_q
-  bkv = getattr(block_sizes, "block_kv", bq)
-  bkv_compute = getattr(block_sizes, "block_kv_compute", bkv)
-  bq_dkv = getattr(block_sizes, "block_q_dkv", bq)
-  bkv_dkv = getattr(block_sizes, "block_kv_dkv", bkv)
-  bkv_dkv_compute = getattr(block_sizes, "block_kv_dkv_compute", bkv_compute)
+  bkv = getattr(block_sizes, "block_kv", None) or bq
+  bkv_compute = getattr(block_sizes, "block_kv_compute", None) or bkv
+  bq_dkv = getattr(block_sizes, "block_q_dkv", None) or bq
+  bkv_dkv = getattr(block_sizes, "block_kv_dkv", None) or bkv
+  bkv_dkv_compute = getattr(block_sizes, "block_kv_dkv_compute", None) or bkv_compute
   return splash_attention_kernel.BlockSizes(
       block_q=bq,
       block_kv=bkv,
@@ -381,7 +381,7 @@ def _extract_custom_block_sizes(flash_block_sizes):
   bq = 4864
   bkv = 1024
   bkv_compute = 1024
-  bkv_compute_in = 1024
+  bkv_compute_in = 256
   heads_per_tile = 1
   vmem_limit_bytes = None
   if flash_block_sizes is not None:
@@ -407,6 +407,35 @@ def _extract_custom_block_sizes(flash_block_sizes):
     heads_per_tile = 1
   bkv_compute_in = min(bkv_compute, bkv_compute_in)
   return bq, bkv, bkv_compute, bkv_compute_in, heads_per_tile, vmem_limit_bytes
+
+
+def _build_custom_splash_block_sizes(flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in):
+  """Constructs custom_splash._BlockSizes preserving backward tile settings."""
+  def _get(attr, default=None):
+    if flash_block_sizes is None:
+      return default
+    if isinstance(flash_block_sizes, dict):
+      val = flash_block_sizes.get(attr, None)
+    else:
+      val = getattr(flash_block_sizes, attr, None)
+    return default if val is None else val
+
+  return custom_splash._BlockSizes(
+      block_q=bq,
+      block_kv=bkv,
+      block_kv_compute=bkv_compute,
+      block_kv_compute_in=bkv_compute_in,
+      block_q_dkv=_get("block_q_dkv", bq),
+      block_kv_dkv=_get("block_kv_dkv", bkv),
+      block_kv_dkv_compute=_get("block_kv_dkv_compute", bkv_compute),
+      block_kv_dkv_compute_in=_get("block_kv_dkv_compute_in", bkv_compute_in),
+      block_q_dq=_get("block_q_dq", bq),
+      block_kv_dq=_get("block_kv_dq", bkv),
+      block_kv_dq_compute=_get("block_kv_dq_compute", bkv_compute),
+      block_kv_dq_compute_in=_get("block_kv_dq_compute_in", bkv_compute_in),
+      use_fused_bwd_kernel=bool(_get("use_fused_bwd_kernel", True)),
+      dq_reduction_steps=_get("dq_reduction_steps", 3),
+  )
 
 
 def _build_padding_segment_ids(
@@ -644,11 +673,8 @@ def _tpu_flash_attention(
       key_local, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
       value_local, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-      bsizes = custom_splash._BlockSizes(
-          block_q=bq,
-          block_kv=bkv,
-          block_kv_compute=bkv_compute,
-          block_kv_compute_in=bkv_compute_in,
+      bsizes = _build_custom_splash_block_sizes(
+          flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in
       )
       ring_kernel = tokamax_ring_attention_kernel.make_custom_ring_attention(
           block_sizes=bsizes,
@@ -658,6 +684,7 @@ def _tpu_flash_attention(
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
           ring_axis="context",
+          residual_checkpoint_name=residual_checkpoint_name,
       )
       vmapped_ring = jax.vmap(ring_kernel, in_axes=(0, 0, 0))
       attention_output = vmapped_ring(query_local, key_local, value_local)
@@ -953,11 +980,8 @@ def _ulysses_attention(
         fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
         mk_arr = jnp.stack([mk_h, fixed_ok])  # (2, local_heads)
 
-      bsizes = custom_splash._BlockSizes(
-          block_q=bq,
-          block_kv=bkv,
-          block_kv_compute=bkv_compute,
-          block_kv_compute_in=bkv_compute_in,
+      bsizes = _build_custom_splash_block_sizes(
+          flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in
       )
 
       splash_kernel = custom_splash.make_splash_mha(
@@ -969,6 +993,7 @@ def _ulysses_attention(
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
           use_fixed_m=use_fixed_m,
+          residual_checkpoint_name=residual_checkpoint_name,
       )
 
       if use_fixed_m:
@@ -1466,11 +1491,8 @@ def _ulysses_ring_custom_attention(
       fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
       mk_arr = jnp.stack([mk_h, fixed_ok])  # (2, local_heads)
 
-    bsizes = custom_splash._BlockSizes(
-        block_q=bq,
-        block_kv=bkv,
-        block_kv_compute=bkv_compute,
-        block_kv_compute_in=bkv_compute_in,
+    bsizes = _build_custom_splash_block_sizes(
+        flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in
     )
     if num_ring_shards == 1:
       # (2a) R=1: the ring is trivial (no rotation) -> use the lighter dedicated
@@ -1486,6 +1508,7 @@ def _ulysses_ring_custom_attention(
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
           use_fixed_m=use_fixed_m,
+          residual_checkpoint_name=residual_checkpoint_name,
       )
       if use_fixed_m:
         attention_output = jnp.swapaxes(
@@ -1511,6 +1534,7 @@ def _ulysses_ring_custom_attention(
           bidirectional=bidirectional,
           use_fixed_m=use_fixed_m,
           fixed_m_norms=fixed_m_norms,
+          residual_checkpoint_name=residual_checkpoint_name,
       )
       attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
