@@ -1,0 +1,211 @@
+[
+  {
+    "prompt_en": "Heavily slamming a glass cup on the table, it let out a crisp \"crack!\" sound with a tremor, as if faint cracks were whispering.",
+    "prompt_vision": "A glass cup being slammed forcefully onto a table, causing visible vibrations and faint cracks appearing on its surface.",
+    "prompt_audio": "A crisp, sharp 'crack!' sound followed by faint, whispering crackling noises.",
+    "dimension": [
+      "first_dnsmos",
+      "first_nisqa",
+      "first_audiobox",
+      "second_viclip",
+      "second_clap",
+      "second_desync",
+      "second_ese",
+      "second_lsa",
+      "second_imagebind",
+      "third_alignment",
+      "third_artistry",
+      "third_audio_reality",
+      "third_expressiveness",
+      "third_visual_reality",
+      "fourth_qa_audio",
+      "fourth_qa_vision",
+      "global_fad",
+      "global_fvd",
+      "global_kvd"
+    ],
+    "auxiliary_info_audio": [
+      "Does the audio include a crisp 'crack!' sound at the moment the glass cup is slammed on the table?",
+      "Is there a tremor sound accompanying the 'crack!' when the glass cup is slammed?",
+      "Can faint cracking sounds be heard after the initial 'crack!' sound, suggesting whispering cracks?",
+      "Is the timing of the 'crack!' sound synchronized with the visual action of the glass cup being slammed on the table?",
+      "Are the faint cracking sounds audible immediately following the initial 'crack!' sound, indicating a progression of sound events?"
+    ],
+    "auxiliary_info_vision": [
+      "Is there a visible glass cup on the table?",
+      "Are there faint cracks visible on the glass cup?",
+      "Is the glass cup positioned as if it has been heavily slammed onto the table?",
+      "Does the table show signs of a tremor, such as slight movement or vibration?",
+      "Is the lighting such that it highlights the cracks on the glass cup?"
+    ],
+    "vabench_idx": "slamming glass cup creates crackling sound",
+    "vabench_bundle": "easy_Immediate_Event_Synchronization"
+  },
+  {
+    "prompt_en": "The mouse poked its head out of a hole in the wall, let out a tiny \"squeak!\" and instantly retreated into the darkness.",
+    "prompt_vision": "A mouse poking its head out of a hole in the wall and quickly retreating into the darkness.",
+    "prompt_audio": "A tiny, high-pitched squeak.",
+    "dimension": [
+      "first_dnsmos",
+      "first_nisqa",
+      "first_audiobox",
+      "second_viclip",
+      "second_clap",
+      "second_desync",
+      "second_ese",
+      "second_lsa",
+      "second_imagebind",
+      "third_alignment",
+      "third_artistry",
+      "third_audio_reality",
+      "third_expressiveness",
+      "third_visual_reality",
+      "fourth_qa_audio",
+      "fourth_qa_vision",
+      "global_fad",
+      "global_fvd",
+      "global_kvd"
+    ],
+    "auxiliary_info_audio": [
+      "Does the audio include a tiny 'squeak' sound when the mouse pokes its head out of the hole?",
+      "Is the 'squeak' sound appropriately high-pitched to match the expected vocalization of a mouse?",
+      "Does the audio remain quiet or subdued after the mouse retreats into the darkness?"
+    ],
+    "auxiliary_info_vision": [
+      "Is there a visible mouse poking its head out of a hole in the wall?",
+      "Does the mouse appear to be retreating back into the hole?",
+      "Is the hole located on a wall surface?",
+      "Is the mouse's head the only part visible outside the hole?",
+      "Is the mouse's action of retreating depicted as quick or instantaneous?"
+    ],
+    "vabench_idx": "mouse squeaks and hides",
+    "vabench_bundle": "easy_bioacoustics"
+  },
+  {
+    "prompt_en": "A child playing hide-and-seek covers his eyes and loudly counts from one to ten: \"One... two... three... ...ten! I'm coming to get you!\"",
+    "prompt_vision": "A child covering his eyes while playing hide-and-seek",
+    "prompt_audio": "Loud counting from one to ten: 'One... two... three... ...ten! I'm coming to get you!'",
+    "dimension": [
+      "first_dnsmos",
+      "first_nisqa",
+      "first_audiobox",
+      "second_viclip",
+      "second_clap",
+      "second_desync",
+      "second_ese",
+      "second_lsa",
+      "second_imagebind",
+      "third_alignment",
+      "third_artistry",
+      "third_audio_reality",
+      "third_expressiveness",
+      "third_visual_reality",
+      "fourth_qa_audio",
+      "fourth_qa_vision",
+      "global_fad",
+      "global_fvd",
+      "global_kvd"
+    ],
+    "auxiliary_info_audio": [
+      "Is the child's counting audible and clear from one to ten in the audio?",
+      "Does the audio include the child's voice saying 'I'm coming to get you!' after counting to ten?",
+      "Is the child's voice loud and distinct during the counting sequence?",
+      "Can the audio capture the child's voice with consistent volume and energy throughout the counting?",
+      "Are there no unexpected background noises or distortions during the child's counting?"
+    ],
+    "auxiliary_info_vision": [
+      "Is the child covering their eyes with their hands or arms?",
+      "Does the child appear to be stationary while counting?",
+      "Are the child's lips visibly moving as they count aloud?",
+      "Is the child's facial expression consistent with speaking or shouting?",
+      "Is the child wearing clothing appropriate for their age?"
+    ],
+    "vabench_idx": "child playing hide-and-seek counts loudly",
+    "vabench_bundle": "easy_human_language"
+  },
+  {
+    "prompt_en": "A trumpet sounded a loud, brilliant military fanfare with tremendous penetrating power.",
+    "prompt_vision": "A trumpet being played vigorously, likely by a uniformed musician, in a setting suggesting military ceremony.",
+    "prompt_audio": "Loud, brilliant military fanfare played on a trumpet with tremendous penetrating power.",
+    "dimension": [
+      "first_dnsmos",
+      "first_nisqa",
+      "first_audiobox",
+      "second_viclip",
+      "second_clap",
+      "second_desync",
+      "second_ese",
+      "second_lsa",
+      "second_imagebind",
+      "third_alignment",
+      "third_artistry",
+      "third_audio_reality",
+      "third_expressiveness",
+      "third_visual_reality",
+      "fourth_qa_audio",
+      "fourth_qa_vision",
+      "global_fad",
+      "global_fvd",
+      "global_kvd"
+    ],
+    "auxiliary_info_audio": [
+      "Does the audio contain a loud trumpet sound during the fanfare?",
+      "Is the trumpet sound characterized by a brilliant and clear timbre?",
+      "Does the trumpet sound have tremendous penetrating power, making it prominent in the audio?",
+      "Is the pitch of the trumpet sound consistent with a typical military fanfare?",
+      "Are there no other prominent sounds that distract from the trumpet fanfare?",
+      "Is the trumpet sound positioned centrally in the sound field, indicating its importance?",
+      "Does the audio maintain a consistent volume level throughout the fanfare, emphasizing its loudness?"
+    ],
+    "auxiliary_info_vision": [
+      "Is there a trumpet visible in the image or video?",
+      "Does the trumpet appear to be in a position that suggests it is being played?",
+      "Can the trumpet be seen emitting sound waves or vibrations to indicate loudness?",
+      "Are there visual elements suggesting a military theme, such as uniforms or insignia?",
+      "Is the trumpet depicted with a shiny, polished surface to imply brilliance?",
+      "Are there visual cues indicating the fanfare's penetrating power, such as people reacting to the sound?"
+    ],
+    "vabench_idx": "loud trumpet fanfare",
+    "vabench_bundle": "easy_music"
+  },
+  {
+    "prompt_en": "Shaky footage shot on a windy mountain top. Strong, continuous wind sound with a howling sensation; the wind whistling through rock crevices producing a \"wooo\" sound.",
+    "prompt_vision": "Shaky footage shot on a windy mountain top.",
+    "prompt_audio": "Strong, continuous wind sound with a howling sensation; wind whistling through rock crevices producing a 'wooo' sound.",
+    "dimension": [
+      "first_dnsmos",
+      "first_nisqa",
+      "first_audiobox",
+      "second_viclip",
+      "second_clap",
+      "second_desync",
+      "second_ese",
+      "second_lsa",
+      "second_imagebind",
+      "third_alignment",
+      "third_artistry",
+      "third_audio_reality",
+      "third_expressiveness",
+      "third_visual_reality",
+      "fourth_qa_audio",
+      "fourth_qa_vision",
+      "global_fad",
+      "global_fvd",
+      "global_kvd"
+    ],
+    "auxiliary_info_audio": [
+      "Is there a strong, continuous wind sound present throughout the footage?",
+      "Can the wind sound be heard whistling through rock crevices, producing a 'wooo' sound?",
+      "Are the wind sounds consistent with the visual depiction of a windy mountain top?"
+    ],
+    "auxiliary_info_vision": [
+      "Is the footage visually shaky, indicating instability in the camera movement?",
+      "Are there visible signs of strong wind, such as moving grass, swaying trees, or dust being blown?",
+      "Can the mountain top be seen in the footage, with rocky terrain or elevated landscape visible?",
+      "Are there objects or elements in the scene visibly affected by the wind, such as clothing or loose items fluttering?",
+      "Is the lighting consistent with an outdoor mountain environment, without artificial indoor lighting?"
+    ],
+    "vabench_idx": "wind howling through rocks",
+    "vabench_bundle": "easy_natural_environment"
+  }
+]
