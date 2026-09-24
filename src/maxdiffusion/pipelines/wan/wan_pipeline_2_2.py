@@ -19,6 +19,7 @@ from .wan_pipeline import (
     transformer_forward_pass_cfg_cache,
     init_magcache,
     magcache_step,
+    validate_svg_cache_compatibility,
 )
 from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
@@ -193,6 +194,8 @@ class WanPipeline2_2(WanPipeline):
           "SenCache requires classifier-free guidance to be enabled for both transformer phases."
       )
 
+    self._validate_svg_cache_compatibility(use_cfg_cache=use_cfg_cache, use_magcache=use_magcache)
+
     trace = {}
     t_cond_start = time.perf_counter()
 
@@ -323,6 +326,8 @@ def run_inference_2_2(
   except Exception:
     pass
 
+  validate_svg_cache_compatibility(config, use_cfg_cache, use_magcache, low_noise_graphdef, high_noise_graphdef)
+
   if use_cfg_cache and do_classifier_free_guidance and bsz % data_shards != 0:
     max_logging.log(
         f"Warning: Disabling CFG cache because batch size {bsz} is not divisible by data shards {data_shards}. This often happens with data_parallelism > 1 and per_device_batch_size = 1."
@@ -451,6 +456,7 @@ def run_inference_2_2(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
+          svg_step_index=jnp.asarray(step, dtype=jnp.int32),
       )
 
       if skip_blocks:
@@ -554,6 +560,7 @@ def run_inference_2_2(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
         ref_noise_pred = noise_pred
         ref_latent = latents
@@ -592,6 +599,7 @@ def run_inference_2_2(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
         return out
 
@@ -716,6 +724,7 @@ def run_inference_2_2(
             kv_cache=kv_cache_cond,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask_cond,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
       else:
         # ── Full CFG step: doubled batch, store raw cond/uncond for cache ──
@@ -736,6 +745,7 @@ def run_inference_2_2(
             kv_cache=kv_cache,
             rotary_emb=rotary_emb,
             encoder_attention_mask=encoder_attention_mask,
+            svg_step_index=jnp.asarray(step, dtype=jnp.int32),
         )
 
       latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
@@ -768,6 +778,7 @@ def run_inference_2_2(
         r_emb,
         mask_high,
         _,
+        step_idx,
     ) = operands
     return transformer_forward_pass(
         high_noise_graphdef,
@@ -781,6 +792,7 @@ def run_inference_2_2(
         kv_cache=kv_cache_high,
         rotary_emb=r_emb,
         encoder_attention_mask=mask_high,
+        svg_step_index=step_idx,
     )
 
   def low_noise_branch(operands):
@@ -793,6 +805,7 @@ def run_inference_2_2(
         r_emb,
         _,
         mask_low,
+        step_idx,
     ) = operands
     return transformer_forward_pass(
         low_noise_graphdef,
@@ -806,6 +819,7 @@ def run_inference_2_2(
         kv_cache=kv_cache_low,
         rotary_emb=r_emb,
         encoder_attention_mask=mask_low,
+        svg_step_index=step_idx,
     )
 
   if scan_diffusion_loop:
@@ -814,8 +828,9 @@ def run_inference_2_2(
         step_index=jnp.array(0, dtype=jnp.int32),
     )
 
-    def scan_body(carry, t):
+    def scan_body(carry, scan_elem):
       current_latents, current_scheduler_state = carry
+      t, step_idx = scan_elem
 
       timestep = jnp.broadcast_to(t, (bsz * 2 if do_classifier_free_guidance else bsz,))
       use_high_noise = jnp.greater_equal(t, boundary)
@@ -833,6 +848,7 @@ def run_inference_2_2(
               rotary_emb,
               encoder_attention_mask_high,
               encoder_attention_mask_low,
+              step_idx,
           ),
       )
 
@@ -843,8 +859,9 @@ def run_inference_2_2(
       return (new_latents, new_scheduler_state), None
 
     initial_carry = (latents, scheduler_state)
+    scan_input = (timesteps, jnp.arange(num_inference_steps, dtype=jnp.int32))
 
-    final_carry, _ = jax.lax.scan(scan_body, initial_carry, timesteps)
+    final_carry, _ = jax.lax.scan(scan_body, initial_carry, scan_input)
 
     final_latents, _ = final_carry
     return final_latents
@@ -888,6 +905,7 @@ def run_inference_2_2(
                 kv_cache=_kv,
                 rotary_emb=rotary_emb,
                 encoder_attention_mask=_mask,
+                svg_step_index=jnp.asarray(0, dtype=jnp.int32),
             )
         )
 
@@ -929,6 +947,7 @@ def run_inference_2_2(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
+          svg_step_index=jnp.asarray(step, dtype=jnp.int32),
       )
     else:
       timestep = jnp.broadcast_to(t, bsz)
@@ -944,6 +963,7 @@ def run_inference_2_2(
           kv_cache=kv_cache,
           rotary_emb=rotary_emb,
           encoder_attention_mask=encoder_attention_mask,
+          svg_step_index=jnp.asarray(step, dtype=jnp.int32),
       )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

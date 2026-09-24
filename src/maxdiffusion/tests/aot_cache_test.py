@@ -179,6 +179,71 @@ class AotCacheTest(unittest.TestCase):
     ]
     self.assertEqual(outs[0], outs[1])
 
+  def test_graphdef_svg_config_changes_dynamic_signature_and_prevents_reuse(self):
+    from flax import nnx
+
+    class ToyExpert(nnx.Module):
+
+      def __init__(self, use_svg: bool, density: float):
+        self.use_svg_attention = use_svg
+        self.svg_spatial_density = density
+        self.config = {"attention_config": {"use_svg_attention": use_svg, "svg_spatial_density": density}}
+        self.w = nnx.Param(jnp.ones((8, 8)))
+
+      def __call__(self, x):
+        scale = self.svg_spatial_density if self.use_svg_attention else 1.0
+        return (x @ self.w[...]) * scale
+
+    @aot_cache.cached_jit
+    def forward(graphdef, state, x):
+      model = nnx.merge(graphdef, state)
+      return model(x)
+
+    self._install()
+    gd_dense, state_dense = nnx.split(ToyExpert(False, 1.0))
+    gd_svg50, state_svg50 = nnx.split(ToyExpert(True, 0.5))
+    gd_svg25, state_svg25 = nnx.split(ToyExpert(True, 0.25))
+
+    sig_dense = aot_cache._dynamic_signature((gd_dense, state_dense, self._a), {})
+    sig_svg50 = aot_cache._dynamic_signature((gd_svg50, state_svg50, self._a), {})
+    sig_svg25 = aot_cache._dynamic_signature((gd_svg25, state_svg25, self._a), {})
+    self.assertEqual(len({sig_dense, sig_svg50, sig_svg25}), 3)
+
+    # Cache dense executable
+    out_dense = forward(gd_dense, state_dense, self._a)
+    self.assertEqual(aot_cache.save_pending(), 1)
+    np.testing.assert_allclose(np.asarray(out_dense), np.full((8, 8), 8.0))
+
+    # Call SVG expert with identical input shapes; must NOT reuse dense executable
+    out_svg50 = forward(gd_svg50, state_svg50, self._a)
+    np.testing.assert_allclose(np.asarray(out_svg50), np.full((8, 8), 4.0))
+    self.assertEqual(aot_cache.save_pending(), 1)
+
+  def test_extract_svg_meta_changes_fingerprint_on_svg_changes(self):
+    from types import SimpleNamespace
+
+    cfg_dense = SimpleNamespace(use_svg_attention=False, svg_spatial_density=1.0)
+    cfg_svg50 = SimpleNamespace(use_svg_attention=True, svg_spatial_density=0.5)
+    cfg_svg25 = SimpleNamespace(use_svg_attention=True, svg_spatial_density=0.25)
+
+    meta_dense = aot_cache.extract_svg_meta(cfg_dense)
+    meta_svg50 = aot_cache.extract_svg_meta(cfg_svg50)
+    meta_svg25 = aot_cache.extract_svg_meta(cfg_svg25)
+
+    fp_dense = aot_cache._metadata_fingerprint(meta_dense)
+    fp_svg50 = aot_cache._metadata_fingerprint(meta_svg50)
+    fp_svg25 = aot_cache._metadata_fingerprint(meta_svg25)
+    self.assertEqual(len({fp_dense, fp_svg50, fp_svg25}), 3)
+
+  def test_step_array_preserves_dynamic_signature_across_steps(self):
+    sigs = {
+        aot_cache._dynamic_signature(
+            (self._a,), {"svg_step_index": jnp.asarray(step, dtype=jnp.int32)}
+        )
+        for step in range(40)
+    }
+    self.assertEqual(len(sigs), 1)
+
 
 if __name__ == "__main__":
   unittest.main()
