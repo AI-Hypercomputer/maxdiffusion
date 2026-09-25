@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pathlib
 import shutil
 import subprocess
+import tempfile
 import unittest
 import pytest
 from absl.testing import absltest
@@ -75,7 +76,8 @@ class InputPipelineInterface(unittest.TestCase):
   def test_make_dreambooth_train_iterator(self):
     instance_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/instance_class"
     class_class_gcs_dir = "gs://maxdiffusion-github-runner-test-assets/datasets/dreambooth/class_class"
-    local_dir = "/tmp/"
+    self.temp_dir = tempfile.TemporaryDirectory()
+    local_dir = self.temp_dir.name
     instance_class_local_dir = max_utils.download_blobs(instance_class_gcs_dir, local_dir)
     class_class_local_dir = max_utils.download_blobs(class_class_gcs_dir, local_dir)
 
@@ -136,6 +138,7 @@ class InputPipelineInterface(unittest.TestCase):
 
     cleanup(instance_class_local_dir)
     cleanup(class_class_local_dir)
+    self.temp_dir.cleanup()
 
   @pytest.mark.skip(
       "This test is deprecated and will be removed in a future version. Reason: stable diffusion 2 base is no longer in HuggingFace"
