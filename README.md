@@ -17,6 +17,7 @@
 [![Unit Tests](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/AI-Hypercomputer/maxdiffusion/actions/workflows/UnitTests.yml)
 
 # What's new?
+- **`2026/09/23`**: Wan2.2 text2vid dual-expert training is now supported.
 - **`2026/08/28`**: Flux2.Klein text to image and image editing (w/ KV Cache) is now supported.
 - **`2026/07/14`**: Automatic attention tile-size (`block_q`/`block_kv`) search for Wan is now supported.
 - **`2026/06/26`**: 2D ring (USP) attention with a custom splash kernel is now supported for Wan (`ulysses_ring_custom`), splitting context parallelism into an intra-chip Ulysses axis and a cross-chip ring axis.
@@ -59,7 +60,7 @@ MaxDiffusion supports
 * LTX-Video text2vid, img2vid (inference).
 * LTX-2 Video text2vid (inference).
 * Wan2.1 text2vid (training and inference).
-* Wan2.2 text2vid (inference).
+* Wan2.2 text2vid (training and inference).
 
 **Note on GPU Support:** GPU support is not actively maintained, but contributions are welcome
 
@@ -74,6 +75,7 @@ MaxDiffusion supports
   - [NVIDIA DGX Spark](#nvidia-dgx-spark)
   - [Training](#training)
     - [Wan2.1](#wan-21-training)
+    - [Wan2.2](#wan-22-training)
     - [Flux](#flux-training)
     - [SDXL](#stable-diffusion-xl-training)
     - [SD 2 base](#stable-diffusion-2-base-training)
@@ -397,6 +399,76 @@ After installation completes, run the training script.
   --priority=medium \
   --max-restarts=0
   ```
+
+  ## Wan 2.2 Training
+
+  Wan 2.2 introduces a **dual-expert DiT architecture** (High-Noise Expert and Low-Noise Expert, ~27B total parameters). MaxDiffusion supports training Wan 2.2 with joint dynamic expert routing or targeted single-expert training.
+
+  ### Training Modes
+
+  The `train_mode` parameter in `src/maxdiffusion/configs/base_wan_27b.yml` controls which experts are active during training:
+  - **`joint`** (default): Dynamically routes training samples to either the high-noise expert or the low-noise expert based on `boundary_ratio` (default `0.875`) using the Flow Match time shift schedule. Both experts are trained in a unified joint step.
+  - **`high_only`**: Focuses training exclusively on the high-noise expert (timesteps $> \text{boundary}$).
+  - **`low_only`**: Focuses training exclusively on the low-noise expert (timesteps $\le \text{boundary}$).
+
+  ### Single Host Training
+
+  Wan 2.2 uses the same dataset format (TFRecords or local/GCS dataset directories) prepared in the [Wan 2.1 dataset preparation step](#dataset-preparation).
+
+  Run single-host training using `train_wan.py` with `base_wan_27b.yml`:
+
+  ```bash
+  python src/maxdiffusion/train_wan.py \
+    src/maxdiffusion/configs/base_wan_27b.yml \
+    run_name=${RUN_NAME} \
+    output_dir=${OUTPUT_DIR} \
+    train_data_dir=${DATASET_DIR} \
+    dataset_save_location=${SAVE_DATASET_DIR} \
+    train_mode="joint" \
+    boundary_ratio=0.875 \
+    weights_dtype=bfloat16 \
+    activations_dtype=bfloat16 \
+    per_device_batch_size=0.25 \
+    ici_fsdp_parallelism=4 \
+    ici_data_parallelism=1 \
+    max_train_steps=1000
+  ```
+
+  ### Multi-Host Training with XPK
+
+  For large-scale multi-host training across TPU pods or clusters (e.g. v5p, v6e, v7x):
+
+  ```bash
+  python3 ~/xpk/xpk.py workload create \
+    --cluster=$CLUSTER_NAME \
+    --project=$PROJECT \
+    --zone=$ZONE \
+    --device-type=$DEVICE_TYPE \
+    --num-slices=1 \
+    --workload=${RUN_NAME} \
+    --command=" \
+    python3 src/maxdiffusion/train_wan.py \
+      src/maxdiffusion/configs/base_wan_27b.yml \
+      run_name=${RUN_NAME} \
+      output_dir=${OUTPUT_DIR} \
+      train_data_dir=${DATASET_DIR} \
+      dataset_save_location=${SAVE_DATASET_DIR} \
+      train_mode='joint' \
+      boundary_ratio=0.875 \
+      weights_dtype=bfloat16 \
+      activations_dtype=bfloat16 \
+      per_device_batch_size=1 \
+      ici_fsdp_parallelism=4 \
+      ici_data_parallelism=32 \
+      max_train_steps=5000" \
+    --base-docker-image=${IMAGE_DIR} \
+    --priority=medium \
+    --max-restarts=0
+  ```
+
+  ### Checkpointing & Export
+
+  Wan 2.2 training checkpoints are handled by `WanCheckpointer2_2`. Checkpoints store optimizer states and weights for both experts. When saving final checkpoints or converting for inference, weights are exported into standard Diffusers format (`transformer/` and `transformer_2/`) for direct compatibility with MaxDiffusion and Hugging Face inference pipelines.
 
   ## Flux Training
 
