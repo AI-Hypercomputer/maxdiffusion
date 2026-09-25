@@ -41,6 +41,11 @@ _OPTIONS: dict[str, tuple[str, Any, str]] = {
     "wan_cfg_before_unpatchify": ("WAN_CFG_BEFORE_UNPATCHIFY", True, "bool"),
     "wan_cross_attn_prescale_kv": ("WAN_CROSS_ATTN_PRESCALE_KV", False, "bool"),
     "wan_rope_accum": ("WAN_ROPE_ACCUM", "auto", "str"),
+    "wan_cross_attn_kernel": ("WAN_CROSS_ATTN_KERNEL", "xla", "str"),
+    "wan_patch_embed_mode": ("WAN_PATCH_EMBED_MODE", "conv", "str"),
+    "wan_ulysses_out_a2a": ("WAN_ULYSSES_OUT_A2A", "flat", "str"),
+    "wan_seq_pad": ("WAN_SEQ_PAD", "off", "str"),
+    "wan_cross_attn_cpu_interpret": ("WAN_CROSS_ATTN_CPU_INTERPRET", False, "bool"),
 }
 
 _configured: dict[str, Any] = {}
