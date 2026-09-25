@@ -167,7 +167,27 @@ class WanBlockBenchmark(BlockBenchmark):
 
   # --- BlockBenchmark interface ---------------------------------------------------
   def tiled_seq_lens(self):
+    import math
+    from maxdiffusion import wan_runtime_options
+    from maxdiffusion.models.attention_flax import TOKEN_PADDING_KERNELS
+
     s = tiled_seq_len(self._full_seq, self._attention, self._context_shards, self._ulysses_shards)
+    seq_pad = getattr(self._config, "wan_seq_pad", None)
+    if seq_pad is None:
+      seq_pad = wan_runtime_options.get("wan_seq_pad")
+    if (
+        seq_pad == "lane"
+        and self._attention in TOKEN_PADDING_KERNELS
+        and self._full_seq >= getattr(self._config, "flash_min_seq_length", 4096)
+    ):
+      u = (
+          self._context_shards
+          if (self._attention.startswith("ulysses_") and not self._attention.startswith("ulysses_ring_"))
+          else self._ulysses_shards
+      )
+      if u > 0 and s % u == 0:
+        tokens_per_shard = s // u
+        s = math.ceil(tokens_per_shard / 128) * 128 * u
     return (s, s)
 
   def vmem_bytes(self):
@@ -217,6 +237,7 @@ class WanBlockBenchmark(BlockBenchmark):
   def _build_model(self, bq, bkv, cmp):
     c = self._config
     wan_config = dict(self._hf_cfg)
+    fused_rope_head_block = getattr(c, "fused_rope_head_block", -1)
     wan_config.update(
         mesh=self._mesh,
         dtype=c.activations_dtype,
@@ -233,10 +254,21 @@ class WanBlockBenchmark(BlockBenchmark):
         scan_layers=False,
         num_layers=1,
         enable_jax_named_scopes=c.enable_jax_named_scopes,
+        split_head_dim=getattr(c, "split_head_dim", True),
         attention_config={
             "use_base2_exp": c.use_base2_exp,
             "use_experimental_scheduler": c.use_experimental_scheduler,
             "ulysses_shards": c.ulysses_shards,
+            "ulysses_attention_chunks": getattr(c, "ulysses_attention_chunks", 1),
+            "use_k_centering": getattr(c, "use_k_centering", "auto"),
+            "use_fused_rope_kernel": getattr(c, "use_fused_rope_kernel", False),
+            "fused_rope_block_s": getattr(c, "fused_rope_block_s", 1024),
+            "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,
+            "wan_cross_attn_kernel": getattr(c, "wan_cross_attn_kernel", None),
+            "wan_patch_embed_mode": getattr(c, "wan_patch_embed_mode", None),
+            "wan_ulysses_out_a2a": getattr(c, "wan_ulysses_out_a2a", None),
+            "wan_seq_pad": getattr(c, "wan_seq_pad", None),
+            "wan_cross_attn_cpu_interpret": getattr(c, "wan_cross_attn_cpu_interpret", False),
         },
     )
     model = WanModel(**wan_config, rngs=nnx.Rngs(params=0))

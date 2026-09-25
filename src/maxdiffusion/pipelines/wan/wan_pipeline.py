@@ -401,6 +401,11 @@ def create_sharded_logical_transformer(
       "fused_rope_block_s": getattr(config, "fused_rope_block_s", 1024),
       # -1 is the YAML spelling of "let the kernel pick" (i.e. all heads).
       "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,
+      "wan_cross_attn_kernel": getattr(config, "wan_cross_attn_kernel", None),
+      "wan_patch_embed_mode": getattr(config, "wan_patch_embed_mode", None),
+      "wan_ulysses_out_a2a": getattr(config, "wan_ulysses_out_a2a", None),
+      "wan_seq_pad": getattr(config, "wan_seq_pad", None),
+      "wan_cross_attn_cpu_interpret": getattr(config, "wan_cross_attn_cpu_interpret", False),
   }
 
   # 2. eval_shape - will not use flops or create weights on device

@@ -50,6 +50,8 @@
 #                    force the raw accelerator type (e.g. v6e-8, tpu7x-8)
 #   ATTENTION / USE_K_CENTERING / ULYSSES_SHARDS / BQ / BKV / BKV_COMPUTE / BKV_COMPUTE_IN / BQ_DKV / VMEM_LIMIT_BYTES
 #                    override the per-platform attention recipe
+#   WAN_CROSS_ATTN_KERNEL / WAN_PATCH_EMBED_MODE / WAN_ULYSSES_OUT_A2A / WAN_SEQ_PAD
+#                    override Wan fast-inference kernel/layout switches
 #   DP / CP / PER_DEVICE_BATCH / SEED
 #                    override mesh parallelism, per-device batch, or RNG seed (default 12345)
 set -euo pipefail
@@ -120,13 +122,13 @@ fi
 
 # Keep LIBTPU flags single-line (literal backslashes truncate libtpu flag parsing).
 COMMON_LIBTPU=${COMMON_LIBTPU:-"--xla_tpu_spmd_rng_bit_generator_unsafe=true --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=false --xla_tpu_enable_async_collective_fusion_multiple_steps=true --xla_tpu_memory_bound_loop_optimizer_options=enabled:true --xla_tpu_enable_dot_strength_reduction=true --xla_enable_async_collective_permute=true --xla_tpu_enable_data_parallel_all_reduce_opt=true --xla_tpu_data_parallel_opt_different_sized_ops=true --xla_tpu_overlap_compute_collective_tc=true --xla_enable_async_all_gather=true --xla_tpu_scoped_vmem_limit_kib=65536 --xla_tpu_enable_async_all_to_all=true --xla_tpu_enable_all_experimental_scheduler_features=true --xla_tpu_enable_scheduler_memory_pressure_tracking=true --xla_tpu_host_transfer_overlap_limit=24 --xla_tpu_aggressive_opt_barrier_removal=ENABLED --xla_lhs_prioritize_async_depth_over_stall=ENABLED --xla_should_allow_loop_variant_parameter_in_chain=ENABLED --xla_should_add_loop_invariant_op_in_chain=ENABLED --xla_tpu_enable_ici_ag_pipelining=true --xla_max_concurrent_host_send_recv=100 --xla_tpu_scheduler_percent_shared_memory_limit=100 --xla_latency_hiding_scheduler_rerun=2 --xla_tpu_use_minor_sharding_for_major_trivial_input=true --xla_tpu_relayout_group_size_threshold_for_reduce_scatter=1 --xla_tpu_enable_latency_hiding_scheduler=true --xla_tpu_enable_ag_backward_pipelining=true --xla_tpu_use_single_sparse_core_for_all_gather_offload=true --xla_tpu_sparse_core_all_gather_latency_multiplier=1 --xla_tpu_sparse_core_reduce_scatter_latency_multiplier=3 --xla_tpu_enable_sparse_core_collective_aggregator=true --xla_tpu_enable_sparse_core_offload_queuing_in_lhs=true --xla_tpu_enable_sparse_core_reduce_scatter_v2=true --xla_tpu_enable_sparse_core_collective_offload_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_2d_all_gather=true --xla_tpu_enable_sparse_core_collective_offload_all_reduce=true --xla_tpu_enable_sparse_core_collective_offload_reduce_scatter=true --xla_tpu_enable_sparse_core_collective_offload_3d_all_gather=true --xla_tpu_enable_concurrent_sparse_core_offloading=true --xla_tpu_assign_all_reduce_scatter_layout=true"}
-V6E_LIBTPU=${V6E_LIBTPU:-"--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=false"}
+V6E_LIBTPU=${V6E_LIBTPU:-"--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=false --xla_tpu_enable_ici_ag_pipelining=false --xla_tpu_enable_ag_backward_pipelining=false"}
 # fuse_all_gather is false in every profile (see COMMON_LIBTPU); it must stay
 # false on v7, where libtpu fails backend init with it enabled ("Continuation
 # fusion for AllGather ... not supported ... other than Viperlite").
-# V7_LIBTPU also pins DVFS p-state 7 (max clocks); the reference numbers below
-# were measured with launcher defaults (incl. p_state=7 on v7) on the full stack.
-V7_LIBTPU=${V7_LIBTPU:-"--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=false --xla_tpu_enable_megacore_fusion=true --xla_tpu_megacore_fusion_allow_ags=true --xla_tpu_dvfs_p_state=7"}
+# V7_LIBTPU also pins DVFS p-state 7 (max clocks) and disables SparseCore copy
+# offloading; the reference numbers below were measured with launcher defaults.
+V7_LIBTPU=${V7_LIBTPU:-"--xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_fuse_all_gather=false --xla_tpu_enable_megacore_fusion=true --xla_tpu_megacore_fusion_allow_ags=true --xla_tpu_dvfs_p_state=7 --xla_tpu_enable_offloading_copy_to_sparsecore=false"}
 
 # Reference benchmarks (Wan 2.2 T2V-A14B, 720p/81f/40-step, CP=4, DP=2, full stack):
 #   v6e-8:   124.3s e2e (denoise 122.2s)
@@ -146,12 +148,13 @@ case "$TPU_PROFILE" in
     DEFAULT_BATCHED_TE=true
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
+    DEFAULT_ULYSSES_OUT_A2A=chunked
     ;;
   v7)
     PLATFORM_LIBTPU="$V7_LIBTPU"
     DEFAULT_ATTENTION="ulysses_ring_custom_fixed_m"
     DEFAULT_U=2
-    DEFAULT_BQ=6400
+    DEFAULT_BQ=4736
     DEFAULT_BKV=2048
     DEFAULT_BKV_COMPUTE=2048
     DEFAULT_BKV_COMPUTE_IN=2048
@@ -161,6 +164,7 @@ case "$TPU_PROFILE" in
     DEFAULT_BATCHED_TE=true
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
+    DEFAULT_ULYSSES_OUT_A2A=flat
     ;;
   *)
     echo "== warning: unrecognised accelerator '${ACCEL_TYPE:-unknown}';" \
@@ -178,6 +182,7 @@ case "$TPU_PROFILE" in
     DEFAULT_BATCHED_TE=true
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
+    DEFAULT_ULYSSES_OUT_A2A=flat
     ;;
 esac
 
@@ -205,6 +210,7 @@ COMPILE_TE=${COMPILE_TE:-$DEFAULT_COMPILE_TE}
 USE_BATCHED_TE=${USE_BATCHED_TE:-$DEFAULT_BATCHED_TE}
 VAE_SPATIAL=${VAE_SPATIAL:-$DEFAULT_VAE_SPATIAL}
 VAE_DECODE_CHUNK=${VAE_DECODE_CHUNK:-$DEFAULT_VAE_CHUNK}
+WAN_ULYSSES_OUT_A2A=${WAN_ULYSSES_OUT_A2A:-$DEFAULT_ULYSSES_OUT_A2A}
 
 # Mesh: context parallelism carries the Ulysses shards, data parallelism takes
 # whatever chips remain. Defaults to CP=4 / DP=2 on an 8-chip slice. On a slice
@@ -266,6 +272,10 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   text_encoder_dtype=bfloat16 compile_text_encoder="$COMPILE_TE" use_batched_text_encoder="$USE_BATCHED_TE" \
   use_kv_cache=true use_base2_exp=true use_experimental_scheduler=true \
   use_fused_rope_kernel=true \
+  wan_cross_attn_kernel="${WAN_CROSS_ATTN_KERNEL:-pallas}" \
+  wan_patch_embed_mode="${WAN_PATCH_EMBED_MODE:-tokens}" \
+  wan_ulysses_out_a2a="${WAN_ULYSSES_OUT_A2A}" \
+  wan_seq_pad="${WAN_SEQ_PAD:-lane}" \
   fps=16 "${GUIDANCE_ARGS[@]}" \
   seed="${SEED:-12345}" \
   flash_block_sizes="$FLASH_BLOCK_SIZES" \
