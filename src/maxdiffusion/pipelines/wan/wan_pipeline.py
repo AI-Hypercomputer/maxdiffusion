@@ -1422,10 +1422,7 @@ def _has_svg_enabled(obj: Any) -> bool:
     return True
   cfg = getattr(obj, "config", None)
   if cfg is not None:
-    attn_cfg = (
-        getattr(cfg, "attention_config", None)
-        or (cfg.get("attention_config") if isinstance(cfg, dict) else None)
-    )
+    attn_cfg = getattr(cfg, "attention_config", None) or (cfg.get("attention_config") if isinstance(cfg, dict) else None)
     if isinstance(attn_cfg, dict) and bool(attn_cfg.get("use_svg_attention", False)):
       return True
   if hasattr(obj, "attributes") and hasattr(obj, "nodes"):
@@ -1434,10 +1431,7 @@ def _has_svg_enabled(obj: Any) -> bool:
         return True
       if k == "config":
         val = getattr(v, "value", None)
-        ac = (
-            getattr(val, "attention_config", None)
-            or (val.get("attention_config") if isinstance(val, dict) else None)
-        )
+        ac = getattr(val, "attention_config", None) or (val.get("attention_config") if isinstance(val, dict) else None)
         if isinstance(ac, dict) and bool(ac.get("use_svg_attention", False)):
           return True
   return False
