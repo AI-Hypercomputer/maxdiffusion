@@ -114,6 +114,27 @@ wan_cfg_before_unpatchify: True
 wan_cross_attn_prescale_kv: False
 # Fused RoPE accumulation: "auto" (measured per-platform default), "dtype", "f32".
 wan_rope_accum: "auto"
+# Text cross-attention backend where it would otherwise fall back to XLA dot-product
+# (KV shorter than flash_min_seq_length): "xla", or "pallas" for the fused kernel that
+# keeps the KV in VMEM (within bf16 rounding of "xla", not bit-identical).
+wan_cross_attn_kernel: "xla"
+# When wan_cross_attn_kernel is "pallas", allow CPU execution via Pallas interpret mode (tests only).
+wan_cross_attn_cpu_interpret: False
+# Patch embedding: "conv" (nnx.Conv; its channel-sharded output is resharded by
+# token, an all-gather on tpu7x) or "tokens" (token-sharded patches times the
+# replicated kernel, no activation collective; equal up to accumulation order).
+wan_patch_embed_mode: "conv"
+# Inverse Ulysses all-to-all (attention output, head-sharded -> sequence-sharded):
+# "flat" splits the sequence axis directly; "chunked" exchanges over an explicit
+# leading sequence-chunk axis so XLA does not relayout the output around the
+# collective (used by the custom Ulysses / Ulysses-ring kernels only).
+wan_ulysses_out_a2a: "flat"
+# Self-attention token padding: "off", or "lane" to append pad tokens at the end
+# of the video token sequence (or at the end of each ring segment on the ring
+# path) so every context shard has a multiple of 128 tokens. Aligned shards make
+# the Ulysses all-to-all reshapes free; the custom kernels mask the pad keys.
+# Only the custom Ulysses / Ulysses-ring kernels use it.
+wan_seq_pad: "off"
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

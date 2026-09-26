@@ -331,6 +331,9 @@ class _HyperParameters:
     if "wan_debug_cond_timers" not in raw_keys:
       raw_keys["wan_debug_cond_timers"] = False
 
+    if "wan_cross_attn_cpu_interpret" not in raw_keys:
+      raw_keys["wan_cross_attn_cpu_interpret"] = False
+
 
 def get_num_slices(raw_keys):
   if int(raw_keys["compile_topology_num_slices"]) > 0:
