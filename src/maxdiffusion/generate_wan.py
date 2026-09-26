@@ -16,6 +16,7 @@ from typing import Sequence
 import jax
 import time
 import os
+import uuid
 from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
@@ -35,6 +36,160 @@ from maxdiffusion.pipelines.wan.wan_pipeline_i2v_2p2 import WanPipelineI2V_2_2
 
 
 jax.config.update("jax_use_shardy_partitioner", True)
+
+
+import functools
+import hashlib
+
+
+def _non_reusable_aot_revision():
+  """Returns a unique identity so unversioned/dirty development source can never hit old HLO."""
+  return f"unversioned:{uuid.uuid4().hex}"
+
+
+@functools.lru_cache(maxsize=1)
+def _compute_wan_source_hash() -> str | None:
+  """Computes a deterministic SHA-256 content hash of all non-test package source files."""
+  try:
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    hasher = hashlib.sha256()
+    py_files = []
+    for root, dirs, files in os.walk(pkg_dir):
+      dirs[:] = [d for d in dirs if d not in ("tests", "__pycache__")]
+      for f in files:
+        if f.endswith(".py"):
+          py_files.append(os.path.join(root, f))
+    for path in sorted(set(py_files)):
+      rel = os.path.relpath(path, pkg_dir).replace(os.sep, "/")
+      hasher.update(rel.encode("utf-8"))
+      with open(path, "rb") as f:
+        hasher.update(f.read())
+    return f"src:{hasher.hexdigest()[:16]}"
+  except Exception:  # noqa: BLE001
+    return None
+
+
+def _get_pkg_version(module_name: str) -> str:
+  try:
+    mod = __import__(module_name)
+    return str(getattr(mod, "__version__", "unknown"))
+  except ImportError:
+    return "not_installed"
+
+
+def _resolve_wan_aot_source_revision(config, commit_hash=None):
+  """Prefers explicit aot_build_revision, then package source hash, then git commit hash."""
+  explicit = getattr(config, "aot_build_revision", None)
+  if explicit is not None and str(explicit).strip():
+    return str(explicit).strip()
+  src_hash = _compute_wan_source_hash()
+  if src_hash is not None:
+    return src_hash
+  clean_commit = str(commit_hash).strip() if commit_hash is not None and str(commit_hash).strip() else None
+  if clean_commit is not None:
+    return clean_commit
+  return None
+
+
+def _is_reusable_aot_revision(source_revision) -> bool:
+  if source_revision is None or not str(source_revision).strip():
+    return False
+  s = str(source_revision).strip()
+  if s.startswith(("dirty:", "unversioned:")) or s.endswith("-dirty"):
+    return False
+  return True
+
+
+def format_video_output_path(
+    output_dir: str,
+    run_name: str,
+    seed: int,
+    index: int,
+    filename_prefix: str = "",
+) -> str:
+  """Formats the target mp4 path for a generated video."""
+  if output_dir and not output_dir.startswith("gs://"):
+    return os.path.join(output_dir, f"{filename_prefix}{run_name}_{seed}_{index}.mp4")
+  return f"{filename_prefix}wan_output_{seed}_{index}.mp4"
+
+
+def _build_wan_aot_metadata(config, mesh, source_revision) -> dict[str, str]:
+  """Builds the install-time configuration metadata dictionary for Wan AOT caching."""
+  first_dev = jax.devices()[0] if jax.devices() else None
+  platform_version = getattr(first_dev, "platform_version", "unknown") if first_dev else "unknown"
+  try:
+    default_matmul_precision = str(
+        jax.config.read("jax_default_matmul_precision")
+        if hasattr(jax.config, "read")
+        else getattr(jax.config, "jax_default_matmul_precision", "default")
+    )
+  except Exception:  # noqa: BLE001
+    default_matmul_precision = os.environ.get("JAX_DEFAULT_MATMUL_PRECISION", "default")
+  try:
+    default_prng_impl = str(
+        jax.config.read("jax_default_prng_impl")
+        if hasattr(jax.config, "read")
+        else getattr(jax.config, "jax_default_prng_impl", "threefry2x32")
+    )
+  except Exception:  # noqa: BLE001
+    default_prng_impl = "default"
+
+  return {
+      "model": str(getattr(config, "pretrained_model_name_or_path", "")),
+      "wan_transformer_pretrained_model_name_or_path": str(
+          getattr(config, "wan_transformer_pretrained_model_name_or_path", "")
+      ),
+      "attention": str(getattr(config, "attention", "")),
+      # Kernel block sizes change the lowered graph, not the input
+      # shapes — they must key the executable or a re-tuned config
+      # would silently hit stale binaries.
+      "flash_block_sizes": str(getattr(config, "flash_block_sizes", {})),
+      "mesh_shape": str(mesh.shape if mesh is not None else ()),
+      "vae_spatial": str(getattr(config, "vae_spatial", 8)),
+      "vae_decode_chunk": str(getattr(config, "vae_decode_chunk", 1)),
+      "vae_encode_chunk": str(getattr(config, "vae_encode_chunk", 0)),
+      "replicate_vae": str(getattr(config, "replicate_vae", False)),
+      "vae_logical_axis_rules": str(getattr(config, "vae_logical_axis_rules", ())),
+      "vae_weights_dtype": str(getattr(config, "vae_weights_dtype", "bfloat16")),
+      "vae_dtype": str(getattr(config, "vae_dtype", "bfloat16")),
+      "weights_dtype": str(getattr(config, "weights_dtype", "")),
+      "activations_dtype": str(getattr(config, "activations_dtype", "")),
+      "scan_layers": str(getattr(config, "scan_layers", True)),
+      "remat_policy": str(getattr(config, "remat_policy", "NONE")),
+      "ulysses_shards": str(getattr(config, "ulysses_shards", 1)),
+      "ulysses_attention_chunks": str(getattr(config, "ulysses_attention_chunks", 1)),
+      "use_k_centering": str(getattr(config, "use_k_centering", "auto")),
+      "use_kv_cache": str(getattr(config, "use_kv_cache", False)),
+      "use_cfg_cache": str(getattr(config, "use_cfg_cache", False)),
+      "use_magcache": str(getattr(config, "use_magcache", False)),
+      "use_sen_cache": str(getattr(config, "use_sen_cache", False)),
+      "use_qwix_quantization": str(getattr(config, "use_qwix_quantization", False)),
+      "quantization": str(getattr(config, "quantization", "")),
+      "qwix_module_path": str(getattr(config, "qwix_module_path", "")),
+      "enable_lora": str(getattr(config, "enable_lora", False)),
+      "lora_config": str(getattr(config, "lora_config", {})),
+      "flash_min_seq_length": str(getattr(config, "flash_min_seq_length", 4096)),
+      "mask_padding_tokens": str(getattr(config, "mask_padding_tokens", True)),
+      "precision": str(getattr(config, "precision", "default")),
+      "logical_axis_rules": str(getattr(config, "logical_axis_rules", ())),
+      "attention_sharding_uniform": str(getattr(config, "attention_sharding_uniform", True)),
+      "allow_split_physical_axes": str(getattr(config, "allow_split_physical_axes", False)),
+      "device_kind": str(first_dev.device_kind if first_dev else "unknown"),
+      "platform_version": str(platform_version),
+      "process_count": str(jax.process_count()),
+      "use_base2_exp": str(getattr(config, "use_base2_exp", True)),
+      "use_experimental_scheduler": str(getattr(config, "use_experimental_scheduler", False)),
+      "libtpu_init_args": os.environ.get("LIBTPU_INIT_ARGS", ""),
+      "xla_flags": os.environ.get("XLA_FLAGS", ""),
+      "jax": jax.__version__,
+      "jaxlib": _get_pkg_version("jaxlib"),
+      "flax": _get_pkg_version("flax"),
+      "qwix": _get_pkg_version("qwix"),
+      "tokamax": _get_pkg_version("tokamax"),
+      "default_matmul_precision": default_matmul_precision,
+      "default_prng_impl": default_prng_impl,
+      "source_revision": source_revision if source_revision else _non_reusable_aot_revision(),
+  }
 
 
 def call_pipeline(config, pipeline, prompt, negative_prompt, num_inference_steps=None):
@@ -297,25 +452,34 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
 
   # Per-shape AOT executable cache: deserialization starts on background
   # threads now and overlaps the remaining setup; unknown shapes silently
-  # fall back to jit and are serialized by save_pending() after warmup.
+  # fall back to jit and are serialized by save_pending() after warmup and
+  # again after generation (persistent cache only).
+  detected_revision = commit_hash if commit_hash is not None else max_utils.get_git_commit_hash()
+  source_revision = _resolve_wan_aot_source_revision(config, detected_revision)
+  aot_cache_dir = getattr(config, "aot_cache_dir", "")
+  if aot_cache_dir and not _is_reusable_aot_revision(source_revision):
+    max_logging.log(
+        "[aot] Persistent Wan AOT caching is disabled for this development run; "
+        "using ephemeral cache for zero-execution warmup."
+    )
+    aot_cache_dir = ""
+
+  # If persistent cache is not enabled, use an ephemeral directory so zero-execution
+  # warmup and weight priming still operate without touching shared disk storage.
+  if not aot_cache_dir:
+    import atexit
+    import shutil
+    import tempfile
+
+    install_cache_dir = tempfile.mkdtemp(prefix="wan_aot_ephemeral_")
+    atexit.register(shutil.rmtree, install_cache_dir, ignore_errors=True)
+  else:
+    install_cache_dir = aot_cache_dir
+
+  aot_metadata = _build_wan_aot_metadata(config, pipeline.mesh, source_revision)
   aot_cache.install(
-      getattr(config, "aot_cache_dir", ""),
-      meta={
-          "model": config.pretrained_model_name_or_path,
-          "attention": config.attention,
-          # Kernel block sizes change the lowered graph, not the input
-          # shapes — they must key the executable or a re-tuned config
-          # would silently hit stale binaries.
-          "flash_block_sizes": str(config.flash_block_sizes),
-          "mesh_shape": str(pipeline.mesh.shape),
-          "vae_spatial": str(config.vae_spatial),
-          "vae_decode_chunk": str(config.vae_decode_chunk),
-          "weights_dtype": str(config.weights_dtype),
-          "activations_dtype": str(config.activations_dtype),
-          "scan_layers": str(config.scan_layers),
-          "jax": jax.__version__,
-          **aot_cache.extract_svg_meta(config, pipeline),
-      },
+      install_cache_dir,
+      meta={**aot_metadata, **aot_cache.extract_svg_meta(config, pipeline)},
       mesh=pipeline.mesh,
   )
   # Deserialization is seconds and warmup must see the loaded executables
@@ -341,11 +505,13 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       f"Num steps: {config.num_inference_steps}, height: {config.height}, width: {config.width},"
       f" frames: {config.num_frames}, total prompts: {len(prompts)}"
   )
-  # Warmup with 2 denoising steps instead of a full run: step 0 runs the
-  # high-noise transformer and step 1 crosses the boundary to the low-noise
-  # one (WAN 2.2), so every executable of the full run (both transformers,
-  # text encoder, VAE decode) gets compiled at a fraction of the cost. The
-  # step count only changes the Python loop trip count, not traced shapes.
+  # Warmup with 2 denoising steps instead of a full run. The step count only
+  # changes the Python loop trip count, not traced shapes. With flow_shift=12
+  # both warmup timesteps (t=999, 923) are above the WAN 2.2 boundary (875), so
+  # the loop itself only reaches the high-noise transformer; run_inference_2_2
+  # additionally compiles the forward pass of any phase the warmup schedule
+  # skips. Together this compiles every executable of the full run (both
+  # transformers, text encoder, VAE decode) at a fraction of the cost.
   warmup_steps = min(2, config.num_inference_steps)
   max_logging.log(f"Compile warmup: {warmup_steps} denoising steps")
   # Zero-execution warmup: wrapped transformer passes lower+compile (or
@@ -353,16 +519,25 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   # the warmup pays compile time only, never real denoise compute. The
   # returned videos are garbage by design and are discarded below.
   with aot_cache.warmup_mode():
-    videos = call_pipeline(config, pipeline, warmup_prompt, warmup_negative_prompt, num_inference_steps=warmup_steps)
+    videos = call_pipeline(
+        config,
+        pipeline,
+        warmup_prompt,
+        warmup_negative_prompt,
+        num_inference_steps=warmup_steps,
+    )
   if isinstance(videos, tuple):
     videos, warmup_trace = videos
     warmup_str = ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in warmup_trace.items())
     max_logging.log(f"Warmup breakdown: {warmup_str}")
 
-  # Serialize any newly-compiled shapes synchronously while still inside
-  # warmup-accounted time; a background save would compete with the first
-  # real generation (DiffusionServing PR#39 first-generation-stall lesson).
-  aot_cache.save_pending()
+  # Serialize newly-compiled shapes synchronously inside warmup-accounted time
+  # (a background save would stall the first request). Skipped for the
+  # ephemeral (non-persistent) cache dir.
+  if aot_cache_dir:
+    aot_cache.save_pending()
+  else:
+    aot_cache.clear_pending()
 
   max_logging.log("===================== Model details =======================")
   max_logging.log(f"model name: {config.model_name}")
@@ -393,11 +568,24 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
       videos = outputs
       trace = {}
     for i in range(len(videos)):
-      video_path = f"{filename_prefix}wan_output_{config.seed}_{i}.mp4"
-      export_to_video(videos[i], video_path, fps=config.fps)
+      video_path = format_video_output_path(
+          getattr(config, "output_dir", ""),
+          config.run_name,
+          config.seed,
+          i,
+          filename_prefix,
+      )
       saved_video_path.append(video_path)
-      if gcs_output_path:
-        max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+      if jax.process_index() == 0:
+        import numpy as np
+
+        if getattr(config, "output_dir", "") and not config.output_dir.startswith("gs://"):
+          os.makedirs(config.output_dir, exist_ok=True)
+        frames_np = np.asarray(videos[i])
+        export_to_video(frames_np, video_path, fps=config.fps)
+        max_logging.log(f"Saved video to {video_path}")
+        if gcs_output_path:
+          max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
   else:
     trace = {}
     for i, padded_chunk, actual_chunk_len in max_utils.chunk_and_pad(prompts, batch_size):
@@ -410,13 +598,30 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
         videos = outputs
       for j in range(actual_chunk_len):
         prompt_idx = i + j
-        video_path = f"{filename_prefix}wan_output_{config.seed}_{prompt_idx}.mp4"
-        export_to_video(videos[j], video_path, fps=config.fps)
+        video_path = format_video_output_path(
+            getattr(config, "output_dir", ""),
+            config.run_name,
+            config.seed,
+            prompt_idx,
+            filename_prefix,
+        )
         saved_video_path.append(video_path)
-        if gcs_output_path:
-          max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
+        if jax.process_index() == 0:
+          import numpy as np
+
+          if getattr(config, "output_dir", "") and not config.output_dir.startswith("gs://"):
+            os.makedirs(config.output_dir, exist_ok=True)
+          frames_np = np.asarray(videos[j])
+          export_to_video(frames_np, video_path, fps=config.fps)
+          max_logging.log(f"Saved video to {video_path}")
+          if gcs_output_path:
+            max_utils.upload_file_to_gcs(gcs_output_path, video_path, subdir="videos")
 
   generation_time = time.perf_counter() - s0
+  if aot_cache_dir:
+    aot_cache.save_pending()
+  else:
+    aot_cache.clear_pending()
   max_logging.log(f"generation_time: {generation_time}")
   if writer and jax.process_index() == 0:
     writer.add_scalar("inference/generation_time", generation_time, global_step=0)

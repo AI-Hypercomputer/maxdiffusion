@@ -393,6 +393,7 @@ def create_sharded_logical_transformer(
       "svg_high_noise_density": high_density,
       "svg_low_noise_density": low_density,
       "svg_flash_block_sizes": getattr(config, "svg_flash_block_sizes", None) or None,
+      "use_k_centering": getattr(config, "use_k_centering", "auto"),
   }
 
   # 2. eval_shape - will not use flops or create weights on device
@@ -519,6 +520,7 @@ class WanPipeline:
     # encode_prompt result cache: same-prompt calls (warmup + real run,
     # repeated serving requests) skip the ~10s/call CPU text encoder.
     self._prompt_embeds_cache = {}
+    self.wan_debug_cond_timers = getattr(config, "wan_debug_cond_timers", False)
 
   def check_inputs(
       self,
@@ -1338,7 +1340,7 @@ class WanPipeline:
 
     batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0] // num_videos_per_prompt
 
-    debug_timers = bool(os.environ.get("WAN_DEBUG_COND_TIMERS"))
+    debug_timers = getattr(self, "wan_debug_cond_timers", False) or bool(os.environ.get("WAN_DEBUG_COND_TIMERS"))
     t_probe = time.perf_counter()
     with jax.named_scope("Encode-Prompt"):
       prompt_embeds, negative_prompt_embeds = self.encode_prompt(
@@ -1422,10 +1424,7 @@ def _has_svg_enabled(obj: Any) -> bool:
     return True
   cfg = getattr(obj, "config", None)
   if cfg is not None:
-    attn_cfg = (
-        getattr(cfg, "attention_config", None)
-        or (cfg.get("attention_config") if isinstance(cfg, dict) else None)
-    )
+    attn_cfg = getattr(cfg, "attention_config", None) or (cfg.get("attention_config") if isinstance(cfg, dict) else None)
     if isinstance(attn_cfg, dict) and bool(attn_cfg.get("use_svg_attention", False)):
       return True
   if hasattr(obj, "attributes") and hasattr(obj, "nodes"):
@@ -1434,10 +1433,7 @@ def _has_svg_enabled(obj: Any) -> bool:
         return True
       if k == "config":
         val = getattr(v, "value", None)
-        ac = (
-            getattr(val, "attention_config", None)
-            or (val.get("attention_config") if isinstance(val, dict) else None)
-        )
+        ac = getattr(val, "attention_config", None) or (val.get("attention_config") if isinstance(val, dict) else None)
         if isinstance(ac, dict) and bool(ac.get("use_svg_attention", False)):
           return True
   return False
