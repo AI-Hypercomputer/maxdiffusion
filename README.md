@@ -402,14 +402,7 @@ After installation completes, run the training script.
 
   ## Wan 2.2 Training
 
-  Wan 2.2 introduces a **dual-expert DiT architecture** (High-Noise Expert and Low-Noise Expert, ~27B total parameters). MaxDiffusion supports training Wan 2.2 with joint dynamic expert routing or targeted single-expert training.
-
-  ### Training Modes
-
-  The `train_mode` parameter in `src/maxdiffusion/configs/base_wan_27b.yml` controls which experts are active during training:
-  - **`joint`** (default): Dynamically routes training samples to either the high-noise expert or the low-noise expert based on `boundary_ratio` (default `0.875`) using the Flow Match time shift schedule. Both experts are trained in a unified joint step.
-  - **`high_only`**: Focuses training exclusively on the high-noise expert (timesteps $> \text{boundary}$).
-  - **`low_only`**: Focuses training exclusively on the low-noise expert (timesteps $\le \text{boundary}$).
+  Wan 2.2 introduces a **dual-expert DiT architecture** (High-Noise Expert and Low-Noise Expert, ~27B total parameters). MaxDiffusion supports joint dual-expert training where samples are dynamically routed to the appropriate expert based on `boundary_ratio` (default `0.875`) using the Flow Match time shift schedule.
 
   ### Single Host Training
 
@@ -424,7 +417,6 @@ After installation completes, run the training script.
     output_dir=${OUTPUT_DIR} \
     train_data_dir=${DATASET_DIR} \
     dataset_save_location=${SAVE_DATASET_DIR} \
-    train_mode="joint" \
     boundary_ratio=0.875 \
     weights_dtype=bfloat16 \
     activations_dtype=bfloat16 \
@@ -453,7 +445,6 @@ After installation completes, run the training script.
       output_dir=${OUTPUT_DIR} \
       train_data_dir=${DATASET_DIR} \
       dataset_save_location=${SAVE_DATASET_DIR} \
-      train_mode='joint' \
       boundary_ratio=0.875 \
       weights_dtype=bfloat16 \
       activations_dtype=bfloat16 \
