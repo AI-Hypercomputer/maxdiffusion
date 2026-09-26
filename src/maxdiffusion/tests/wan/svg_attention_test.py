@@ -598,21 +598,15 @@ class SVGAttentionUnitTest(unittest.TestCase):
 
     # 3. Fully specified schedule: steps [11, 40), layers [1, 40)
     self.assertIs(
-        svg_attention.is_svg_active(
-            step_index=11, layer_index=0, start_step=11, end_step=40, start_layer=1, end_layer=40
-        ),
+        svg_attention.is_svg_active(step_index=11, layer_index=0, start_step=11, end_step=40, start_layer=1, end_layer=40),
         False,
     )
     self.assertIs(
-        svg_attention.is_svg_active(
-            step_index=10, layer_index=1, start_step=11, end_step=40, start_layer=1, end_layer=40
-        ),
+        svg_attention.is_svg_active(step_index=10, layer_index=1, start_step=11, end_step=40, start_layer=1, end_layer=40),
         False,
     )
     self.assertIs(
-        svg_attention.is_svg_active(
-            step_index=11, layer_index=1, start_step=11, end_step=40, start_layer=1, end_layer=40
-        ),
+        svg_attention.is_svg_active(step_index=11, layer_index=1, start_step=11, end_step=40, start_layer=1, end_layer=40),
         True,
     )
 
