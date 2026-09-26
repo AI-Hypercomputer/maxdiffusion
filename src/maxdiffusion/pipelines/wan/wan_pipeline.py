@@ -15,6 +15,7 @@
 from abc import abstractmethod
 from typing import Any, List, Union, Optional, Tuple
 from functools import partial
+from maxdiffusion import wan_runtime_options
 from maxdiffusion.image_processor import PipelineImageInput
 import numpy as np
 import math
@@ -368,6 +369,8 @@ def create_sharded_logical_transformer(
 
   use_svg_for_expert = bool(getattr(config, "use_svg_attention", False)) and (expert_density < 1.0)
 
+  wan_config["split_head_dim"] = getattr(config, "split_head_dim", True)
+  fused_rope_head_block = getattr(config, "fused_rope_head_block", -1)
   wan_config["attention_config"] = {
       "use_base2_exp": config.use_base2_exp,
       "use_experimental_scheduler": config.use_experimental_scheduler,
@@ -394,6 +397,10 @@ def create_sharded_logical_transformer(
       "svg_low_noise_density": low_density,
       "svg_flash_block_sizes": getattr(config, "svg_flash_block_sizes", None) or None,
       "use_k_centering": getattr(config, "use_k_centering", "auto"),
+      "use_fused_rope_kernel": getattr(config, "use_fused_rope_kernel", False),
+      "fused_rope_block_s": getattr(config, "fused_rope_block_s", 1024),
+      # -1 is the YAML spelling of "let the kernel pick" (i.e. all heads).
+      "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,
   }
 
   # 2. eval_shape - will not use flops or create weights on device
@@ -1502,30 +1509,60 @@ def transformer_forward_pass(
   if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
     latents = jnp.concatenate([latents, latents], axis=0)
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  outputs = wan_transformer(
-      hidden_states=latents,
-      timestep=timestep,
-      encoder_hidden_states=prompt_embeds,
-      encoder_hidden_states_image=encoder_hidden_states_image,
-      skip_blocks=skip_blocks,
-      cached_residual=cached_residual,
-      return_residual=return_residual,
-      kv_cache=kv_cache,
-      rotary_emb=rotary_emb,
-      encoder_attention_mask=encoder_attention_mask,
-      svg_step_index=svg_step_index,
-  )
+  wan_cfg_before_unpatchify = wan_runtime_options.get("wan_cfg_before_unpatchify")
 
-  if return_residual:
-    noise_pred, residual_x = outputs
-  else:
-    noise_pred = outputs
+  if do_classifier_free_guidance and wan_cfg_before_unpatchify:
+    outputs = wan_transformer(
+        hidden_states=latents,
+        timestep=timestep,
+        encoder_hidden_states=prompt_embeds,
+        encoder_hidden_states_image=encoder_hidden_states_image,
+        skip_blocks=skip_blocks,
+        cached_residual=cached_residual,
+        return_residual=return_residual,
+        kv_cache=kv_cache,
+        rotary_emb=rotary_emb,
+        encoder_attention_mask=encoder_attention_mask,
+        svg_step_index=svg_step_index,
+        unpatchify=False,
+    )
+    if return_residual:
+      noise_pred, residual_x = outputs
+    else:
+      noise_pred = outputs
 
-  if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
-    noise_cond = noise_pred[:bsz]  # First half = conditional
-    noise_uncond = noise_pred[bsz:]  # Second half = unconditional
+    noise_cond = noise_pred[:bsz]
+    noise_uncond = noise_pred[bsz:]
     noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+
+    _, _, num_frames, height, width = latents.shape
+    noise_pred = wan_transformer.unpatchify_tokens(noise_pred, num_frames, height, width)
+  else:
+    outputs = wan_transformer(
+        hidden_states=latents,
+        timestep=timestep,
+        encoder_hidden_states=prompt_embeds,
+        encoder_hidden_states_image=encoder_hidden_states_image,
+        skip_blocks=skip_blocks,
+        cached_residual=cached_residual,
+        return_residual=return_residual,
+        kv_cache=kv_cache,
+        rotary_emb=rotary_emb,
+        encoder_attention_mask=encoder_attention_mask,
+        svg_step_index=svg_step_index,
+    )
+
+    if return_residual:
+      noise_pred, residual_x = outputs
+    else:
+      noise_pred = outputs
+
+    if do_classifier_free_guidance:
+      bsz = latents.shape[0] // 2
+      noise_cond = noise_pred[:bsz]  # First half = conditional
+      noise_uncond = noise_pred[bsz:]  # Second half = unconditional
+      noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
 
   if return_residual:
     return noise_pred, residual_x

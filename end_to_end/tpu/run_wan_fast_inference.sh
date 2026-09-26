@@ -48,7 +48,7 @@
 #                    autodetection
 #   ACCEL_TYPE / TPU_ACCELERATOR_TYPE
 #                    force the raw accelerator type (e.g. v6e-8, tpu7x-8)
-#   ATTENTION / ULYSSES_SHARDS / BQ / BKV / BKV_COMPUTE / BKV_COMPUTE_IN / BQ_DKV / VMEM_LIMIT_BYTES
+#   ATTENTION / USE_K_CENTERING / ULYSSES_SHARDS / BQ / BKV / BKV_COMPUTE / BKV_COMPUTE_IN / BQ_DKV / VMEM_LIMIT_BYTES
 #                    override the per-platform attention recipe
 #   DP / CP / PER_DEVICE_BATCH / SEED
 #                    override mesh parallelism, per-device batch, or RNG seed (default 12345)
@@ -72,8 +72,6 @@ export HF_HUB_ENABLE_HF_TRANSFER=1
 export JAX_DEFAULT_MATMUL_PRECISION=bfloat16
 export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
-# Without these the JAX persistent cache silently skips most entries, so the
-# "warm" start still recompiles a large part of the graph.
 export JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=-1
 export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
 
@@ -84,14 +82,7 @@ export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-$CACHE_ROOT/torch_comp
 mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" \
          "$OUTPUT_DIR" "$TMPDIR" "$TORCHINDUCTOR_CACHE_DIR"
 
-# ---------------------------------------------------------------------------
-# TPU platform detection
-# ---------------------------------------------------------------------------
-# Preference order: explicit override -> TPU_ACCELERATOR_TYPE env (set by some
-# runtimes) -> GCE metadata "accelerator-type" (e.g. "v6e-8") -> the
-# ACCELERATOR_TYPE line inside the "tpu-env" metadata blob. Detection is pure
-# metadata/env: it must not initialise the TPU, or it would take the device
-# before the real process starts.
+# Detect TPU generation via env or GCE metadata without initializing the device.
 _tpu_metadata() {
   curl -s -f -m 2 -H 'Metadata-Flavor: Google' \
     "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" 2> /dev/null || true
@@ -101,8 +92,6 @@ _detect_accel_type() {
   local t="${TPU_ACCELERATOR_TYPE:-}"
   [ -z "$t" ] && t="$(_tpu_metadata accelerator-type)"
   [ -z "$t" ] && t="$(_tpu_metadata tpu-env | sed -n "s/^ACCELERATOR_TYPE: *'\([^']*\)'.*/\1/p")"
-  # Guard against metadata returning an HTML error page. Real names seen in the
-  # wild: "v6e-8", "v5litepod-8", "tpu7x-8" (v7 reports as tpu7x, not v7x).
   case "$t" in
     v[0-9]* | tpu[0-9]*) printf '%s' "$t" ;;
     *) printf '' ;;
@@ -111,8 +100,8 @@ _detect_accel_type() {
 
 ACCEL_TYPE=${ACCEL_TYPE:-$(_detect_accel_type)}
 if [ -n "$ACCEL_TYPE" ]; then
-  TPU_GEN="${ACCEL_TYPE%%-*}"  # v6e-8      -> v6e
-  TPU_CHIPS="${ACCEL_TYPE##*-}" # v6e-8      -> 8
+  TPU_GEN="${ACCEL_TYPE%%-*}"
+  TPU_CHIPS="${ACCEL_TYPE##*-}"
 else
   TPU_GEN=""
   TPU_CHIPS=""
@@ -204,6 +193,7 @@ case "$LIBTPU_INIT_ARGS" in
 esac
 
 ATTENTION=${ATTENTION:-$DEFAULT_ATTENTION}
+USE_K_CENTERING=${USE_K_CENTERING:-auto}  # auto: on for non-ring (v6e), off for ring (v7)
 ULYSSES_SHARDS=${ULYSSES_SHARDS:-$DEFAULT_U}
 BQ=${BQ:-$DEFAULT_BQ}
 BKV=${BKV:-$DEFAULT_BKV}
@@ -264,6 +254,7 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   aot_cache_dir="$CACHE_ROOT/aot_wan$MODEL" \
   converted_weights_dir="$CACHE_ROOT/converted" \
   attention="$ATTENTION" \
+  use_k_centering="$USE_K_CENTERING" \
   ulysses_shards="$ULYSSES_SHARDS" \
   ici_data_parallelism="$DP" ici_fsdp_parallelism=1 \
   ici_context_parallelism="$CP" ici_tensor_parallelism=1 \
@@ -274,6 +265,7 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   vae_weights_dtype=bfloat16 vae_dtype=bfloat16 \
   text_encoder_dtype=bfloat16 compile_text_encoder="$COMPILE_TE" use_batched_text_encoder="$USE_BATCHED_TE" \
   use_kv_cache=true use_base2_exp=true use_experimental_scheduler=true \
+  use_fused_rope_kernel=true \
   fps=16 "${GUIDANCE_ARGS[@]}" \
   seed="${SEED:-12345}" \
   flash_block_sizes="$FLASH_BLOCK_SIZES" \

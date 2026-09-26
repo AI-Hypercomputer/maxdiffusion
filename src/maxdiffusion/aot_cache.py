@@ -251,6 +251,17 @@ def _extract_graphdef_statics(obj: Any, prefix: str = "") -> list[str]:
   return out
 
 
+def _runtime_env_statics() -> tuple[str, ...]:
+  """Graph-changing Wan switches (YAML `wan_*` keys), folded into every signature."""
+  from maxdiffusion import wan_runtime_options  # pylint: disable=import-outside-toplevel
+  from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import resolve_rope_accum  # pylint: disable=import-outside-toplevel
+
+  snap = dict(wan_runtime_options.snapshot())
+  if "wan_rope_accum" in snap:
+    snap["wan_rope_accum"] = resolve_rope_accum(_STATE.mesh)
+  return tuple(f"opt:{k}={v}" for k, v in sorted(snap.items()))
+
+
 def _dynamic_signature(args: tuple, kwargs: dict) -> str:
   """Deterministic digest of everything that selects an executable.
 
@@ -276,6 +287,7 @@ def _dynamic_signature(args: tuple, kwargs: dict) -> str:
       desc = _format_static_val(leaf)
     parts.append(f"{jax.tree_util.keystr(path)}={desc}")
   parts.extend(_extract_graphdef_statics((args, kwargs)))
+  parts.extend(_runtime_env_statics())
   return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
 
 
@@ -396,7 +408,7 @@ class _AotEntry:
     )
     static_items = tuple((k, _format_static_val(v)) for k, v in sorted(static.items(), key=lambda item: str(item[0])))
     graphdef_statics = tuple(_extract_graphdef_statics((args, kwargs)))
-    cache_key = (treedef, shapes_dtypes, static_items, graphdef_statics)
+    cache_key = (treedef, shapes_dtypes, static_items, graphdef_statics, _runtime_env_statics())
     signature = getattr(self, "_sig_cache", {}).get(cache_key)
     if signature is None:
       signature = _dynamic_signature((), {**dynamic, **static})
