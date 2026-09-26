@@ -17,16 +17,18 @@ limitations under the License.
 """Unit tests for the fixed-m path of the custom RING attention.
 
 The ring path gates fixed-m globally against floor(W(N_total)/2) (accumulate
-merge when every (head, shard) passes) and otherwise PER (head, K-shard)
+merge when every (head, Q-block) passes) and otherwise per (head, Q-block)
 against floor(W(N_local)/2), merging the per-hop partials in LSE space
-(invariant to fixed-m's bound overshoot). These tests check, against an f32
+(invariant to fixed-m's bound overshoot). The per-hop gate uses the ring-wide
+max K norm, so it is the same on every hop. These tests check, against an f32
 dense-softmax reference:
 
   * the untouched online ring path (regression guard),
   * fixed-m with every (head, shard) eligible,
   * a sink head ineligible on every shard (all-online fallback),
-  * a head eligible on one shard but not the other -- the mixed
-    fixed/online partial case that requires the LSE merge.
+  * a head whose keys are large on one shard only (the LSE path; because the
+    per-hop gate uses the ring-wide K max, that head runs online on every hop),
+  * GQA (4 Q heads, 2 KV heads) with a ragged last KV block.
 """
 
 import functools
@@ -90,6 +92,10 @@ class RingFixedMTest(unittest.TestCase):
   def _reference(self, q_in, k_in, v):
     """Dense f32 log2-domain softmax on the kernel's own bf16 inputs."""
     qf, kf, vf = (x.astype(jnp.float32) for x in (q_in, k_in, v))
+    if qf.shape[0] != kf.shape[0]:
+      q_heads_per_kv = qf.shape[0] // kf.shape[0]
+      kf = jnp.repeat(kf, q_heads_per_kv, axis=0)
+      vf = jnp.repeat(vf, q_heads_per_kv, axis=0)
     logits = jnp.einsum("hqd,hkd->hqk", qf, kf)  # LOG2E & scale pre-folded
     return jax.nn.softmax(logits * math.log(2.0), axis=-1) @ vf
 
@@ -127,7 +133,7 @@ class RingFixedMTest(unittest.TestCase):
           # The V/dtype safety verdict the production caller computes. It is
           # global, so it is reduced across the ring before use.
           v_max_sq = (vl.astype(jnp.float32) ** 2).max()
-          recenter, _ = custom_splash.get_fixed_m_constants(self.shard_len * _RING_SIZE)
+          recenter, _ = custom_splash.get_fixed_m_constants(kl.shape[1] * _RING_SIZE)
           dtype_safe = custom_splash.fixed_m_dtype_is_safe(ql.dtype, recenter)
           v_ok_local = (v_max_sq <= (custom_splash.DEFAULT_MAX_V_BOUND**2)) & dtype_safe
           v_ok = jax.lax.pmin(v_ok_local, axis_name=_RING_AXIS)
@@ -135,8 +141,8 @@ class RingFixedMTest(unittest.TestCase):
           v_ok = v_ok_override
       ring = ring_attention_kernel.make_custom_ring_attention(
           block_sizes=self.block_sizes,
-          orig_q_seq_len=self.shard_len,
-          orig_kv_seq_len=self.shard_len,
+          orig_q_seq_len=ql.shape[1],
+          orig_kv_seq_len=kl.shape[1],
           use_base2_exp=True,
           ring_axis=_RING_AXIS,
           ring_size=_RING_SIZE,
@@ -160,15 +166,27 @@ class RingFixedMTest(unittest.TestCase):
     return sq.max(axis=-1)
 
   def _gate_per_shard(self, q_in, k_in):
-    """(heads, q_rank, k_shard) per-hop eligibility, as the kernel's LSE path computes it.
+    """(heads, q_rank, k_shard) eligibility of each local q against each K shard on its own.
 
-    Each rank gates its stationary local q against every K shard with the
-    two-sided bound for the local shard length, floor(W(shard_len)/2).
+    Uses the two-sided bound for the local shard length, floor(W(shard_len)/2).
+    This describes the test input. The kernel's per-hop gate is `_gate_hop`,
+    which uses the ring-wide K max instead of each shard's own.
     """
     _, per_shard_bound = custom_splash.get_fixed_m_constants(self.shard_len)
     qn_sq = self._shard_max_sq_norms(q_in)  # (heads, q_rank)
     kn_sq = self._shard_max_sq_norms(k_in)  # (heads, k_shard)
     return qn_sq[:, :, None] * kn_sq[:, None, :] <= per_shard_bound**2
+
+  def _gate_hop(self, q_in, k_in):
+    """(heads, q_rank) per-hop eligibility, as the kernel's LSE path computes it.
+
+    Each rank gates its local q against the ring-wide max K norm with
+    floor(W(shard_len)/2); the result is the same on every hop.
+    """
+    _, per_shard_bound = custom_splash.get_fixed_m_constants(self.shard_len)
+    qn_sq = self._shard_max_sq_norms(q_in)  # (heads, q_rank)
+    kn_sq = self._shard_max_sq_norms(k_in).max(axis=1)  # (heads,)
+    return qn_sq * kn_sq[:, None] <= per_shard_bound**2
 
   def _gate_global(self, q_in, k_in):
     """(heads,) global eligibility; all True means the kernel takes the accumulate merge."""
@@ -221,13 +239,18 @@ class RingFixedMTest(unittest.TestCase):
     self.assertLess(self._run_and_compare(q, k, v, use_fixed_m=True), 2e-2)
 
   def test_mixed_fixed_online_across_shards(self):
-    # Amplify head 0's keys on shard 1 only: head 0 is fixed on shard 0 but
-    # online on shard 1 -- the mixed-partial merge the LSE space exists for.
+    # Amplify head 0's keys on shard 1 only. On its own, shard 0 would be
+    # fixed-eligible for head 0 and shard 1 would not. The kernel's per-hop
+    # gate uses the ring-wide K max, so head 0 runs online on every hop while
+    # the other heads stay fixed, and the LSE merge combines them.
     q, k, v = self._random_qkv(k_gain=(0, slice(self.shard_len, self.shard_len * _RING_SIZE), 40.0))
     self.assertFalse(bool(self._global_gate(q, k)[0]))  # forces the per-hop LSE path
     gate = self._gate(q, k)
-    self.assertTrue(bool(jnp.all(gate[0, :, 0])))  # every rank: fixed on shard 0
-    self.assertFalse(bool(jnp.any(gate[0, :, 1])))  # every rank: online on shard 1
+    self.assertTrue(bool(jnp.all(gate[0, :, 0])))  # input: shard 0 alone is eligible
+    self.assertFalse(bool(jnp.any(gate[0, :, 1])))  # input: shard 1 alone is not
+    hop_gate = self._gate_hop(*self._scaled_inputs(q, k))
+    self.assertFalse(bool(jnp.any(hop_gate[0])))  # kernel: head 0 online on every hop
+    self.assertTrue(bool(jnp.all(hop_gate[1:])))  # kernel: other heads fixed
     self.assertLess(self._run_and_compare(q, k, v, use_fixed_m=True), 2e-2)
 
   def test_declared_unsquared_norms_match_squared(self):
@@ -256,6 +279,22 @@ class RingFixedMTest(unittest.TestCase):
     out = self._run_ring(q_in, k_in, v, use_fixed_m=True, v_ok_override=False).astype(jnp.float32)
     self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
     self.assertLess(float(jnp.max(jnp.abs(out - self._reference(q_in, k_in, v)))), 2e-2)
+
+  def test_gqa_ring_fixed_m_ragged_last_kv_block(self):
+    """GQA (4 Q heads, 2 KV heads) through the ring kernel with fixed-m.
+
+    Drives `make_custom_ring_attention` directly (not `_ulysses_ring_custom_attention`).
+    The 1536-token shard is 8-aligned; the only raggedness is the last KV block
+    (1536 % block_kv 1024 = 512). It does not exercise `kv_pad_size = 1`.
+    """
+    q_heads = 4
+    kv_heads = 2
+    ragged_len = 1536
+    total_len = ragged_len * _RING_SIZE
+    q = jax.random.normal(jax.random.PRNGKey(42), (q_heads, total_len, self.head_dim), jnp.bfloat16)
+    k = jax.random.normal(jax.random.PRNGKey(43), (kv_heads, total_len, self.head_dim), jnp.bfloat16)
+    v = jax.random.normal(jax.random.PRNGKey(44), (kv_heads, total_len, self.head_dim), jnp.bfloat16)
+    self.assertLess(self._run_and_compare(q, k, v, use_fixed_m=True), 2e-2)
 
 
 class RingFixedMContractTest(unittest.TestCase):
@@ -313,6 +352,12 @@ class RingFixedMContractTest(unittest.TestCase):
     """v_ok=False is a valid answer and must not trip the 'omitted' check."""
     norms = (jnp.ones((1,), jnp.float32), jnp.ones((1,), jnp.float32))
     ring = self._make(use_fixed_m=True, fixed_m_norms=norms, v_ok=False)
+    self._trace(ring)  # must not raise
+
+  def test_uniform_fixed_m_true_bypasses_v_ok_requirement(self):
+    """uniform_fixed_m=True forces the accumulate path and bypasses v_ok."""
+    norms = (jnp.ones((1,), jnp.float32), jnp.ones((1,), jnp.float32))
+    ring = self._make(use_fixed_m=True, fixed_m_norms=norms, uniform_fixed_m=True)
     self._trace(ring)  # must not raise
 
   def test_per_head_norms_with_per_q_block_are_rejected(self):
@@ -409,7 +454,7 @@ class RingRawKeyBoundUnsoundTest(unittest.TestCase):
     recenter, _ = custom_splash.get_fixed_m_constants(self.total_kv)
 
     k_mean = keys.mean(axis=0)
-    max_centered_logit = float(((keys - k_mean) @ query).max())
+    max_centered_logit = float(jnp.dot(keys - k_mean, query, precision=jax.lax.Precision.HIGHEST).max())
     fixed_m = float(jnp.linalg.norm(query)) * float(jnp.linalg.norm(keys, axis=-1).max())
 
     # fixed-m parks the max weight at 2**recenter, so the realised exponent is
@@ -429,7 +474,7 @@ class RingRawKeyBoundUnsoundTest(unittest.TestCase):
     # Correctly rejected, so this tile takes the online-softmax path.
     self.assertGreater(centered_bound, safe_bound)
     # And had it been admitted, the bound would genuinely cap the logit.
-    max_centered_logit = float((centered @ query).max())
+    max_centered_logit = float(jnp.dot(centered, query, precision=jax.lax.Precision.HIGHEST).max())
     self.assertLessEqual(max_centered_logit, centered_bound + 1e-3)
     self.assertLessEqual(max_centered_logit - centered_bound + recenter, 128.0)
 
