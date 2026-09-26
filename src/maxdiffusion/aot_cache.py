@@ -131,9 +131,8 @@ def extract_svg_meta(config: Any, pipeline: Any = None) -> dict[str, Any]:
       t = getattr(pipeline, attr, None)
       if t is not None:
         t_cfg = getattr(t, "config", None)
-        attn_cfg = (
-            getattr(t_cfg, "attention_config", None)
-            or (t_cfg.get("attention_config") if isinstance(t_cfg, dict) else None)
+        attn_cfg = getattr(t_cfg, "attention_config", None) or (
+            t_cfg.get("attention_config") if isinstance(t_cfg, dict) else None
         )
         if isinstance(attn_cfg, dict):
           meta[f"{attr}_svg_config"] = json.dumps(
@@ -162,9 +161,7 @@ def _dynamic_signature(args: tuple, kwargs: dict) -> str:
   Array leaves contribute shape/dtype; non-array leaves (python scalars,
   None flags) contribute an address-stripped repr.
   """
-  leaves_with_paths = jax.tree_util.tree_flatten_with_path(
-      (args, kwargs), is_leaf=_is_graphdef
-  )[0]
+  leaves_with_paths = jax.tree_util.tree_flatten_with_path((args, kwargs), is_leaf=_is_graphdef)[0]
   parts = []
   for path, leaf in leaves_with_paths:
     if _is_graphdef(leaf):
