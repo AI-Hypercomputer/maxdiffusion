@@ -2115,6 +2115,7 @@ def _ulysses_ring_custom_attention(
     use_fixed_m: bool = False,
     fixed_m_uncond: bool = False,
     internal_perm: bool = False,
+    internal_perm_hybrid: bool = False,
     ulysses_attention_chunks: int = 1,
     per_q_block: bool = True,
     kv_heads: int | None = None,
@@ -2413,9 +2414,32 @@ def _ulysses_ring_custom_attention(
           iperm_fixed = jnp.all(qn_head * mk_head <= iperm_bound) & v_ok
           iperm_mk = jnp.stack([mk_head, jnp.ones_like(mk_head)])
 
-        def _mk_internal(fixed, recenter=None):
+        # Whole-head q block: the ring streams each K/V block across the ICI ONCE
+        # per head, and the kernel loops over `bq`-sized q sub-chunks against it.
+        # Per-q-block blocking re-streamed the full K/V ring for every q block --
+        # measured at ~19 ms/layer per extra pass (transport-only), so at the old
+        # bq=9472 (2 q blocks) half of all ICI traffic was redundant. `bq` here is
+        # therefore the MXU sub-tile, and must be small enough that the whole-head
+        # q, out and accumulators fit VMEM (bq=4736 at the Wan 720p shape).
+        # Opt-in via `flash_block_sizes["block_q_sub"]`, which leaves the global
+        # `block_q` free for the other attention kernels (cross-attention reuses it).
+        if isinstance(flash_block_sizes, dict):
+          q_sub_cfg = flash_block_sizes.get("block_q_sub")
+        else:
+          q_sub_cfg = getattr(flash_block_sizes, "block_q_sub", None)
+        if q_sub_cfg:
+          if bq % q_sub_cfg:
+            raise ValueError(f"block_q ({bq}) must be a multiple of block_q_sub ({q_sub_cfg}).")
+          bsizes_whole = custom_splash._BlockSizes(  # pylint: disable=protected-access
+              query.shape[2], bkv, bkv_compute, bkv_compute_in
+          )
+        else:
+          bsizes_whole, q_sub_cfg = bsizes, None
+
+        def _mk_internal(fixed, recenter=None, uniform=True):
           return internal_ring_kernel_mod.make_internal_ring_attention(
-              block_sizes=bsizes,
+              block_sizes=bsizes_whole,
+              q_sub_block=q_sub_cfg,
               orig_q_seq_len=query_seq_len,
               orig_kv_seq_len=key_seq_len,
               ring_axis=ring_axis,
@@ -2425,11 +2449,25 @@ def _ulysses_ring_custom_attention(
               use_experimental_scheduler=use_experimental_scheduler,
               vmem_limit_bytes=vmem_limit_bytes,
               use_fixed_m=fixed,
+              uniform_fixed_m=uniform,
               fixed_m_recenter=recenter,
           )
 
         if not use_fixed_m:
           attention_output = _mk_internal(False)(query, key, value)
+        elif internal_perm_hybrid:
+          # HYBRID. `mk[1, h]` carries PER-HEAD eligibility and the kernel
+          # dispatches on it internally, so there is no outer `lax.cond` at all.
+          # Two things this buys over the guarded variant:
+          #   * a single ineligible head no longer drags every head onto the
+          #     online path -- only that head runs online, in the same launch;
+          #   * the `lax.cond`'s [H, S, D] copy between branch buffers is gone
+          #     (measured at ~2.5 s / 40 steps on this shape).
+          # `m` is still per query ROW (computed in-kernel from ||q_i||), which
+          # is tighter than the external ring's per-Q-block m_B.
+          fixed_ok_head = (qn_head * mk_head <= iperm_bound).astype(jnp.float32) * v_ok.astype(jnp.float32)
+          mk_hybrid = jnp.stack([mk_head, fixed_ok_head])
+          attention_output = _mk_internal(True, iperm_recenter, uniform=False)(query, key, value, mk_hybrid)
         elif fixed_m_uncond:
           # MEASUREMENT VARIANT. Skips the lax.cond and always takes the fixed
           # branch, to isolate the conditional's cost from fixed-m's own. Safe
@@ -2827,6 +2865,36 @@ def ulysses_ring_custom_iperm_fixed_m_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       internal_perm=True,
+      use_fixed_m=True,
+      ulysses_attention_chunks=context["ulysses_attention_chunks"],
+  )
+
+
+@register_kernel("ulysses_ring_custom_iperm_fixed_m_hybrid")
+def ulysses_ring_custom_iperm_fixed_m_hybrid_kernel(q, k, v, context):
+  """Internal-permutation ring + fixed m with PER-HEAD in-kernel dispatch.
+
+  Sink heads run online softmax inside the same launch instead of forcing the
+  whole kernel onto the slow path, and the outer eligibility `lax.cond` (and its
+  [H, S, D] branch-buffer copy) disappears."""
+  return _ulysses_ring_custom_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      ulysses_shards=context["ulysses_shards"],
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      internal_perm=True,
+      internal_perm_hybrid=True,
       use_fixed_m=True,
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
   )
@@ -4144,6 +4212,7 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_ring_custom_iperm",
         "ulysses_ring_custom_iperm_fixed_m",
         "ulysses_ring_custom_iperm_fixed_m_nocond",
+        "ulysses_ring_custom_iperm_fixed_m_hybrid",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
         "ulysses_custom_fixed_m_per_q_block",

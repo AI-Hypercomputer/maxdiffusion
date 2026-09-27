@@ -107,7 +107,9 @@ def _internal_ring_kernel(
     num_kv_heads: int,
     use_base2_exp: bool,
     use_fixed_m: bool,
+    uniform_fixed_m: bool,
     fixed_m_recenter: float,
+    q_sub: int,
     axis_names: tuple[str, ...],
     ring_axis: str,
 ):
@@ -155,112 +157,149 @@ def _internal_ring_kernel(
         pltpu.make_async_remote_copy(v_buf.at[src], v_buf.at[dst], send_sem.at[1], recv_sem.at[1], device_id=downstream),
     )
 
-  # ------------------------------------------------------------------- DMA --
-  # (0) Once per launch: rendezvous with both ring neighbours before any remote
-  # write or remote semaphore signal can be issued (the Pallas all_gather
-  # example's `main_barrier`). At R == 2 upstream and downstream are the same
-  # rank, which the 2-signal / 2-wait form still handles.
-  @pl.when((b == 0) & (h == 0) & (i == 0) & is_first_hop)
-  def _barrier():
-    sem = pltpu.get_barrier_semaphore()
-    pl.semaphore_signal(sem, 1, device_id=upstream)
-    pl.semaphore_signal(sem, 1, device_id=downstream)
-    pl.semaphore_wait(sem, 2)
+  if DIAG_SKIP_TRANSPORT:
+    # Keep the once-per-launch rendezvous: a kernel that declares a collective_id
+    # must use its barrier semaphore. Costs one handshake per launch.
+    @pl.when((b == 0) & (h == 0) & (i == 0) & is_first_hop)
+    def _barrier_only():
+      sem = pltpu.get_barrier_semaphore()
+      pl.semaphore_signal(sem, 1, device_id=upstream)
+      pl.semaphore_signal(sem, 1, device_id=downstream)
+      pl.semaphore_wait(sem, 2)
 
-  # (1) First hop of a q block has no prefetch behind it: load and block. Not
-  # prefetching across the (b, h, i) boundary keeps the head/block index out of
-  # the DMA schedule at the cost of one exposed 2 x bkv HBM read per q block.
-  @pl.when(is_first_hop)
-  def _prime():
-    for dma in _local_load(0, 0):
-      dma.start()
-    for dma in _local_load(0, 0):
-      dma.wait()
+  if not DIAG_SKIP_TRANSPORT:  # DIAGNOSTIC gate; always True in normal use
+    # ------------------------------------------------------------------- DMA --
+    # (0) Once per launch: rendezvous with both ring neighbours before any remote
+    # write or remote semaphore signal can be issued (the Pallas all_gather
+    # example's `main_barrier`). At R == 2 upstream and downstream are the same
+    # rank, which the 2-signal / 2-wait form still handles.
+    @pl.when((b == 0) & (h == 0) & (i == 0) & is_first_hop)
+    def _barrier():
+      sem = pltpu.get_barrier_semaphore()
+      pl.semaphore_signal(sem, 1, device_id=upstream)
+      pl.semaphore_signal(sem, 1, device_id=downstream)
+      pl.semaphore_wait(sem, 2)
 
-  # (2) Wait for the block this hop computes from.
-  @pl.when(jnp.logical_not(is_first_hop))
-  def _await_current():
-    @pl.when(r == 0)
-    def _await_local():
-      # My own block j, prefetched from HBM by hop (j-1, R-1).
-      for dma in _local_load(slot, j):
+    # (1) First hop of a q block has no prefetch behind it: load and block. Not
+    # prefetching across the (b, h, i) boundary keeps the head/block index out of
+    # the DMA schedule at the cost of one exposed 2 x bkv HBM read per q block.
+    @pl.when(is_first_hop)
+    def _prime():
+      for dma in _local_load(0, 0):
+        dma.start()
+      for dma in _local_load(0, 0):
         dma.wait()
 
+    # (2) Wait for the block this hop computes from.
+    @pl.when(jnp.logical_not(is_first_hop))
+    def _await_current():
+      @pl.when(r == 0)
+      def _await_local():
+        # My own block j, prefetched from HBM by hop (j-1, R-1).
+        for dma in _local_load(slot, j):
+          dma.wait()
+
+      @pl.when(r > 0)
+      def _await_remote():
+        # Pushed by the upstream rank one hop ago: its source slot was `nslot`,
+        # my destination slot is `slot`. Same shapes => same semaphore credit.
+        for dma in _remote_push(nslot, slot):
+          dma.wait_recv()
+
+    # (3) Retire my own previous send before its source buffer is reused as this
+    # hop's DMA destination (hop t-1's source slot == hop t's destination slot).
+    # Hop t-1 pushed iff its r was < R-1: always true when r > 0, never when
+    # r == 0 (the r == R-1 hop reloads from HBM instead of pushing).
     @pl.when(r > 0)
-    def _await_remote():
-      # Pushed by the upstream rank one hop ago: its source slot was `nslot`,
-      # my destination slot is `slot`. Same shapes => same semaphore credit.
+    def _retire_send():
       for dma in _remote_push(nslot, slot):
-        dma.wait_recv()
+        dma.wait_send()
 
-  # (3) Retire my own previous send before its source buffer is reused as this
-  # hop's DMA destination (hop t-1's source slot == hop t's destination slot).
-  # Hop t-1 pushed iff its r was < R-1: always true when r > 0, never when
-  # r == 0 (the r == R-1 hop reloads from HBM instead of pushing).
-  @pl.when(r > 0)
-  def _retire_send():
-    for dma in _remote_push(nslot, slot):
-      dma.wait_send()
+    # (3b) Release `nslot` -- the block I finished computing at hop t-1 -- to the
+    # upstream rank, which is about to push into it.
+    #
+    # THIS MUST LIVE IN THE PROLOGUE OF HOP t, NOT THE EPILOGUE OF HOP t-1.
+    # Emitted from the epilogue it sits in the same grid step as the compute that
+    # reads `k_buf[slot]`, and nothing orders a `semaphore_signal` after those
+    # vector loads -- Mosaic may hoist it, letting the upstream overwrite a buffer
+    # that is still being read. That is a genuine race: it reproduced at R=8 with
+    # a ragged tail, non-deterministically (rel err 0.30 / 0.41 / 0.52 on repeat
+    # runs of one config), while R<=4 happened to schedule safely. Grid iteration
+    # order IS a real ordering guarantee, so releasing here puts the signal
+    # provably after hop t-1's compute.
+    #
+    # Condition: release iff a push targets `nslot` at THIS hop, i.e. r < R-1.
+    # At the last hop of a q block (r == R-1) the slot is refilled from HBM
+    # instead, so no credit is owed -- which also closes the ledger at zero
+    # (Pallas checks semaphores are drained at kernel exit) with no seed needed:
+    # at hop 0 `nslot` has never been written, so releasing it is correct and it
+    # is exactly the credit the downstream rank's first push consumes.
+    @pl.when((r < ring_size - 1) & (ring_size > 1))
+    def _release():
+      pl.semaphore_signal(credit_sem, 1, device_id=upstream)
 
-  # (3b) Release `nslot` -- the block I finished computing at hop t-1 -- to the
-  # upstream rank, which is about to push into it.
-  #
-  # THIS MUST LIVE IN THE PROLOGUE OF HOP t, NOT THE EPILOGUE OF HOP t-1.
-  # Emitted from the epilogue it sits in the same grid step as the compute that
-  # reads `k_buf[slot]`, and nothing orders a `semaphore_signal` after those
-  # vector loads -- Mosaic may hoist it, letting the upstream overwrite a buffer
-  # that is still being read. That is a genuine race: it reproduced at R=8 with
-  # a ragged tail, non-deterministically (rel err 0.30 / 0.41 / 0.52 on repeat
-  # runs of one config), while R<=4 happened to schedule safely. Grid iteration
-  # order IS a real ordering guarantee, so releasing here puts the signal
-  # provably after hop t-1's compute.
-  #
-  # Condition: release iff a push targets `nslot` at THIS hop, i.e. r < R-1.
-  # At the last hop of a q block (r == R-1) the slot is refilled from HBM
-  # instead, so no credit is owed -- which also closes the ledger at zero
-  # (Pallas checks semaphores are drained at kernel exit) with no seed needed:
-  # at hop 0 `nslot` has never been written, so releasing it is correct and it
-  # is exactly the credit the downstream rank's first push consumes.
-  @pl.when((r < ring_size - 1) & (ring_size > 1))
-  def _release():
-    pl.semaphore_signal(credit_sem, 1, device_id=upstream)
+    # (4) Issue the next hop's transfer.
+    @pl.when(jnp.logical_not(is_last_hop))
+    def _prefetch_next():
+      @pl.when(r < ring_size - 1)
+      def _push():
+        # One credit == "the downstream rank has retired the slot I am about to
+        # write". Without it a push lands on a lagging neighbour's live block.
+        pl.semaphore_wait(credit_sem, 1)
+        for dma in _remote_push(slot, nslot):
+          dma.start()
 
-  # (4) Issue the next hop's transfer.
-  @pl.when(jnp.logical_not(is_last_hop))
-  def _prefetch_next():
-    @pl.when(r < ring_size - 1)
-    def _push():
-      # One credit == "the downstream rank has retired the slot I am about to
-      # write". Without it a push lands on a lagging neighbour's live block.
-      pl.semaphore_wait(credit_sem, 1)
-      for dma in _remote_push(slot, nslot):
-        dma.start()
+      @pl.when(r == ring_size - 1)
+      def _reload_own():
+        # End of a ring cycle: the next kv block starts from my own shard again.
+        for dma in _local_load(nslot, j + 1):
+          dma.start()
 
-    @pl.when(r == ring_size - 1)
-    def _reload_own():
-      # End of a ring cycle: the next kv block starts from my own shard again.
-      for dma in _local_load(nslot, j + 1):
-        dma.start()
+  # Per-head dispatch. `uniform_fixed_m` is the caller's compile-time promise
+  # that EVERY head cleared the Cauchy-Schwarz gate, which lets us drop the
+  # branch entirely. Otherwise `mk_ref[1, h]` carries per-head eligibility and
+  # the sink heads run online softmax *inside the same launch* -- so a single
+  # ineligible head no longer forces the whole kernel onto the slow path, and
+  # the caller needs no outer `lax.cond` (which cost a [H, S, D] copy between
+  # branch buffers).
+  fixed_only = use_fixed_m and uniform_fixed_m
+  if use_fixed_m and not fixed_only:
+    is_fixed = mk_ref[1, h] > 0.5
+  else:
+    is_fixed = None
+
+  def _write_fixed_m():
+    qf = q_ref[...].astype(float32)
+    qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]
+    # C(N) comes from the caller (`custom_splash.get_fixed_m_constants`) rather
+    # than the legacy pinned 88.0: N here is the WHOLE ring's KV length, since
+    # one launch accumulates every shard into the same VMEM accumulator.
+    m_fixed = jnp.ceil(qn * mk_ref[0, h]) - fixed_m_recenter
+    m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
 
   # ------------------------------------------------------------- accumulate --
   @pl.when(is_first_hop)
   def _init():
     o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
     l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
-    if use_fixed_m:
-      # Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C, pinned for
-      # the WHOLE ring. Unlike the external ring this needs no per-hop gating and
-      # no LSE merge: one kernel sees every shard and the accumulator never
-      # leaves VMEM, so every hop is already subtracting the identical m.
-      # `mk_ref[0, h]` is max||k|| reduced over the ring AND ulysses axes by the
-      # caller, so the bound covers keys this rank never holds.
-      qf = q_ref[...].astype(float32)
-      qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]
-      # C(N) comes from the caller (`custom_splash.get_fixed_m_constants`) rather
-      # than the legacy pinned 88.0: N here is the WHOLE ring's KV length, since
-      # one launch accumulates every shard into the same VMEM accumulator.
-      m_fixed = jnp.ceil(qn * mk_ref[0, h]) - fixed_m_recenter
-      m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
+    # Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C, pinned for the
+    # WHOLE ring. Unlike the external ring this needs no per-hop gating and no
+    # LSE merge: one kernel sees every shard and the accumulator never leaves
+    # VMEM, so every hop is already subtracting the identical m. `mk_ref[0, h]`
+    # is max||k|| reduced over the ring AND ulysses axes by the caller, so the
+    # bound covers keys this rank never holds.
+    if fixed_only:
+      _write_fixed_m()
+    elif use_fixed_m:
+
+      @pl.when(is_fixed)
+      def _init_fixed():
+        _write_fixed_m()
+
+      @pl.when(jnp.logical_not(is_fixed))
+      def _init_online():
+        m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+
     else:
       m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
 
@@ -298,42 +337,129 @@ def _internal_ring_kernel(
       )
     return l_prev, o_prev
 
-  def _step(offset, length):
-    q = q_ref[...]
-    sl = pl.ds(offset, length)
-    qk = lax.dot_general(k_buf[slot, sl, :], q, NT_DIM_NUMBERS, preferred_element_type=float32)
-    v_chunk = v_buf[slot, sl, :]
-    if use_fixed_m:
-      l_prev, o_prev = _fixed_inner(qk, v_chunk, m_scratch_ref[...], l_scratch_ref[...], o_scratch_ref[:])
-      l_scratch_ref[...] = l_prev
-    else:
-      m_prev, l_prev, o_prev = _online_inner(qk, v_chunk, m_scratch_ref[...], l_scratch_ref[...], o_scratch_ref[:])
-      m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
-    o_scratch_ref[:] = o_prev
+  def _step(offset, length, fixed):
+    """One bkv_compute chunk. `fixed` is STATIC: the caller picks the body.
 
-  def compute_body(kv_compute_index, _):
-    _step(kv_compute_index * bkv_compute, bkv_compute)
+    The K/V chunk is loaded once and reused against every q sub-chunk. With
+    `q_sub == bq` this is a single iteration -- the original kernel. With a
+    whole-head q block (`bq == q_pad`) it is what makes the ring stream each
+    K/V block ONCE per head: the grid has one q block, so the (j, r) ring cycle
+    is no longer repeated per q block. That repetition was measured at ~18.7 ms
+    per extra q block per layer (ICI-bound: ~1.2 GB of remote K/V per pass).
+    """
+    sl = pl.ds(offset, length)
+    k_blk = k_buf[slot, sl, :]
+    v_chunk = v_buf[slot, sl, :]
+    def _one_q_chunk(qs):
+      qsl = pl.ds(qs, q_sub)
+      qk = lax.dot_general(k_blk, q_ref[qsl, :], NT_DIM_NUMBERS, preferred_element_type=float32)
+      if fixed:
+        l_prev, o_prev = _fixed_inner(qk, v_chunk, m_scratch_ref[:, qsl], l_scratch_ref[:, qsl], o_scratch_ref[:, qsl])
+        l_scratch_ref[:, qsl] = l_prev
+      else:
+        m_prev, l_prev, o_prev = _online_inner(
+            qk, v_chunk, m_scratch_ref[:, qsl], l_scratch_ref[:, qsl], o_scratch_ref[:, qsl]
+        )
+        m_scratch_ref[:, qsl] = m_prev
+        l_scratch_ref[:, qsl] = l_prev
+      o_scratch_ref[:, qsl] = o_prev
+
+    # ROLLED, not unrolled. Unrolling this loop doubles the static program; past
+    # ~41k bundles it no longer fits the core's instruction memory and every grid
+    # step stalls on instruction fetch -- measured 2.1x slower on pure compute
+    # (91.2 -> 43.4 ms/layer), invisible in the static schedule, whose bundle
+    # count and opcode mix stay exactly proportional to the work.
+    n_q = q_ref.shape[0] // q_sub
+    if n_q > 1:
+      def _qbody(t, carry):
+        _one_q_chunk(pl.multiple_of(t * q_sub, 128))
+        return carry
+      lax.fori_loop(0, n_q, _qbody, None)
+    else:
+      for qs in range(0, q_ref.shape[0], q_sub):
+        _one_q_chunk(qs)
+
+  def compute_body_fixed(kv_compute_index, _):
+    _step(kv_compute_index * bkv_compute, bkv_compute, True)
+
+  def compute_body_online(kv_compute_index, _):
+    _step(kv_compute_index * bkv_compute, bkv_compute, False)
 
   assert bkv % bkv_compute == 0
 
-  @pl.when(j != grid_width - 1)
-  def _body():
-    lax.fori_loop(0, bkv // bkv_compute, compute_body, None, unroll=True)
+  def _run_full(fixed):
+    body = compute_body_fixed if fixed else compute_body_online
+    lax.fori_loop(0, bkv // bkv_compute, body, None, unroll=not ROLL_KV_LOOP)
 
-  @pl.when(j == grid_width - 1)
-  def _last_body():
+  def _run_tail(fixed):
     # Ragged tail. `kv_seq_len` is the un-padded shard length and every ring rank
     # pads identically, so the same tail applies on every hop.
+    body = compute_body_fixed if fixed else compute_body_online
     if kv_seq_len % bkv == 0:
-      lax.fori_loop(0, bkv // bkv_compute, compute_body, None, unroll=True)
+      lax.fori_loop(0, bkv // bkv_compute, body, None, unroll=not ROLL_KV_LOOP)
+      return
+    remain = kv_seq_len % bkv
+    iter_num = (remain + bkv_compute - 1) // bkv_compute
+    if remain % bkv_compute == 0:
+      lax.fori_loop(0, iter_num, body, None, unroll=not ROLL_KV_LOOP)
     else:
-      remain = kv_seq_len % bkv
-      iter_num = (remain + bkv_compute - 1) // bkv_compute
-      if remain % bkv_compute == 0:
-        lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
-      else:
-        lax.fori_loop(0, iter_num - 1, compute_body, None, unroll=True)
-        _step((iter_num - 1) * bkv_compute, remain % bkv_compute)
+      lax.fori_loop(0, iter_num - 1, body, None, unroll=not ROLL_KV_LOOP)
+      _step((iter_num - 1) * bkv_compute, remain % bkv_compute, fixed)
+
+  # Dispatch ONCE per grid step, at body level -- never inside the inner loop.
+  # Predicating each chunk individually instead costs ~2.75x runtime and 2.7x
+  # compile: Mosaic then re-enters a predicated region per iteration rather than
+  # scheduling one straight-line body. Fusing the predicate into the existing
+  # `j` guard keeps two clean single-body loops, which is what the external
+  # splash kernel does (`custom_splash_attention.py:_body_fixed/_body_online`).
+  if DIAG_SKIP_COMPUTE:
+    pass
+  elif fixed_only or not use_fixed_m:
+    _only = bool(fixed_only)
+
+    @pl.when(j != grid_width - 1)
+    def _body():
+      _run_full(_only)
+
+    @pl.when(j == grid_width - 1)
+    def _last_body():
+      _run_tail(_only)
+
+  else:
+
+    @pl.when((j != grid_width - 1) & is_fixed)
+    def _body_fixed():
+      _run_full(True)
+
+    @pl.when((j != grid_width - 1) & jnp.logical_not(is_fixed))
+    def _body_online():
+      _run_full(False)
+
+    # Ragged last KV block. Two bodies here (fixed + online) is what used to trip
+    # the whole-grid slowdown -- not branching as such but CODE SIZE: the static
+    # program outgrew instruction memory (see the rolled q loop in `_step`).
+    #  * whole-head mode (q loop rolled): the program has room, so each head
+    #    finishes in its own mode. Measured free: 44.84 vs 44.84 ms uniform-fixed.
+    #  * per-q-block mode (bodies not rolled): run the last block ONLINE for every
+    #    head -- one body. Exact, since online continues from a fixed-m state:
+    #    m_next = max(m_prev, m_curr) and (o, l) rescale by exp2(m_prev - m_next).
+    #    Costs ~0.95 ms/layer vs two bodies, but avoids the ~3x cliff.
+    two_body_last = HYBRID_TWO_BODY_LAST or (q_ref.shape[0] // q_sub > 1)
+    if two_body_last:
+
+      @pl.when((j == grid_width - 1) & is_fixed)
+      def _last_body_fixed():
+        _run_tail(True)
+
+      @pl.when((j == grid_width - 1) & jnp.logical_not(is_fixed))
+      def _last_body_online():
+        _run_tail(False)
+
+    else:
+
+      @pl.when(j == grid_width - 1)
+      def _last_body():
+        _run_tail(False)
 
   # -------------------------------------------------------------- epilogue --
   # Nothing to release here: the credit for this hop's slot is emitted in the
@@ -345,6 +471,21 @@ def _internal_ring_kernel(
     l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
     o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
 
+
+# Whether to single-buffer the q/out blocks when the q block spans the whole head.
+RESIDENT_SINGLE_BUFFER = True
+# DIAGNOSTIC: skip all attention compute but keep the ring's DMA/semaphore protocol,
+# so the kernel's wall time is pure transport + handshake. Output is garbage.
+DIAG_SKIP_COMPUTE = False
+# DIAGNOSTIC: skip the whole ring DMA/semaphore protocol; compute runs on whatever
+# is in the KV buffers, so wall time is pure compute. Output is garbage.
+DIAG_SKIP_TRANSPORT = False
+# DIAGNOSTIC: emit the KV-chunk loop rolled instead of unrolled.
+ROLL_KV_LOOP = False
+# DIAGNOSTIC: in the hybrid, run the ragged last block per-head (fixed OR online)
+# instead of online for every head. Two bodies in the last block used to trigger the
+# code-size cliff; with the q loop rolled the program may now fit.
+HYBRID_TWO_BODY_LAST = False
 
 def internal_ring_attention_forward(
     q: jax.Array,
@@ -359,8 +500,10 @@ def internal_ring_attention_forward(
     axis_names: tuple[str, ...],
     use_base2_exp: bool = True,
     use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
     mk: jax.Array | None = None,
     fixed_m_recenter: float | None = None,
+    q_sub_block: int | None = None,
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
     mask_value: float = DEFAULT_MASK_VALUE,
@@ -386,6 +529,9 @@ def internal_ring_attention_forward(
   q_heads_per_kv_head = num_q_heads // num_kv_heads
 
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
+  q_sub = bq if q_sub_block is None else q_sub_block
+  if bq % q_sub != 0 or q_sub % 128 != 0:
+    raise ValueError(f"q_sub_block ({q_sub}) must be a multiple of 128 that divides block_q ({bq}).")
   bkv_compute = block_sizes.block_kv_compute
   bkv_compute_in = block_sizes.block_kv_compute_in
 
@@ -399,6 +545,12 @@ def internal_ring_attention_forward(
   grid_height = (q_seq_len + bq - 1) // bq
   grid = (batch, num_q_heads, grid_height, grid_width, ring_size)
 
+  # With a whole-head q block (grid_height == 1) the q and out blocks change only
+  # once per head, across grid_width * ring_size steps, so double-buffering them
+  # buys no overlap and costs 2 x 4.85 MB of VMEM at the Wan shape -- exactly the
+  # margin by which the whole-head config otherwise overflows TPU7x's 64 MiB.
+  _resident = dict(pipeline_mode=pl.Buffered(1)) if (grid_height == 1 and RESIDENT_SINGLE_BUFFER) else {}
+
   # `*_` absorbs the scalar-prefetch operand, which Pallas appends to every
   # index_map's argument list once num_scalar_prefetch > 0.
   def q_index_map(b, h, i, j, r, *_):
@@ -408,11 +560,11 @@ def internal_ring_attention_forward(
     return (b, h, 0, i)
 
   in_specs = [
-      pl.BlockSpec((None, None, bq, head_dim_qk), q_index_map),
+      pl.BlockSpec((None, None, bq, head_dim_qk), q_index_map, **_resident),
       pl.BlockSpec(memory_space=pl.ANY),
       pl.BlockSpec(memory_space=pl.ANY),
   ]
-  out_specs = pl.BlockSpec((None, None, head_dim_v, bq), out_index_map)
+  out_specs = pl.BlockSpec((None, None, head_dim_v, bq), out_index_map, **_resident)
   out_shape = jax.ShapeDtypeStruct((batch, num_q_heads, head_dim_v, q_seq_len), q.dtype)
 
   scratch_shapes = [
@@ -442,7 +594,9 @@ def internal_ring_attention_forward(
           num_kv_heads=num_kv_heads,
           use_base2_exp=use_base2_exp,
           use_fixed_m=use_fixed_m,
+          uniform_fixed_m=uniform_fixed_m,
           fixed_m_recenter=fixed_m_recenter,
+          q_sub=q_sub,
           axis_names=tuple(axis_names),
           ring_axis=ring_axis,
       ),
@@ -484,7 +638,9 @@ def make_internal_ring_attention(
     vmem_limit_bytes: int | None = None,
     mask_value: float = DEFAULT_MASK_VALUE,
     use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
     fixed_m_recenter: float | None = None,
+    q_sub_block: int | None = None,
 ):
   """Batched `(b, h, s, d) -> (b, h, s, d)` callable. Deliberately NOT vmapped:
   the batch axis is a grid dimension, because vmapping a pallas_call that owns
@@ -512,8 +668,10 @@ def make_internal_ring_attention(
         axis_names=axis_names,
         use_base2_exp=use_base2_exp,
         use_fixed_m=use_fixed_m,
+        uniform_fixed_m=uniform_fixed_m,
         mk=mk,
         fixed_m_recenter=recenter,
+        q_sub_block=q_sub_block,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
         mask_value=mask_value,
