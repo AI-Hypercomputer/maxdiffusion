@@ -481,7 +481,7 @@ DIAG_SKIP_COMPUTE = False
 # is in the KV buffers, so wall time is pure compute. Output is garbage.
 DIAG_SKIP_TRANSPORT = False
 # DIAGNOSTIC: emit the KV-chunk loop rolled instead of unrolled.
-ROLL_KV_LOOP = False
+ROLL_KV_LOOP = True
 # DIAGNOSTIC: in the hybrid, run the ragged last block per-head (fixed OR online)
 # instead of online for every head. Two bodies in the last block used to trigger the
 # code-size cliff; with the q loop rolled the program may now fit.
