@@ -201,6 +201,14 @@ INTERNAL_PERM_KERNELS = frozenset({
     "ulysses_ring_custom_iperm",
     "ulysses_ring_custom_iperm_fixed_m",
     "ulysses_ring_custom_iperm_fixed_m_nocond",
+    # The hybrid kernel single-buffers a whole-head resident Q instead of
+    # double-buffering per-block Q, so its true VMEM ceiling differs from the
+    # plain iperm kernels' calibrated fit -- this reuses "internal" as the
+    # closer of the two available fits (not a from-scratch calibration for
+    # this kernel). The resident buffer should only ADD headroom vs. iperm,
+    # so any error here is in the safe (over-conservative) direction; the
+    # search's own OOM-pruning is the backstop if it isn't.
+    "ulysses_ring_custom_iperm_fixed_m_hybrid",
 })
 
 

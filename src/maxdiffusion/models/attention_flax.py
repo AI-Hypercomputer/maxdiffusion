@@ -2403,7 +2403,7 @@ def _ulysses_ring_custom_attention(
           # conservative direction for the fp32 overflow ceiling, and it keeps
           # the gate strictly tighter than `all_fixed_global`.
           eff_kv_len = key_seq_len * num_ring_shards
-          iperm_recenter, iperm_bound = custom_splash.get_fixed_m_constants(eff_kv_len, is_ring=True)
+          iperm_recenter, iperm_bound = custom_splash.get_fixed_m_constants(eff_kv_len)
           # Reduce the (batch, ...) metadata to the (heads,) the un-vmapped
           # kernel takes. Max over batch and over Q blocks: a single m is pinned
           # for the whole grid, so it must dominate every row it will shift.
