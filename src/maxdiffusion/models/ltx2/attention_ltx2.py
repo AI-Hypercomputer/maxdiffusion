@@ -465,9 +465,11 @@ class LTX2Attention(nnx.Module):
         "ulysses_ring",
         "ulysses_ring_custom",
         "ulysses_ring_custom_fixed_m",
+        "ulysses_ring_custom_fixed_m_per_q_block",
         "ulysses_ring_custom_bidir",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
+        "ulysses_custom_fixed_m_per_q_block",
     )
     cross_attention_uses_local_kv = not is_self_attention and (
         cross_attention_remapped_to_flash or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te")

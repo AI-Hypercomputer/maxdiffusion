@@ -734,12 +734,16 @@ def self_attention_token_padding(padding: Optional[TokenPadding]):
     _ACTIVE_TOKEN_PADDING.reset(token)
 
 
-def _active_token_padding(seq_len: int, num_segments: int) -> Optional[TokenPadding]:
+def _active_token_padding(
+    seq_len: int, num_segments: int, is_self_attention: bool = True
+) -> Optional[TokenPadding]:
   """The declared padding when it describes this `seq_len`-token KV sequence, else None.
 
   Only self-attention over the padded video tokens matches. Cross-attention
   keys (text or image tokens) have their own length and carry no pads.
   """
+  if not is_self_attention:
+    return None
   padding = _ACTIVE_TOKEN_PADDING.get()
   if padding is None or padding.total_len != seq_len:
     return None
@@ -4249,8 +4253,9 @@ class FlaxWanAttention(nnx.Module):
     op = self.attention_op
     mesh = self.mesh
     is_tpu = mesh is not None and all(getattr(d, "platform", None) == "tpu" for d in mesh.devices.flat)
-    is_cpu_interpret = getattr(self, "wan_cross_attn_cpu_interpret", False) or bool(
-        wan_runtime_options.get("wan_cross_attn_cpu_interpret")
+    is_cpu_interpret = (not is_tpu) and (
+        getattr(self, "wan_cross_attn_cpu_interpret", False)
+        or bool(wan_runtime_options.get("wan_cross_attn_cpu_interpret"))
     )
     flat = query.ndim == 3 and key.ndim == 3 and value.ndim == 3
     kv_len = key.shape[1] if flat else -1

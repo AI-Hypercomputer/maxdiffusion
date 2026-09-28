@@ -606,12 +606,18 @@ class AotCacheTest(unittest.TestCase):
     path_no_prefix = format_video_output_path("/tmp/test_wan_out", "wan_run", 42, 1)
     self.assertEqual(path_no_prefix, "/tmp/test_wan_out/wan_run_42_1.mp4")
 
-    # Without output_dir (or GCS)
+    # Without output_dir (or GCS or default template output_dir)
     path_empty_dir = format_video_output_path("", "wan_run", 42, 0, "prefix_")
     self.assertEqual(path_empty_dir, "prefix_wan_output_42_0.mp4")
 
     path_gcs_dir = format_video_output_path("gs://bucket/dir", "wan_run", 42, 2, "my_")
     self.assertEqual(path_gcs_dir, "my_wan_output_42_2.mp4")
+
+    path_default_sdxl = format_video_output_path("sdxl-model-finetuned", "None", 42, 0)
+    self.assertEqual(path_default_sdxl, "wan_output_42_0.mp4")
+
+    path_default_empty_run = format_video_output_path("sdxl-model-finetuned", "", 42, 0)
+    self.assertEqual(path_default_empty_run, "wan_output_42_0.mp4")
 
   def test_float32_qk_product_gate(self):
     """_apply_attention_dot must use float32 preferred_element_type only when float32_qk_product=True."""

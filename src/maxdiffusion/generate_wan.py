@@ -110,29 +110,40 @@ def format_video_output_path(
     filename_prefix: str = "",
 ) -> str:
   """Formats the target mp4 path for a generated video."""
-  if output_dir and not output_dir.startswith("gs://"):
-    return os.path.join(output_dir, f"{filename_prefix}{run_name}_{seed}_{index}.mp4")
+  clean_run_name = str(run_name).strip() if run_name and str(run_name).strip() != "None" else ""
+  name_part = f"{clean_run_name}_{seed}_{index}" if clean_run_name else f"wan_output_{seed}_{index}"
+  if output_dir and not output_dir.startswith("gs://") and output_dir != "sdxl-model-finetuned":
+    return os.path.join(output_dir, f"{filename_prefix}{name_part}.mp4")
   return f"{filename_prefix}wan_output_{seed}_{index}.mp4"
 
 
 def _build_wan_aot_metadata(config, mesh, source_revision) -> dict[str, str]:
   """Builds the install-time configuration metadata dictionary for Wan AOT caching."""
   first_dev = jax.devices()[0] if jax.devices() else None
-  platform_version = getattr(first_dev, "platform_version", "unknown") if first_dev else "unknown"
+  if first_dev and hasattr(first_dev, "client") and hasattr(first_dev.client, "platform_version"):
+    platform_version = str(first_dev.client.platform_version)
+  elif first_dev and hasattr(first_dev, "platform_version") and first_dev.platform_version:
+    platform_version = str(first_dev.platform_version)
+  else:
+    platform_version = "unknown"
   try:
-    default_matmul_precision = str(
-        jax.config.read("jax_default_matmul_precision")
-        if hasattr(jax.config, "read")
-        else getattr(jax.config, "jax_default_matmul_precision", "default")
-    )
+    val = getattr(jax.config, "jax_default_matmul_precision", None)
+    if val is not None:
+      default_matmul_precision = str(val)
+    elif hasattr(jax.config, "read"):
+      default_matmul_precision = str(jax.config.read("jax_default_matmul_precision"))
+    else:
+      default_matmul_precision = os.environ.get("JAX_DEFAULT_MATMUL_PRECISION", "default")
   except Exception:  # noqa: BLE001
     default_matmul_precision = os.environ.get("JAX_DEFAULT_MATMUL_PRECISION", "default")
   try:
-    default_prng_impl = str(
-        jax.config.read("jax_default_prng_impl")
-        if hasattr(jax.config, "read")
-        else getattr(jax.config, "jax_default_prng_impl", "threefry2x32")
-    )
+    val = getattr(jax.config, "jax_default_prng_impl", None)
+    if val is not None:
+      default_prng_impl = str(val)
+    elif hasattr(jax.config, "read"):
+      default_prng_impl = str(jax.config.read("jax_default_prng_impl"))
+    else:
+      default_prng_impl = "threefry2x32"
   except Exception:  # noqa: BLE001
     default_prng_impl = "default"
 
