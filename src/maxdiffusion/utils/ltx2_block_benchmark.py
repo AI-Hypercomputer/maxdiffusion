@@ -32,7 +32,6 @@ os.environ.setdefault(
         "--xla_tpu_enable_async_collective_fusion_multiple_steps=true",
         "--xla_tpu_overlap_compute_collective_tc=true",
         "--xla_enable_async_all_gather=true",
-        "--xla_tpu_scoped_vmem_limit_kib=32768",
         "--xla_tpu_enable_async_all_to_all=true",
         "--xla_tpu_enable_all_experimental_scheduler_features=true",
         "--xla_tpu_enable_latency_hiding_scheduler=true",
@@ -75,9 +74,18 @@ def tiled_seq_len(full_seq: int, attention: str, context_shards: int, ulysses_sh
   return local_tiled_seq_len(full_seq, attention, context_shards, ulysses_shards)
 
 
-@functools.partial(nnx.jit, static_argnames=("num_frames", "height", "width"))
+# xla_tpu_scoped_vmem_limit_kib per jax device_kind. Passed as a compile option
+# (not via LIBTPU_INIT_ARGS) because jax.devices() initializes libtpu, after
+# which LIBTPU_INIT_ARGS is no longer read.
+_SCOPED_VMEM_LIMIT_KIB = {
+    "TPU v6 lite": 32768,
+    "TPU7x": 65536,
+}
+
+
 def _forward(
-    model,
+    graphdef,
+    state,
     latents,
     timestep,
     prompt_embeds,
@@ -90,6 +98,7 @@ def _forward(
     height,
     width,
 ):
+  model = nnx.merge(graphdef, state)
   return model(
       hidden_states=latents,
       audio_hidden_states=audio_latents,
@@ -134,6 +143,10 @@ class LTX2BlockBenchmark(BlockBenchmark):
     self._ulysses_shards = int(getattr(config, "ulysses_shards", 1) or 1)
     self._vmem = int(vmem_limit_bytes)
     self.label = f"ltx2/{self._attention}/u{self._ulysses_shards}"
+    device_kind = jax.devices()[0].device_kind
+    self._compiler_options = {
+        "xla_tpu_scoped_vmem_limit_kib": str(_SCOPED_VMEM_LIMIT_KIB[device_kind]),
+    }
 
     self._lf = (num_frames - 1) // 8 + 1
     self._lh, self._lw = height // 32, width // 32
@@ -176,6 +189,12 @@ class LTX2BlockBenchmark(BlockBenchmark):
     try:
       with self._mesh:
         model = self._build_model(bq, bkv, cmp)
+      graphdef, state = nnx.split(model)
+      forward = jax.jit(
+          functools.partial(_forward, graphdef),
+          static_argnames=("num_frames", "height", "width"),
+          compiler_options=self._compiler_options,
+      )
       (
           latents,
           timestep,
@@ -187,8 +206,8 @@ class LTX2BlockBenchmark(BlockBenchmark):
       ) = self._inputs
       with self._mesh, nn_partitioning.axis_rules(self._rules):
         mean, std, times, compile_ms = time_callable(
-            lambda: _forward(
-                model,
+            lambda: forward(
+                state,
                 latents,
                 timestep,
                 prompt_embeds,
