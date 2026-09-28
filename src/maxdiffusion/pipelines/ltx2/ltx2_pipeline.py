@@ -336,9 +336,14 @@ def create_sharded_logical_transformer(
   dit_specs = get_sharding_specs(transformer_strategy, "ltx2_dit")
   ltx2_config["sharding_specs"] = dit_specs
 
-  high_density = float(getattr(config, "svg_high_noise_density", -1.0))
-  low_density = float(getattr(config, "svg_low_noise_density", -1.0))
-  expert_density = float(getattr(config, "svg_spatial_density", 0.25))
+  def _cfg(name, default):
+    """Returns config.<name>, falling back to default if missing or None."""
+    value = getattr(config, name, None)
+    return default if value is None else value
+
+  high_density = float(_cfg("svg_high_noise_density", -1.0))
+  low_density = float(_cfg("svg_low_noise_density", -1.0))
+  expert_density = float(_cfg("svg_spatial_density", 0.25))
 
   use_svg = bool(getattr(config, "use_svg_attention", False)) and (expert_density < 1.0)
 
@@ -355,12 +360,12 @@ def create_sharded_logical_transformer(
       "svg_profile_seed": getattr(config, "svg_profile_seed", 0),
       "svg_dense_layer_fraction": getattr(config, "svg_dense_layer_fraction", 0.0),
       "svg_dense_timestep_fraction": getattr(config, "svg_dense_timestep_fraction", 0.0),
-      "svg_active_start_step": getattr(config, "svg_active_start_step", -1),
-      "svg_active_end_step": getattr(config, "svg_active_end_step", -1),
-      "svg_active_start_layer": getattr(config, "svg_active_start_layer", -1),
-      "svg_active_end_layer": getattr(config, "svg_active_end_layer", -1),
-      "svg_num_train_timesteps": getattr(config, "svg_num_train_timesteps", 1000),
-      "svg_num_layers": getattr(config, "svg_num_layers", ltx2_config.get("num_layers", 28)),
+      "svg_active_start_step": _cfg("svg_active_start_step", -1),
+      "svg_active_end_step": _cfg("svg_active_end_step", -1),
+      "svg_active_start_layer": _cfg("svg_active_start_layer", -1),
+      "svg_active_end_layer": _cfg("svg_active_end_layer", -1),
+      "svg_num_train_timesteps": _cfg("svg_num_train_timesteps", 1000),
+      "svg_num_layers": _cfg("svg_num_layers", ltx2_config.get("num_layers", 28)),
       "svg_include_first_frame": getattr(config, "svg_include_first_frame", True),
       "svg_global_stride": getattr(config, "svg_global_stride", 0),
       "svg_global_offset": getattr(config, "svg_global_offset", 0),
