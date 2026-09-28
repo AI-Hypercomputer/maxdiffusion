@@ -710,9 +710,7 @@ class LTX2Attention(nnx.Module):
             attn_output = jax.lax.cond(is_active, run_sparse_svg, run_dense, operand=None)
       else:
         with self.named_scope("apply_attention"):
-          attn_output = self.attention_op.apply_attention(
-              query=query, key=key, value=value, attention_mask=attention_mask
-          )
+          attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
 
       if perturbation_mask is not None:
         # value is [B, S, InnerDim]
