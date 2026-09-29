@@ -237,9 +237,7 @@ class AotCacheTest(unittest.TestCase):
 
   def test_step_array_preserves_dynamic_signature_across_steps(self):
     sigs = {
-        aot_cache._dynamic_signature(
-            (self._a,), {"svg_step_index": jnp.asarray(step, dtype=jnp.int32)}
-        )
+        aot_cache._dynamic_signature((self._a,), {"svg_step_index": jnp.asarray(step, dtype=jnp.int32)})
         for step in range(40)
     }
     self.assertEqual(len(sigs), 1)
