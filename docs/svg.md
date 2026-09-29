@@ -58,11 +58,27 @@ svg_profile_seed: 0
 svg_include_first_frame: True
 ```
 
+For LTX-2 (`src/maxdiffusion/configs/ltx2_video.yml` or `ltx2_3_video.yml`), use `svg_spatial_density`:
+
+```yaml
+attention: ulysses_ring_custom_fixed_m
+use_svg_attention: True
+svg_spatial_density: 0.20
+svg_active_start_step: 10
+svg_active_end_step: 35
+svg_active_start_layer: 1
+svg_active_end_layer: 28
+svg_profile_query_count: 64
+svg_sample_max_row: 10000
+svg_profile_seed: 0
+svg_include_first_frame: True
+```
+
 Step and layer intervals are zero-based and half-open: `[11, 40)` includes steps 11 through 39. Steps refer to denoising iterations, not noise-timestep values.
 
 | Option | What it controls |
 |---|---|
-| `svg_spatial_density` | Density for single-expert Wan models; applies to either selected head pattern. |
+| `svg_spatial_density` | Density for single-expert Wan models and LTX-2; applies to either selected head pattern. |
 | `svg_high_noise_density`, `svg_low_noise_density` | Separate densities for Wan2.2's two experts. |
 | `svg_active_start_step`, `svg_active_end_step` | Denoising steps where SVG is enabled. |
 | `svg_active_start_layer`, `svg_active_end_layer` | Transformer layers where SVG is enabled. |

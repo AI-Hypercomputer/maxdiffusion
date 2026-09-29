@@ -144,9 +144,13 @@ class LTX2BlockBenchmark(BlockBenchmark):
     self._vmem = int(vmem_limit_bytes)
     self.label = f"ltx2/{self._attention}/u{self._ulysses_shards}"
     device_kind = jax.devices()[0].device_kind
-    self._compiler_options = {
-        "xla_tpu_scoped_vmem_limit_kib": str(_SCOPED_VMEM_LIMIT_KIB[device_kind]),
-    }
+    if "tpu" in device_kind.lower():
+      scoped_vmem = _SCOPED_VMEM_LIMIT_KIB.get(device_kind, 65536)
+      self._compiler_options = {
+          "xla_tpu_scoped_vmem_limit_kib": str(scoped_vmem),
+      }
+    else:
+      self._compiler_options = {}
 
     self._lf = (num_frames - 1) // 8 + 1
     self._lh, self._lw = height // 32, width // 32
@@ -182,7 +186,9 @@ class LTX2BlockBenchmark(BlockBenchmark):
     return (s, s)
 
   def vmem_bytes(self):
-    return self._vmem // max(1, self._batch)
+    data_shards = int(self._mesh.shape.get("data", 1)) * int(self._mesh.shape.get("fsdp", 1))
+    local_batch = max(1, self._batch // max(1, data_shards))
+    return self._vmem // local_batch
 
   def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2):
     cmp = bkv_compute or bkv

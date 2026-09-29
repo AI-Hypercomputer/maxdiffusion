@@ -22,6 +22,7 @@ import jax
 import jax.numpy as jnp
 from ... import common_types
 from ..attention_flax import NNXAttentionOp
+from ..wan.transformers import svg_attention
 from .logical_sharding_ltx2 import get_sharding_specs, LTX2DiTShardingSpecs
 
 Array = common_types.Array
@@ -650,8 +651,6 @@ class LTX2Attention(nnx.Module):
     with self.named_scope("Attention and Output Project"):
       # 4. Attention
       if self.use_svg_attention and is_self_attention and spatiotemporal_shape is not None:
-        from maxdiffusion.models.wan.transformers import svg_attention
-
         is_active = svg_attention.is_svg_active(
             step_index=svg_step_index,
             layer_index=svg_layer_index,
