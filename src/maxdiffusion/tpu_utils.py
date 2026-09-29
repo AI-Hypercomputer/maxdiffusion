@@ -78,3 +78,36 @@ def get_tpu_type() -> TpuType:
       return TpuType.UNKNOWN
   except Exception:
     return TpuType.UNKNOWN
+
+
+# XLA's per-op scratch budget used across maxdiffusion (README, CI, run scripts).
+_DEFAULT_SCOPED_VMEM_LIMIT_KIB = 64 * 1024
+
+
+def get_vmem_capacity_bytes() -> int | None:
+  """Returns the physical VMEM per TensorCore, or None when not on a TPU.
+
+  For example, 128 MiB on TPU v6e and 64 MiB on TPU7x.
+  """
+  try:
+    if jax.devices()[0].platform != "tpu":
+      return None
+    from jax.experimental.pallas import tpu as pltpu  # pylint: disable=import-outside-toplevel
+
+    return int(pltpu.get_tpu_info().vmem_capacity_bytes)
+  except Exception:  # pylint: disable=broad-exception-caught
+    return None
+
+
+def get_scoped_vmem_limit_kib(requested_kib: int = _DEFAULT_SCOPED_VMEM_LIMIT_KIB) -> int | None:
+  """Returns a value for `xla_tpu_scoped_vmem_limit_kib`, or None when not on a TPU.
+
+  Scoped VMEM is the scratch budget XLA grants a single fusion (and a Pallas
+  kernel that does not set its own `vmem_limit_bytes`); it is a slice of the
+  physical VMEM, not the whole of it. The request is clamped to the physical
+  capacity so the same value is valid on every TPU generation.
+  """
+  capacity = get_vmem_capacity_bytes()
+  if capacity is None:
+    return None
+  return min(requested_kib, capacity // 1024)
