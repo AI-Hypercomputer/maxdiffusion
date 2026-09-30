@@ -25,7 +25,7 @@ deps = {
     "pyink": "pyink",
     "pylint": "pylint",
     "pytest": "pytest",
-    "qwix": "qwix @ https://github.com/google/qwix/archive/408a0f48f988b6c5b180e07f0cb1d05997bf0dcc.zip",
+    "qwix": "qwix==0.1.8",
     "ruff": "ruff",
     "scikit-image": "scikit-image",
     "sentencepiece": "sentencepiece",

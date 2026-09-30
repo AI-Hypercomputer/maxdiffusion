@@ -147,7 +147,7 @@ pytest>=8.4.2
 python-dateutil>=2.9.0.post0
 pytokens>=0.4.1
 pyyaml>=6.0.3
-qwix @ https://github.com/google/qwix/archive/408a0f48f988b6c5b180e07f0cb1d05997bf0dcc.zip
+qwix==0.1.8
 regex>=2026.2.28
 requests-oauthlib>=2.0.0
 requests>=2.32.5
