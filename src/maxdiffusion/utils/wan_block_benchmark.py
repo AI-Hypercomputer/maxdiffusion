@@ -168,6 +168,25 @@ class WanBlockBenchmark(BlockBenchmark):
   # --- BlockBenchmark interface ---------------------------------------------------
   def tiled_seq_lens(self):
     s = tiled_seq_len(self._full_seq, self._attention, self._context_shards, self._ulysses_shards)
+    proxy = type(
+        "_PadProxy",
+        (),
+        {
+            "seq_pad_mode": getattr(self._config, "wan_seq_pad", None),
+            "attention": self._attention,
+            "mesh": self._mesh,
+            "flash_min_seq_length": getattr(self._config, "flash_min_seq_length", 4096),
+            "attention_config": {
+                "ulysses_shards": getattr(self._config, "ulysses_shards", -1),
+                "flash_min_seq_length": getattr(self._config, "flash_min_seq_length", 4096),
+                "use_svg_attention": getattr(self._config, "use_svg_attention", False),
+                "use_memory_efficient_attention": getattr(self._config, "use_memory_efficient_attention", False),
+            },
+        },
+    )()
+    pad = WanModel._get_token_padding(proxy, self._full_seq, per_token_t=False)
+    if pad is not None:
+      s = pad.padded_len
     return (s, s)
 
   def vmem_bytes(self):
@@ -234,10 +253,13 @@ class WanBlockBenchmark(BlockBenchmark):
         scan_layers=False,
         num_layers=1,
         enable_jax_named_scopes=c.enable_jax_named_scopes,
+        split_head_dim=getattr(c, "split_head_dim", True),
         attention_config={
             "use_base2_exp": c.use_base2_exp,
             "use_experimental_scheduler": c.use_experimental_scheduler,
             "ulysses_shards": c.ulysses_shards,
+            "ulysses_attention_chunks": getattr(c, "ulysses_attention_chunks", 1),
+            "use_k_centering": getattr(c, "use_k_centering", "auto"),
             "use_fused_rope_kernel": getattr(c, "use_fused_rope_kernel", False),
             "fused_rope_block_s": getattr(c, "fused_rope_block_s", 1024),
             "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,
