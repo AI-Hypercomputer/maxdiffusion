@@ -846,6 +846,77 @@ def _tpu_flash_attention(
 # ---------------------------------------------------------------------------
 
 
+def _compute_fixed_m_metadata(
+    query: jax.Array,
+    key: jax.Array,
+    block_q: int,
+    safe_bound: float | None = None,
+    recenter: float | None = None,
+    per_q_block: bool = True,
+    k_mean: jax.Array | None = None,
+    value: jax.Array | None = None,
+    v_max_bound: float = 256.0,
+) -> tuple[jax.Array, jax.Array]:
+  """Computes Cauchy-Schwarz norm bounds and per-Q-block (or per-head) fixed-m metadata."""
+  batch_size, num_q_heads, q_len, _ = query.shape
+  num_kv_heads = key.shape[1]
+  if safe_bound is None or recenter is None:
+    rec, bnd = custom_splash.get_fixed_m_constants(key.shape[2], v_max_bound=v_max_bound)
+    if safe_bound is None:
+      safe_bound = bnd
+    if recenter is None:
+      recenter = rec
+  safe_bound_sq = safe_bound**2
+  if k_mean is not None:
+    centered_k = key.astype(jnp.float32) - k_mean[:, :, None, : key.shape[-1]]
+    mk_h_sq = (centered_k**2).sum(axis=-1).max(axis=-1)
+  else:
+    mk_h_sq = (key.astype(jnp.float32) ** 2).sum(axis=-1).max(axis=-1)  # (batch, num_kv_heads)
+
+  if num_q_heads != num_kv_heads:
+    if num_q_heads % num_kv_heads != 0:
+      raise ValueError(f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA fixed-m.")
+    q_heads_per_kv_head = num_q_heads // num_kv_heads
+    mk_h_sq = jnp.repeat(mk_h_sq, q_heads_per_kv_head, axis=1)  # (batch, num_q_heads)
+
+  dtype_safe = custom_splash.fixed_m_dtype_is_safe(query.dtype, recenter)
+  if dtype_safe and value is not None:
+    v_max_sq = (value.astype(jnp.float32) ** 2).max()
+    v_ok = (v_max_sq <= (v_max_bound**2)).astype(jnp.float32)
+  else:
+    v_ok = jnp.zeros((), dtype=jnp.float32)
+
+  # The kernel's grid is ceil(q_len / block_q); callers pad Q to a multiple of
+  # block_q first, so floor == ceil here. Fail loudly if that contract breaks
+  # rather than silently dropping the ragged tail's gating metadata.
+  if q_len % block_q != 0:
+    raise ValueError(
+        f"_compute_fixed_m_metadata expects query padded to a multiple of block_q, got q_len={q_len}, block_q={block_q}."
+    )
+  num_q_blocks = q_len // block_q
+  if per_q_block:
+    norm_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1)  # (batch, num_q_heads, q_len)
+    qn_max_sq = norm_sq.reshape(batch_size, num_q_heads, num_q_blocks, block_q).max(
+        axis=-1
+    )  # (batch, num_q_heads, num_q_blocks)
+    bound_sq = qn_max_sq * mk_h_sq[:, :, None]
+    fixed_ok = (bound_sq <= safe_bound_sq).astype(jnp.float32) * v_ok
+    m_base = jnp.ceil(jnp.sqrt(bound_sq)) - recenter
+    mk_arr = jnp.stack([m_base, fixed_ok], axis=1)  # (batch, 2, num_q_heads, num_q_blocks)
+    all_fixed = jnp.all(fixed_ok > 0.5)
+  else:
+    qn_max_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1).max(axis=-1)  # (batch, num_q_heads)
+    bound_sq_1d = qn_max_sq * mk_h_sq
+    fixed_ok_1d = (bound_sq_1d <= safe_bound_sq).astype(jnp.float32) * v_ok
+    m_base_1d = jnp.ceil(jnp.sqrt(bound_sq_1d)) - recenter
+    m_base_expanded = jnp.broadcast_to(m_base_1d[:, :, None], (batch_size, num_q_heads, num_q_blocks))
+    fixed_ok_expanded = jnp.broadcast_to(fixed_ok_1d[:, :, None], (batch_size, num_q_heads, num_q_blocks))
+    mk_arr = jnp.stack([m_base_expanded, fixed_ok_expanded], axis=1)  # (batch, 2, num_q_heads, num_q_blocks)
+    all_fixed = jnp.all(fixed_ok_1d > 0.5)
+
+  return mk_arr, all_fixed
+
+
 def _ulysses_attention(
     query: jax.Array,
     key: jax.Array,
@@ -863,10 +934,12 @@ def _ulysses_attention(
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
     use_fixed_m: bool = False,
+    per_q_block: bool = True,
     ulysses_attention_chunks: int = 1,
     preserve_asymmetric_block_sizes: bool = False,
     spatiotemporal_config: Optional[dict] = None,
     spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+    kv_heads: int | None = None,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -879,7 +952,7 @@ def _ulysses_attention(
   num_shards = mesh.shape[axis_name]
 
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
-  key, _ = _reshape_data_for_flash(key, heads, num_shards)
+  key, orig_kv_seq_len = _reshape_data_for_flash(key, heads, num_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_shards)
   attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
   if attention_mask is not None and use_custom_kernel:
@@ -888,8 +961,6 @@ def _ulysses_attention(
         "(it only handles padding via orig_seq_len); got a non-None attention_mask."
     )
   num_heads = query.shape[1]
-  # Ulysses only redistributes existing heads across the context mesh; unlike
-  # the earlier draft, we fail fast instead of padding synthetic heads.
   if num_heads % num_shards != 0:
     raise ValueError(
         "Ulysses attention requires the number of heads to be divisible by the context shard count, "
@@ -931,27 +1002,41 @@ def _ulysses_attention(
       if use_base2_exp:
         query = query * LOG2E
 
-      if use_fixed_m:
-        # k-smoothing (output-invariant): subtracting the per-row key mean
-        # forces every logit row to have mean 0, hence row-max >= 0 — the
-        # precondition that keeps the fixed-m Cauchy-Schwarz bound flush-free.
-        key = key - jnp.mean(key, axis=2, keepdims=True)
+      raw_key = key
+      raw_query = query
+      raw_value = value
+      context_q_seq_len = raw_query.shape[2]
+      actual_kv_seq_len = orig_kv_seq_len
 
-      query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
-      key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
-      value, _, _ = _pad_data_for_flash(value, heads, bkv)
+      real_key = raw_key[:, :, :actual_kv_seq_len, :]
+
+      recenter, safe_bound = custom_splash.get_fixed_m_constants(actual_kv_seq_len)
+
+      query, kv_size, query_seq_len = _pad_data_for_flash(raw_query, heads, bq)
+      kv_pad_size = 1 if actual_kv_seq_len % 8 == 0 else bkv
+      key, _, key_seq_len = _pad_data_for_flash(raw_key, heads, kv_pad_size)
+      value, _, _ = _pad_data_for_flash(raw_value, heads, kv_pad_size)
+
+      k_mean = None
+      if use_fixed_m:
+        k_mean = jnp.mean(real_key.astype(jnp.float32), axis=2)
+        pad_d = max(0, query.shape[-1] - k_mean.shape[-1])
+        if pad_d > 0:
+          k_mean = jnp.pad(k_mean, ((0, 0), (0, 0), (0, pad_d)))
 
       mk_arr = None
+      all_fixed = None
       if use_fixed_m:
-        # Per-(local-)head Cauchy-Schwarz inputs over the (batch, seq) slice;
-        # padded rows have zero norm and never raise the max. mk[0] feeds the
-        # in-kernel per-query bound, mk[1] flags heads within the no-flush gate.
-        qf = query.astype(jnp.float32)
-        kf = key.astype(jnp.float32)
-        qn_max = jnp.sqrt((qf * qf).sum(-1)).max(axis=(0, 2))  # (local_heads,)
-        mk_h = jnp.sqrt((kf * kf).sum(-1)).max(axis=(0, 2))  # (local_heads,)
-        fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
-        mk_arr = jnp.stack([mk_h, fixed_ok])  # (2, local_heads)
+        mk_arr, all_fixed = _compute_fixed_m_metadata(
+            query,
+            real_key,
+            block_q=bq,
+            safe_bound=safe_bound,
+            recenter=recenter,
+            per_q_block=per_q_block,
+            k_mean=k_mean,
+            value=value,
+        )
 
       bsizes = custom_splash._BlockSizes(
           block_q=bq,
@@ -960,24 +1045,51 @@ def _ulysses_attention(
           block_kv_compute_in=bkv_compute_in,
       )
 
-      splash_kernel = custom_splash.make_splash_mha(
-          block_sizes=bsizes,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          heads_per_tile=heads_per_tile,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          use_fixed_m=use_fixed_m,
-      )
-
       if use_fixed_m:
-        vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))
-        attention_output = vmapped_splash(query, key, value, mk_arr)
+        splash_kernel_uniform = custom_splash.make_splash_mha(
+            block_sizes=bsizes,
+            orig_q_seq_len=context_q_seq_len,
+            orig_kv_seq_len=actual_kv_seq_len,
+            heads_per_tile=heads_per_tile,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=True,
+            uniform_fixed_m=True,
+        )
+        splash_kernel_hybrid = custom_splash.make_splash_mha(
+            block_sizes=bsizes,
+            orig_q_seq_len=context_q_seq_len,
+            orig_kv_seq_len=actual_kv_seq_len,
+            heads_per_tile=heads_per_tile,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=True,
+            uniform_fixed_m=False,
+        )
+
+        def _run_uniform(q, k, v, m, km):
+          return jax.vmap(splash_kernel_uniform, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+
+        def _run_hybrid(q, k, v, m, km):
+          return jax.vmap(splash_kernel_hybrid, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+
+        raw_out = jax.lax.cond(all_fixed, _run_uniform, _run_hybrid, query, key, value, mk_arr, k_mean)
       else:
+        splash_kernel = custom_splash.make_splash_mha(
+            block_sizes=bsizes,
+            orig_q_seq_len=context_q_seq_len,
+            orig_kv_seq_len=actual_kv_seq_len,
+            heads_per_tile=heads_per_tile,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=False,
+        )
         vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
-        attention_output = vmapped_splash(query, key, value)
-      attention_output = jnp.swapaxes(attention_output, 2, 3)
+        raw_out = vmapped_splash(query, key, value)
+      attention_output = jnp.swapaxes(raw_out, 2, 3)
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
     else:
       # Run the same local splash kernel as standard TPU flash attention, but now
@@ -1404,10 +1516,12 @@ def _ulysses_ring_custom_attention(
   )
   def wrap_ulysses_ring_attention(query, key, value):
     fixed_m_norms = None
+    v_ok = None
     if use_fixed_m and num_ring_shards > 1:
-      # Fixed-m's Cauchy-Schwarz inputs, reduced on the PRE-a2a activation so
-      # the reduction overlaps the all_to_all instead of stalling the first
-      # ring step (taking them after the a2a measured +8% end to end).
+      # Fixed-m's Cauchy-Schwarz inputs and V-magnitude safety verdict, reduced
+      # on the PRE-a2a activations so the reductions overlap the all_to_all
+      # instead of stalling the first ring step (taking them after the a2a
+      # measured +8% end to end).
       #
       # The barrier is load-bearing: the norms are a second consumer of these
       # activations, and without it XLA duplicates the producer chain into the
@@ -1418,11 +1532,15 @@ def _ulysses_ring_custom_attention(
       # head_dim is contiguous) is exact and looks cheaper, but there the array
       # is still globally sharded, so the reduction becomes a per-layer
       # all-reduce over the context axis: measured WORSE (+54 ms per forward).
+      #
+      # V is deliberately NOT in the barrier (the figures above were measured
+      # with the (query, key) barrier): putting it in would make the Q/K
+      # reductions and all-to-alls wait for V's producer. V has no fused
+      # norm/RoPE producer chain to duplicate (only its projection), so its
+      # max is reduced outside the barrier.
       query, key = jax.lax.optimization_barrier((query, key))
-      qn_local = _max_row_norm_per_head(query)
-      kn_local = _max_row_norm_per_head(key)
-      if use_base2_exp:
-        qn_local = qn_local * LOG2E
+      qn_local = (_max_row_norm_per_head(query) * (LOG2E if use_base2_exp else 1.0)) ** 2
+      kn_local = _max_row_norm_per_head(key) ** 2
       # The accumulate-vs-LSE lax.cond predicate must be uniform along the RING
       # axis (every ppermute participant takes the same branch).
       qn_all = jax.lax.pmax(qn_local, (ring_axis, ulysses_axis))
@@ -1433,6 +1551,12 @@ def _ulysses_ring_custom_attention(
           jax.lax.dynamic_slice_in_dim(qn_all, start_head, heads_per_dev),
           jax.lax.dynamic_slice_in_dim(mk_all, start_head, heads_per_dev),
       )
+      effective_kv_seq_len = key.shape[2] * num_ulysses_shards * num_ring_shards
+      global_recenter, _ = custom_splash.get_fixed_m_constants(effective_kv_seq_len)
+      dtype_safe = custom_splash.fixed_m_dtype_is_safe(query.dtype, global_recenter)
+      v_max_sq = (value.astype(jnp.float32) ** 2).max()
+      v_ok_local = (v_max_sq <= (custom_splash.DEFAULT_MAX_V_BOUND**2)) & dtype_safe
+      v_ok = jax.lax.pmin(v_ok_local, (ring_axis, ulysses_axis))
 
     # (1) Ulysses all-to-all over the (intra-chip) ulysses axis: heads -> sequence,
     # so each device holds the full ring-chunk sequence with heads/U heads.
@@ -1444,27 +1568,32 @@ def _ulysses_ring_custom_attention(
     if use_base2_exp:
       query = query * LOG2E
 
-    if use_fixed_m and num_ring_shards == 1:
-      # K-smoothing precondition for fixed-m (R=1 / pure-ulysses semantics,
-      # same as _ulysses_attention). The R>1 ring path deliberately does NOT
-      # smooth: no ring rank holds the full K to compute a mean, and a per-
-      # shard mean would shift each hop's logits differently, breaking the
-      # cross-shard merge; it gates on the un-smoothed halved bound instead.
-      kbar = jnp.mean(key, axis=2, keepdims=True)
-      key = key - kbar
-
+    raw_key = key
     query, kv_size, query_seq_len = _pad_data_for_flash(query, heads, bq)
     key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
     value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
-    mk_arr = None
+    k_mean = None
     if use_fixed_m and num_ring_shards == 1:
-      qf = query.astype(jnp.float32)
-      kf = key.astype(jnp.float32)
-      qn_max = jnp.sqrt((qf * qf).sum(-1)).max(axis=(0, 2))  # (local_heads,)
-      mk_h = jnp.sqrt((kf * kf).sum(-1)).max(axis=(0, 2))  # (local_heads,) local
-      fixed_ok = (qn_max * mk_h <= custom_splash._FIXED_M_SAFE_BOUND).astype(jnp.float32)
-      mk_arr = jnp.stack([mk_h, fixed_ok])  # (2, local_heads)
+      k_mean = jnp.mean(raw_key.astype(jnp.float32), axis=2)
+      pad_d = max(0, query.shape[-1] - k_mean.shape[-1])
+      if pad_d > 0:
+        k_mean = jnp.pad(k_mean, ((0, 0), (0, 0), (0, pad_d)))
+
+    mk_arr = None
+    all_fixed = None
+    if use_fixed_m and num_ring_shards == 1:
+      recenter, safe_bound = custom_splash.get_fixed_m_constants(key_seq_len)
+      mk_arr, all_fixed = _compute_fixed_m_metadata(
+          query,
+          raw_key,
+          block_q=bq,
+          safe_bound=safe_bound,
+          recenter=recenter,
+          per_q_block=False,
+          k_mean=k_mean,
+          value=value,
+      )
 
     bsizes = custom_splash._BlockSizes(
         block_q=bq,
@@ -1477,23 +1606,49 @@ def _ulysses_ring_custom_attention(
       # splash kernel (fuse_reciprocal, no fp32 online-softmax residual windows).
       # Same math as the 1-step ring, and it fits BQ=8448 where the ring kernel
       # OOMs (its 3x residual windows). make_splash_mha returns [H, D, S].
-      splash_kernel = custom_splash.make_splash_mha(
-          block_sizes=bsizes,
-          orig_q_seq_len=query_seq_len,
-          orig_kv_seq_len=key_seq_len,
-          heads_per_tile=heads_per_tile,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
-          use_fixed_m=use_fixed_m,
-      )
       if use_fixed_m:
-        attention_output = jnp.swapaxes(
-            jax.vmap(splash_kernel, in_axes=(0, 0, 0, None))(query, key, value, mk_arr),
-            2,
-            3,
+        splash_kernel_uniform = custom_splash.make_splash_mha(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            heads_per_tile=heads_per_tile,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=True,
+            uniform_fixed_m=True,
         )
+        splash_kernel_hybrid = custom_splash.make_splash_mha(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            heads_per_tile=heads_per_tile,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=True,
+            uniform_fixed_m=False,
+        )
+
+        def _run_uniform(q, k, v, m, km):
+          return jax.vmap(splash_kernel_uniform, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+
+        def _run_hybrid(q, k, v, m, km):
+          return jax.vmap(splash_kernel_hybrid, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+
+        raw_out = jax.lax.cond(all_fixed, _run_uniform, _run_hybrid, query, key, value, mk_arr, k_mean)
+        attention_output = jnp.swapaxes(raw_out, 2, 3)
       else:
+        splash_kernel = custom_splash.make_splash_mha(
+            block_sizes=bsizes,
+            orig_q_seq_len=query_seq_len,
+            orig_kv_seq_len=key_seq_len,
+            heads_per_tile=heads_per_tile,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            use_fixed_m=False,
+        )
         attention_output = jnp.swapaxes(jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value), 2, 3)
     else:
       # (2b) Ring (full ppermute over the cross-chip ring axis) with the custom kernel.
@@ -1511,6 +1666,9 @@ def _ulysses_ring_custom_attention(
           bidirectional=bidirectional,
           use_fixed_m=use_fixed_m,
           fixed_m_norms=fixed_m_norms,
+          fixed_m_norms_squared=True if use_fixed_m else None,
+          v_ok=v_ok,
+          per_q_block=False,
       )
       attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
@@ -1713,11 +1871,14 @@ def ulysses_ring_custom_kernel(q, k, v, context):
 
 @register_kernel("ulysses_ring_custom_fixed_m")
 def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
-  """fixed-m variant of ulysses_ring_custom: the per-shard custom splash kernel
-  uses the Cauchy-Schwarz fixed-m softmax bound (no in-kernel running-max
-  rescale). max||k|| and the K-smoothing mean are taken LOCALLY per ring shard
-  (no per-layer ring collective); the outer ring online-softmax merge still
-  re-normalizes across shards, so per-shard bounds stay correct."""
+  """Fixed-m variant of ulysses_ring_custom.
+
+  Reduces squared Q/K row norms and V-magnitude safety predicates before the
+  Ulysses all-to-all (overlapping with the collective) and gathers K-shard
+  norms across the ring axis. When all heads pass the global Cauchy-Schwarz
+  bound, ring hops use a uniform fixed shift `m` and merge by direct FP32
+  accumulation; otherwise each hop gates independently and merges in LSE space.
+  """
   return _ulysses_ring_custom_attention(
       q,
       k * context["scale"],
@@ -1784,6 +1945,32 @@ def ulysses_custom_fixed_m_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       use_fixed_m=True,
+      per_q_block=False,
+      ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
+  )
+
+
+@register_kernel("ulysses_custom_fixed_m_per_q_block")
+def ulysses_custom_fixed_m_per_q_block_kernel(q, k, v, context):
+  return _ulysses_attention(
+      q,
+      k * context["scale"],
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      context["flash_block_sizes"],
+      context["dtype"],
+      mask_padding_tokens=context["mask_padding_tokens"],
+      residual_checkpoint_name=context["residual_checkpoint_name"],
+      attention_mask=context["attention_mask"],
+      use_custom_kernel=True,
+      use_base2_exp=context.get("use_base2_exp", True),
+      use_experimental_scheduler=context.get("use_experimental_scheduler", False),
+      use_fixed_m=True,
+      per_q_block=True,
+      ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
   )
 
 
@@ -1971,6 +2158,7 @@ def _apply_attention(
       "ulysses",
       "ulysses_custom",
       "ulysses_custom_fixed_m",
+      "ulysses_custom_fixed_m_per_q_block",
       "ulysses_ring",
   ]:
     can_use_flash_attention = (
@@ -2031,6 +2219,7 @@ def _apply_attention(
     if effective_attention_kernel not in (
         "ulysses_custom",
         "ulysses_custom_fixed_m",
+        "ulysses_custom_fixed_m_per_q_block",
         "ulysses_ring_custom",
         "ulysses_ring_custom_fixed_m",
     ):
@@ -2652,6 +2841,7 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_ring_custom_bidir",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
+        "ulysses_custom_fixed_m_per_q_block",
     )
     cross_attention_uses_local_kv = not is_self_attention and (
         cross_attention_remapped_to_flash or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te")

@@ -182,6 +182,7 @@ class LTX2AttentionMaskContractTest(unittest.TestCase):
         "ulysses_ring_custom_bidir",
         "ulysses_custom",
         "ulysses_custom_fixed_m",
+        "ulysses_custom_fixed_m_per_q_block",
     )
 
     for attention_kernel in remapped_kernels:
