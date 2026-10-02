@@ -260,7 +260,7 @@ def load_flow_model(name: str, eval_shapes: dict, device: str, hf_download: bool
           renamed_pt_key = renamed_pt_key.replace("out_layer", "linear_2")
         elif "final_layer" in renamed_pt_key:
           renamed_pt_key = renamed_pt_key.replace("final_layer.linear", "proj_out")
-          renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.Dense_0")
+          renamed_pt_key = renamed_pt_key.replace("final_layer.adaLN_modulation_1", "norm_out.linear")
 
         pt_tuple_key = tuple(renamed_pt_key.split("."))
         flax_key, flax_tensor = rename_key_and_reshape_tensor(pt_tuple_key, tensor, eval_shapes)
