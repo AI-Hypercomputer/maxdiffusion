@@ -54,6 +54,16 @@ class LTX2NNXLoraLoader(LoRABaseMixin):
       max_logging.log("No LoRA weight name provided; skipping LoRA load.")
       return pipeline
 
+    merge_targets_available = hasattr(pipeline, "transformer") or hasattr(pipeline, "connectors")
+    if not merge_targets_available:
+      max_logging.log("Neither transformer nor connectors found; skipping LoRA load.")
+      return pipeline
+
+    lora_key = self._lora_key(lora_model_path, transformer_weight_name, "ltx2_pipeline")
+    if self._is_lora_fused(pipeline, lora_key):
+      max_logging.log(f"WARNING: LoRA '{lora_model_path}' already merged; skipping to avoid double-application.")
+      return pipeline
+
     h_state_dict, _ = lora_loader.lora_state_dict(lora_model_path, weight_name=transformer_weight_name, **kwargs)
     transformer_state_dict = {}
     connector_state_dict = {}
@@ -78,4 +88,5 @@ class LTX2NNXLoraLoader(LoRABaseMixin):
     if unmatched_keys:
       max_logging.log(f"{len(unmatched_keys)} key(s) in LoRA dictionary routed to no merge target: {unmatched_keys}")
 
+    self._record_lora_fused(pipeline, lora_key)
     return pipeline
