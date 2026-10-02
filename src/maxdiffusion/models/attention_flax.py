@@ -2415,26 +2415,69 @@ def _ulysses_ring_custom_attention(
           iperm_mk = jnp.stack([mk_head, jnp.ones_like(mk_head)])
 
         # Whole-head q block: the ring streams each K/V block across the ICI ONCE
-        # per head, and the kernel loops over `bq`-sized q sub-chunks against it.
+        # per head, and the kernel loops over q_sub-sized sub-chunks against it.
         # Per-q-block blocking re-streamed the full K/V ring for every q block --
         # measured at ~19 ms/layer per extra pass (transport-only), so at the old
-        # bq=9472 (2 q blocks) half of all ICI traffic was redundant. `bq` here is
-        # therefore the MXU sub-tile, and must be small enough that the whole-head
-        # q, out and accumulators fit VMEM (bq=4736 at the Wan 720p shape).
+        # bq=9472 (2 q blocks) half of all ICI traffic was redundant. The kernel's
+        # resident Q block is `query.shape[2]` (post `_pad_data_for_flash`, i.e.
+        # ceil_to(orig_seq, bq)) -- NOT `bq` itself -- so `block_q_sub` must divide
+        # THAT, and must be small enough that its accumulator/working buffers fit
+        # VMEM alongside the single-buffered resident Q.
         # Opt-in via `flash_block_sizes["block_q_sub"]`, which leaves the global
         # `block_q` free for the other attention kernels (cross-attention reuses it).
+        # When unset, AUTO-DERIVE one instead of defaulting to no sub-chunking.
+        # `internal_ring_attention.py` treats `q_sub_block=None` as `q_sub=block_q`,
+        # i.e. the ENTIRE resident block processed unrolled in one chunk -- exactly
+        # the instruction-memory-cliff configuration fix #2 exists to avoid (measured
+        # 2.1x slower pure compute with no chunking; see report/iperm_on_488).
+        # Bigger q_sub is monotonically faster (fewer, larger MXU passes) right up
+        # to a VMEM wall; swept at the real resident length (30720 @ Wan 720p/
+        # bq=10240) the largest working divisor was resident/4 = 7680 (104.65ms),
+        # while resident/3 = 10240 OOMs (71.17M > 63.94M budget) -- and a second,
+        # independent sweep at a different resident length placed the same wall
+        # between 0.28x and 0.31x. So cap at resident // 4 (128-aligned) and take
+        # the largest divisor of the resident length at or below that. Degenerates
+        # to 128 for a resident length with no divisor in range -- safe (never hits
+        # the cliff) but not necessarily fast.
         if isinstance(flash_block_sizes, dict):
           q_sub_cfg = flash_block_sizes.get("block_q_sub")
+          _outer_q_cfg = flash_block_sizes.get("block_q_outer")
         else:
           q_sub_cfg = getattr(flash_block_sizes, "block_q_sub", None)
-        if q_sub_cfg:
-          if bq % q_sub_cfg:
-            raise ValueError(f"block_q ({bq}) must be a multiple of block_q_sub ({q_sub_cfg}).")
-          bsizes_whole = custom_splash._BlockSizes(  # pylint: disable=protected-access
-              query.shape[2], bkv, bkv_compute, bkv_compute_in
-          )
-        else:
-          bsizes_whole, q_sub_cfg = bsizes, None
+          _outer_q_cfg = getattr(flash_block_sizes, "block_q_outer", None)
+        _resident_q = query.shape[2]
+        # `block_q_outer` lets the kernel's OWN grid (grid_height =
+        # ceil(q_seq_len / block_q)) split the local shard into multiple Q
+        # blocks instead of one whole-shard-resident block. The kernel already
+        # supports grid_height > 1 -- it just falls back to normal double-
+        # buffered BlockSpec pipelining instead of the single-buffered resident
+        # path (see RESIDENT_SINGLE_BUFFER gate in internal_ring_attention.py).
+        # Unset (the default) keeps today's behavior: one whole-shard block,
+        # the ring streamed once. Below `_resident_q` it trades that ICI
+        # saving back for VMEM headroom -- each of the `_resident_q /
+        # block_q_outer` outer blocks re-walks the full ring, so this is a
+        # deliberate fallback for shapes where whole-shard-resident doesn't
+        # fit at all (e.g. Ulysses U>1, where a smaller ring size R means a
+        # LARGER local shard per rank), not a free lunch.
+        _outer_q = _outer_q_cfg or _resident_q
+        if _resident_q % _outer_q:
+          raise ValueError(f"block_q ({_resident_q}) must be a multiple of block_q_outer ({_outer_q}).")
+        if not q_sub_cfg:
+          _q_sub_ceiling = max(128, (_outer_q // 4) // 128 * 128)
+          _d = 128
+          q_sub_cfg = 128
+          while _d <= _outer_q:
+            if _outer_q % _d == 0:
+              if _d <= _q_sub_ceiling:
+                q_sub_cfg = _d
+              else:
+                break
+            _d += 128
+        if _outer_q % q_sub_cfg:
+          raise ValueError(f"block_q_outer ({_outer_q}) must be a multiple of block_q_sub ({q_sub_cfg}).")
+        bsizes_whole = custom_splash._BlockSizes(  # pylint: disable=protected-access
+            _outer_q, bkv, bkv_compute, bkv_compute_in
+        )
 
         def _mk_internal(fixed, recenter=None, uniform=True):
           return internal_ring_kernel_mod.make_internal_ring_attention(

@@ -51,6 +51,7 @@ ULYSSES_RING_ATTENTION_KERNELS = frozenset({
     "ulysses_ring_custom_iperm",
     "ulysses_ring_custom_iperm_fixed_m",
     "ulysses_ring_custom_iperm_fixed_m_nocond",
+    "ulysses_ring_custom_iperm_fixed_m_hybrid",
 })
 
 
@@ -554,6 +555,8 @@ def smart_grid(
     spread_bq: int = 2,
     min_bkv_ref: int = 1024,
     family: str = "external",
+    align: int = VPU_LANE,
+    bkv_anchors: tuple[int, ...] = (1024, 1280),
 ) -> list[tuple[int, int]]:
   """Nested candidate pairs: BQ = VMEM-capped fewest-tile ladder + spread; then for EACH bq,
   BKV = largest-that-fits at that bq (so bkv is VMEM-correct for its partner, not globally).
@@ -563,13 +566,36 @@ def smart_grid(
   bkv (1024, a good MXU tile) rather than the smallest possible: with a tiny ref the cap is huge,
   so the fewest-tile ladder starts at the single-tile end (which OOMs for a large per-shard seq)
   and the feasible moderate-BQ optimum (e.g. bq=9472 at seq 37800) falls in the ladder's gap.
+
+  Two guaranteed candidates are added on top of the ladders, because the ladders' own bounds
+  are calibrated constants that don't track the actual shape being searched, and every prior
+  sweep (see report/ and memory) agrees on what they'd otherwise silently exclude:
+
+    * The true single-tile BQ (`ceil_to(q_seq, align)`), UNCAPPED by `bq_cap` above. `bq_cap`
+      depends only on `min_bkv_ref`/`vmem_bytes`/family -- never on `q_seq` -- so it is a FIXED
+      ceiling regardless of duration/shape. Once a sequence's single-tile size exceeds that
+      fixed constant, `bq_candidates` cannot propose it even if it would fit and win (single
+      Q-tile is the dominant lever in essentially every measured sweep). OOM-pruning is the
+      safety net if it doesn't fit.
+    * `bkv_anchors` (1024, 1280) for every bq. `bkv_candidates` only walks down from its own
+      `bkv_cap` by `align` for `k_bkv` steps, so it samples a narrow band near the ceiling --
+      which is nowhere near 1024 whenever `bkv_cap` sits high (small bq pushes it up). 1024 wins
+      in nearly every measured sweep regardless of shape; the ladder can structurally miss it.
   """
   bq_cap = vmem_bq_ceiling(min_bkv_ref, vmem_bytes=vmem_bytes, dtype_bytes=dtype_bytes, family=family)
   bqs = bq_candidates(q_seq, k=k_bq, spread=spread_bq, max_block=bq_cap)
+  single_tile_bq = _ceil_to(q_seq, align)
+  if single_tile_bq not in bqs:
+    bqs = sorted({*bqs, single_tile_bq}, reverse=True)
   pairs: list[tuple[int, int]] = []
   for bq in bqs:
     bkv_cap = vmem_bkv_ceiling(bq, vmem_bytes=vmem_bytes, dtype_bytes=dtype_bytes, family=family)
-    for bkv in bkv_candidates(kv_seq, k=k_bkv, max_block=bkv_cap):
+    bkvs = bkv_candidates(kv_seq, k=k_bkv, max_block=bkv_cap)
+    for anchor in bkv_anchors:
+      snapped = _floor_to(min(anchor, bkv_cap, _ceil_to(kv_seq, align)), align)
+      if snapped >= align and snapped not in bkvs:
+        bkvs.append(snapped)
+    for bkv in bkvs:
       pairs.append((bq, bkv))
   return pairs
 
