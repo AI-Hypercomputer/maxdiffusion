@@ -16,6 +16,7 @@ limitations under the License.
 
 import functools
 import datetime
+import random
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -24,9 +25,9 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 import jax.numpy as jnp
 import jax
+from jax.experimental import multihost_utils
 from jax.sharding import PartitionSpec as P
 import jaxopt
-from jax.experimental import multihost_utils
 
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.schedulers import FlaxFlowMatchScheduler
@@ -387,11 +388,12 @@ class WanTrainer2_2(BaseWanTrainer):
         start_step_time = datetime.datetime.now()
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
 
-        # Determine active expert on host and synchronize with device
-        step_rng, cond_rng = jax.random.split(step_rng, num=2)
+        # Determine active expert deterministically on host without device-to-host sync stall
+        host_rng = random.Random(self.config.seed + step_int)
         shift = getattr(pipeline.scheduler.config, "shift", 1.0) or 1.0
         u_boundary = compute_unshifted_boundary(self.config.boundary_ratio, shift)
-        is_high_noise = bool(jax.random.uniform(cond_rng) >= u_boundary)
+        is_high_noise = host_rng.random() >= u_boundary
+        is_high_noise_dev = jnp.bool_(is_high_noise)
         if is_high_noise:
           active_lr = float(learning_rate_scheduler_high(host_step_high))
         else:
@@ -403,7 +405,7 @@ class WanTrainer2_2(BaseWanTrainer):
             nn_partitioning.axis_rules(self.config.logical_axis_rules),
         ):
           state_low, state_high, scheduler_state, train_metric, _ = p_train_step(
-              state_low, state_high, example_batch, step_rng, scheduler_state, jnp.bool_(is_high_noise)
+              state_low, state_high, example_batch, step_rng, scheduler_state, is_high_noise_dev
           )
           train_metric["scalar"]["learning/loss"].block_until_ready()
         last_step_completion = datetime.datetime.now()
@@ -522,7 +524,7 @@ class WanTrainer2_2(BaseWanTrainer):
         writer.add_scalar("learning/eval_loss", final_eval_loss, step)
 
 
-def train_step_2_2(state_low, state_high, data, rng, scheduler_state, is_high_noise, scheduler, config):
+def train_step_2_2(state_low, state_high, data, rng, scheduler_state, is_high_noise=None, scheduler=None, config=None):
   """Wan 2.2 joint dual-expert training step.
 
   Expert Routing:
@@ -540,8 +542,6 @@ def train_step_2_2(state_low, state_high, data, rng, scheduler_state, is_high_no
       applying Flow Match time shift S(u) so that the resulting timesteps cover
       [0, boundary_ratio * num_train_timesteps], matching the low-noise regime used during inference.
   """
-  _, new_rng, timestep_rng, dropout_rng, noise_rng = jax.random.split(rng, num=5)
-
   data = {k: v[: config.global_batch_size_to_train_on] for k, v in data.items()}
 
   bsz = data["latents"].shape[0]
@@ -549,6 +549,11 @@ def train_step_2_2(state_low, state_high, data, rng, scheduler_state, is_high_no
   shift = getattr(scheduler.config, "shift", 1.0) or 1.0
   u_boundary = compute_unshifted_boundary(config.boundary_ratio, shift)
 
+  if is_high_noise is None:
+    _, new_rng, timestep_rng, dropout_rng, cond_rng, noise_rng = jax.random.split(rng, num=6)
+    is_high_noise = jax.random.uniform(cond_rng) >= u_boundary
+  else:
+    _, new_rng, timestep_rng, dropout_rng, noise_rng = jax.random.split(rng, num=5)
   def compute_loss_high(high_params, s_high):
     u = jax.random.uniform(timestep_rng, (bsz,), minval=u_boundary, maxval=1.0)
     t_shifted = (u * shift) / (1.0 + (shift - 1.0) * u)
