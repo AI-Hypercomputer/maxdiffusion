@@ -82,6 +82,7 @@ _RING_VARIANTS = {
     "ulysses_ring_custom_iperm",
     "ulysses_ring_custom_iperm_fixed_m",
     "ulysses_ring_custom_iperm_fixed_m_nocond",
+    "ulysses_ring_custom_iperm_fixed_m_hybrid",
     "tokamax_ring",
     "tokamax_ring_custom",
     "ring",

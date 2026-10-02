@@ -106,6 +106,27 @@ class CandidateTest(unittest.TestCase):
     pairs = smart_grid(RING_SEQ, RING_SEQ, vmem_bytes=VMEM_64MB, dtype_bytes=4)
     self.assertIn((9472, 1024), pairs)
 
+  def test_smart_grid_always_offers_single_tile_bq(self):
+    # bq_cap in smart_grid is a FIXED constant (from min_bkv_ref/vmem_bytes/family only --
+    # never from q_seq), so for a long enough sequence the ladder alone would never propose
+    # the single-tile bq even though it's the dominant lever in every measured sweep. A
+    # duration well beyond any prior sweep (e.g. a long video) must still get it offered.
+    long_seq = 30000
+    pairs = smart_grid(long_seq, RING_SEQ, vmem_bytes=VMEM_64MB, dtype_bytes=4, family="internal")
+    bqs = {bq for bq, _ in pairs}
+    single_tile = -(-long_seq // VPU_LANE) * VPU_LANE
+    self.assertIn(single_tile, bqs)
+
+  def test_smart_grid_always_offers_bkv_anchor(self):
+    # bkv_candidates only walks down from its own ceiling by align*k_bkv steps, so once a
+    # small bq pushes that ceiling well above 1024, the ladder alone can't reach 1024 even
+    # though it wins in nearly every measured sweep regardless of shape. The smallest bq
+    # the ladder proposes has the largest bkv_cap, so it's the sharpest case.
+    pairs = smart_grid(RING_SEQ, RING_SEQ, vmem_bytes=VMEM_64MB, dtype_bytes=4)
+    smallest_bq = min(bq for bq, _ in pairs)
+    bkvs_at_smallest_bq = {bkv for bq, bkv in pairs if bq == smallest_bq}
+    self.assertIn(1024, bkvs_at_smallest_bq)
+
   def test_candidates_not_strictly_256(self):
     # 128-multiples (e.g. 896) must be admissible, not filtered out.
     bkvs = bkv_candidates(RING_SEQ, k=3, max_block=vmem_bkv_ceiling(9472, vmem_bytes=VMEM_64MB))

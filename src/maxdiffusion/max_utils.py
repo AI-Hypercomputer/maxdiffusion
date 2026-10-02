@@ -844,6 +844,11 @@ class CustomFlashBlockSizes:
   block_q: int | None = None
   # internal-ring only: MXU sub-tile when the q block spans the whole head
   block_q_sub: int | None = None
+  # internal-ring only: splits the whole-shard-resident Q block across the
+  # kernel's own grid (grid_height > 1) instead of one resident block. Needed
+  # when the resident block alone doesn't fit VMEM (e.g. Ulysses U>1, where a
+  # smaller ring size means a larger local shard per rank).
+  block_q_outer: int | None = None
   block_kv: int | None = None
   block_kv_compute: int | None = None
   block_kv_compute_in: int | None = None
@@ -904,6 +909,7 @@ def get_flash_block_sizes(config):
       return CustomFlashBlockSizes(
           block_q=user_block_sizes.get("block_q"),
           block_q_sub=user_block_sizes.get("block_q_sub"),
+          block_q_outer=user_block_sizes.get("block_q_outer"),
           block_kv=user_block_sizes.get("block_kv"),
           block_kv_compute=user_block_sizes.get("block_kv_compute"),
           block_kv_compute_in=user_block_sizes.get("block_kv_compute_in"),
