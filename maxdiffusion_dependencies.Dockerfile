@@ -1,12 +1,12 @@
-# Use Python 3.12-slim-bullseye as the base image unless overridden
-ARG BASEIMAGE=python:3.12-slim-bullseye
+# Use Python 3.12-slim-bookworm as the base image unless overridden
+ARG BASEIMAGE=python:3.12-slim-bookworm
 FROM $BASEIMAGE
 
 # Environment variable for no-cache-dir and pip root user warning
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_ROOT_USER_ACTION=ignore
 
-# Set environment variables for Google Cloud SDK and Python 3.10
+# Set environment variables for Google Cloud SDK and Python 3.12
 ENV PYTHON_VERSION=3.12
 ENV CLOUD_SDK_VERSION=latest
 
@@ -16,15 +16,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Upgrade pip to the latest version and install uv
 RUN python -m pip install --upgrade pip uv --no-warn-script-location
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y apt-utils git curl gnupg procps iproute2 ethtool g++ && rm -rf /var/lib/apt/lists/*
-
-# Add the Google Cloud SDK package repository
-RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list
-
-# Install the Google Cloud SDK
-RUN apt-get update && apt-get install -y google-cloud-sdk && rm -rf /var/lib/apt/lists/*
+# Install system dependencies and the Google Cloud CLI
+RUN apt-get update && \
+    apt-get install -y apt-utils git curl gnupg procps iproute2 ethtool g++ && \
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    apt-get update && \
+    apt-get install -y google-cloud-cli && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install diagnostic and storage dependencies using uv
 RUN python -m uv pip install --system \

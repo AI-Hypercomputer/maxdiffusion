@@ -68,7 +68,7 @@ if [[ ${DEVICE} == "gpu" ]]; then
   docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg DEVICE=$DEVICE --build-arg BASEIMAGE=$BASEIMAGE -f ./maxdiffusion_gpu_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
 else
   # Default to maxdiffusion_dependencies.Dockerfile for non-GPU builds
-  export BASEIMAGE=${BASEIMAGE:-python:3.12-slim-bullseye}
+  export BASEIMAGE=${BASEIMAGE:-python:3.12-slim-bookworm}
   docker build --no-cache \
     --network=host \
     --build-arg MODE=${MODE} \
