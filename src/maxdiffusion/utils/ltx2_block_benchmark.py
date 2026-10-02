@@ -32,7 +32,6 @@ os.environ.setdefault(
         "--xla_tpu_enable_async_collective_fusion_multiple_steps=true",
         "--xla_tpu_overlap_compute_collective_tc=true",
         "--xla_enable_async_all_gather=true",
-        "--xla_tpu_scoped_vmem_limit_kib=65536",
         "--xla_tpu_enable_async_all_to_all=true",
         "--xla_tpu_enable_all_experimental_scheduler_features=true",
         "--xla_tpu_enable_latency_hiding_scheduler=true",
@@ -75,9 +74,18 @@ def tiled_seq_len(full_seq: int, attention: str, context_shards: int, ulysses_sh
   return local_tiled_seq_len(full_seq, attention, context_shards, ulysses_shards)
 
 
-@functools.partial(nnx.jit, static_argnames=("num_frames", "height", "width"))
+# xla_tpu_scoped_vmem_limit_kib per jax device_kind. Passed as a compile option
+# (not via LIBTPU_INIT_ARGS) because jax.devices() initializes libtpu, after
+# which LIBTPU_INIT_ARGS is no longer read.
+_SCOPED_VMEM_LIMIT_KIB = {
+    "TPU v6 lite": 32768,
+    "TPU7x": 65536,
+}
+
+
 def _forward(
-    model,
+    graphdef,
+    state,
     latents,
     timestep,
     prompt_embeds,
@@ -90,6 +98,7 @@ def _forward(
     height,
     width,
 ):
+  model = nnx.merge(graphdef, state)
   return model(
       hidden_states=latents,
       audio_hidden_states=audio_latents,
@@ -134,6 +143,14 @@ class LTX2BlockBenchmark(BlockBenchmark):
     self._ulysses_shards = int(getattr(config, "ulysses_shards", 1) or 1)
     self._vmem = int(vmem_limit_bytes)
     self.label = f"ltx2/{self._attention}/u{self._ulysses_shards}"
+    device_kind = jax.devices()[0].device_kind
+    if "tpu" in device_kind.lower():
+      scoped_vmem = _SCOPED_VMEM_LIMIT_KIB.get(device_kind, 65536)
+      self._compiler_options = {
+          "xla_tpu_scoped_vmem_limit_kib": str(scoped_vmem),
+      }
+    else:
+      self._compiler_options = {}
 
     self._lf = (num_frames - 1) // 8 + 1
     self._lh, self._lw = height // 32, width // 32
@@ -143,7 +160,13 @@ class LTX2BlockBenchmark(BlockBenchmark):
     self._width_orig = width
 
     data_shards = int(mesh.shape.get("data", 1)) * int(mesh.shape.get("fsdp", 1))
-    self._batch = batch if batch is not None else max(1, data_shards)
+    guidance_scale = getattr(config, "guidance_scale", 1.0)
+    stg_scale = getattr(config, "stg_scale", 0.0)
+    do_cfg = guidance_scale > 1.0
+    do_stg = stg_scale > 0.0
+    cfg_mult = 4 if (do_cfg and do_stg) else (2 if do_cfg else 1)
+    default_batch = max(1, data_shards) * cfg_mult
+    self._batch = batch if batch is not None else default_batch
     self._hf_cfg = LTX2VideoTransformer3DModel.load_config(config.pretrained_model_name_or_path, subfolder="transformer")
     self._inputs = self._make_inputs()
 
@@ -163,13 +186,21 @@ class LTX2BlockBenchmark(BlockBenchmark):
     return (s, s)
 
   def vmem_bytes(self):
-    return self._vmem
+    data_shards = int(self._mesh.shape.get("data", 1)) * int(self._mesh.shape.get("fsdp", 1))
+    local_batch = max(1, self._batch // max(1, data_shards))
+    return self._vmem // local_batch
 
   def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2):
     cmp = bkv_compute or bkv
     try:
       with self._mesh:
         model = self._build_model(bq, bkv, cmp)
+      graphdef, state = nnx.split(model)
+      forward = jax.jit(
+          functools.partial(_forward, graphdef),
+          static_argnames=("num_frames", "height", "width"),
+          compiler_options=self._compiler_options,
+      )
       (
           latents,
           timestep,
@@ -181,8 +212,8 @@ class LTX2BlockBenchmark(BlockBenchmark):
       ) = self._inputs
       with self._mesh, nn_partitioning.axis_rules(self._rules):
         mean, std, times, compile_ms = time_callable(
-            lambda: _forward(
-                model,
+            lambda: forward(
+                state,
                 latents,
                 timestep,
                 prompt_embeds,
@@ -250,6 +281,13 @@ class LTX2BlockBenchmark(BlockBenchmark):
         remat_policy=getattr(c, "remat_policy", "NONE"),
         scan_layers=False,
         num_layers=1,
+        attention_config={
+            "use_base2_exp": getattr(c, "use_base2_exp", False),
+            "use_experimental_scheduler": getattr(c, "use_experimental_scheduler", False),
+            "ulysses_shards": getattr(c, "ulysses_shards", -1),
+            "ulysses_attention_chunks": getattr(c, "ulysses_attention_chunks", 1),
+            "use_svg_attention": getattr(c, "use_svg_attention", False),
+        },
     )
     model = LTX2VideoTransformer3DModel(**ltx2_config, rngs=nnx.Rngs(params=0))
     gd, state, rest = nnx.split(model, nnx.Param, ...)
@@ -268,10 +306,10 @@ class LTX2BlockBenchmark(BlockBenchmark):
 
     # Prompts
     prompt_embeds = jax.random.normal(k2, (self._batch, 1024, 3840), dtype)
-    prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.int32)
+    prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.bool_)
 
     audio_prompt_embeds = jax.random.normal(k4, (self._batch, 1024, 3840), dtype)
-    audio_prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.int32)
+    audio_prompt_attention_mask = jnp.ones((self._batch, 1024), dtype=jnp.bool_)
 
     timestep = jnp.zeros((self._batch,), jnp.float32)
     repl = jax.sharding.NamedSharding(self._mesh, jax.sharding.PartitionSpec())

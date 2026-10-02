@@ -54,6 +54,9 @@ class LTX2StaticContext:
   audio_encoder_attention_mask: Optional[jax.Array] = None
   a2v_cross_attention_mask: Optional[jax.Array] = None
   v2a_cross_attention_mask: Optional[jax.Array] = None
+  spatiotemporal_shape: Optional[Tuple[int, int, int]] = None
+  svg_timestep: Optional[int | float | jax.Array] = None
+  svg_step_index: Optional[int | jax.Array] = None
 
 
 @struct.dataclass
@@ -63,6 +66,7 @@ class LTX2BlockContext:
   static: LTX2StaticContext
   perturbation_mask: Optional[jax.Array] = None
   layer_kv_cache: Optional[Mapping[str, FrozenDict]] = None
+  layer_index: Optional[int | jax.Array] = None
 
 
 def _canonicalize_attention_mask(mask: Optional[jax.Array], batch_size: int, name: str) -> Optional[jax.Array]:
@@ -186,6 +190,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
       enable_jax_named_scopes: bool = False,
+      attention_config: Optional[dict] = None,
   ):
     self.dim = dim
     self.norm_eps = norm_eps
@@ -230,6 +235,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         ulysses_attention_chunks=ulysses_attention_chunks,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        attention_config=attention_config,
     )
 
     self.audio_norm1 = nnx.RMSNorm(
@@ -263,6 +269,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
         ulysses_attention_chunks=ulysses_attention_chunks,
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
+        attention_config={"use_svg_attention": False},
     )
 
     # 2. Prompt Cross-Attention
@@ -595,6 +602,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
           encoder_hidden_states=None,
           rotary_emb=video_rotary_emb,
           perturbation_mask=perturbation_mask,
+          spatiotemporal_shape=ctx.static.spatiotemporal_shape,
+          svg_layer_index=ctx.layer_index,
+          svg_timestep=ctx.static.svg_timestep,
+          svg_step_index=ctx.static.svg_step_index,
       )
     hidden_states = hidden_states + attn_hidden_states * gate_msa
 
@@ -831,6 +842,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
       enable_jax_named_scopes: bool = False,
+      attention_config: Optional[dict] = None,
       **kwargs,
   ):
     self.spatio_temporal_guidance_blocks = spatio_temporal_guidance_blocks
@@ -890,6 +902,13 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     self.flash_min_seq_length = flash_min_seq_length
     self.use_base2_exp = use_base2_exp
     self.use_experimental_scheduler = use_experimental_scheduler
+    self.attention_config = {
+        "use_base2_exp": use_base2_exp,
+        "use_experimental_scheduler": use_experimental_scheduler,
+        "ulysses_shards": ulysses_shards,
+        "ulysses_attention_chunks": ulysses_attention_chunks,
+        **(attention_config or {}),
+    }
 
     if sharding_specs is None:
       sharding_specs = get_sharding_specs("default", "ltx2_dit")
@@ -1145,6 +1164,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           use_base2_exp=self.use_base2_exp,
           use_experimental_scheduler=self.use_experimental_scheduler,
           enable_jax_named_scopes=self.enable_jax_named_scopes,
+          attention_config=self.attention_config,
       )
 
     if self.scan_layers:
@@ -1189,6 +1209,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             use_base2_exp=self.use_base2_exp,
             use_experimental_scheduler=self.use_experimental_scheduler,
             enable_jax_named_scopes=self.enable_jax_named_scopes,
+            attention_config=self.attention_config,
         )
         blocks.append(block)
       self.transformer_blocks = nnx.List(blocks)
@@ -1399,6 +1420,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       cached_kv: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
       rope_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
       time_embed_cache: Optional[Dict[str, jax.Array]] = None,
+      svg_step_index: Optional[int | jax.Array] = None,
   ) -> Any:
     """
     Forward pass for the full LTX2 Video/Audio Diffusion Transformer.
@@ -1600,6 +1622,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         audio_encoder_hidden_states = audio_encoder_hidden_states.reshape(batch_size, -1, audio_hidden_states.shape[-1])
     # 5. Run transformer blocks
     with self.named_scope("Transformer Blocks"):
+      if num_frames is not None and height is not None and width is not None:
+        spatiotemporal_shape = (num_frames // self.patch_size_t, height // self.patch_size, width // self.patch_size)
+      else:
+        spatiotemporal_shape = None
+
       static_context = LTX2StaticContext(
           encoder_hidden_states=encoder_hidden_states,
           audio_encoder_hidden_states=audio_encoder_hidden_states,
@@ -1620,6 +1647,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           a2v_cross_attention_mask=a2v_cross_attention_mask,
           v2a_cross_attention_mask=v2a_cross_attention_mask,
           modality_mask=modality_mask,
+          spatiotemporal_shape=spatiotemporal_shape,
+          svg_timestep=timestep,
+          svg_step_index=svg_step_index,
       )
 
       if cached_kv is not None:
@@ -1630,13 +1660,14 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       else:
         unstacked_kv_layers = [None] * self.num_layers
 
-      def apply_block_in_scan(block, hidden_states, audio_hidden_states, mask, layer_kv_cache):
+      def apply_block_in_scan(block, hidden_states, audio_hidden_states, mask, layer_kv_cache, layer_index=None):
         context = LTX2BlockContext(
             hidden_states=hidden_states,
             audio_hidden_states=audio_hidden_states,
             static=static_context,
             perturbation_mask=mask,
             layer_kv_cache=layer_kv_cache,
+            layer_index=layer_index,
         )
         with self.named_scope("Transformer Layer"):
           hidden_states_out, audio_hidden_states_out = block(context)
@@ -1645,24 +1676,28 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
             audio_hidden_states_out.astype(audio_hidden_states.dtype),
         )
 
+      layer_indices = jnp.arange(self.num_layers, dtype=jnp.int32)
       if perturbation_mask is None:
         if cached_kv is not None:
 
           def scan_fn_ltx2(carry, block_and_kv):
-            block, layer_kv_cache = block_and_kv
+            block, layer_kv_cache, layer_index = block_and_kv
             if isinstance(layer_kv_cache, dict):
               layer_kv_cache = FrozenDict(layer_kv_cache)
             hidden_states, audio_hidden_states, rngs_carry = carry
             hidden_states, audio_hidden_states = apply_block_in_scan(
-                block, hidden_states, audio_hidden_states, None, layer_kv_cache
+                block, hidden_states, audio_hidden_states, None, layer_kv_cache, layer_index=layer_index
             )
             return (hidden_states, audio_hidden_states, rngs_carry), None
 
         else:
 
-          def scan_fn_ltx2(carry, block):
+          def scan_fn_ltx2(carry, block_and_idx):
+            block, layer_index = block_and_idx
             hidden_states, audio_hidden_states, rngs_carry = carry
-            hidden_states, audio_hidden_states = apply_block_in_scan(block, hidden_states, audio_hidden_states, None, None)
+            hidden_states, audio_hidden_states = apply_block_in_scan(
+                block, hidden_states, audio_hidden_states, None, None, layer_index=layer_index
+            )
             return (hidden_states, audio_hidden_states, rngs_carry), None
 
         if self.scan_layers:
@@ -1674,7 +1709,11 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           )
           carry = (hidden_states, audio_hidden_states, nnx.Rngs(0))
 
-          scan_input = (self.transformer_blocks, cached_kv) if cached_kv is not None else self.transformer_blocks
+          scan_input = (
+              (self.transformer_blocks, cached_kv, layer_indices)
+              if cached_kv is not None
+              else (self.transformer_blocks, layer_indices)
+          )
           (hidden_states, audio_hidden_states, _), _ = nnx.scan(
               rematted_scan_fn,
               length=self.num_layers,
@@ -1685,7 +1724,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         else:
           for i, block in enumerate(self.transformer_blocks):
             hidden_states, audio_hidden_states = apply_block_in_scan(
-                block, hidden_states, audio_hidden_states, None, unstacked_kv_layers[i]
+                block, hidden_states, audio_hidden_states, None, unstacked_kv_layers[i], layer_index=i
             )
       else:
         masks = jnp.ones((self.num_layers, batch_size, 1, 1), dtype=self.dtype)
@@ -1697,21 +1736,23 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         if cached_kv is not None:
 
           def scan_fn_ltx23(carry, block_and_mask_and_kv):
-            block, mask, layer_kv_cache = block_and_mask_and_kv
+            block, mask, layer_kv_cache, layer_index = block_and_mask_and_kv
             if isinstance(layer_kv_cache, dict):
               layer_kv_cache = FrozenDict(layer_kv_cache)
             hidden_states, audio_hidden_states, rngs_carry = carry
             hidden_states, audio_hidden_states = apply_block_in_scan(
-                block, hidden_states, audio_hidden_states, mask, layer_kv_cache
+                block, hidden_states, audio_hidden_states, mask, layer_kv_cache, layer_index=layer_index
             )
             return (hidden_states, audio_hidden_states, rngs_carry), None
 
         else:
 
           def scan_fn_ltx23(carry, block_and_mask):
-            block, mask = block_and_mask
+            block, mask, layer_index = block_and_mask
             hidden_states, audio_hidden_states, rngs_carry = carry
-            hidden_states, audio_hidden_states = apply_block_in_scan(block, hidden_states, audio_hidden_states, mask, None)
+            hidden_states, audio_hidden_states = apply_block_in_scan(
+                block, hidden_states, audio_hidden_states, mask, None, layer_index=layer_index
+            )
             return (hidden_states, audio_hidden_states, rngs_carry), None
 
         if self.scan_layers:
@@ -1723,9 +1764,9 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           )
           carry = (hidden_states, audio_hidden_states, nnx.Rngs(0))
           scan_input = (
-              (self.transformer_blocks, perturbation_mask_per_layer, cached_kv)
+              (self.transformer_blocks, perturbation_mask_per_layer, cached_kv, layer_indices)
               if cached_kv is not None
-              else (self.transformer_blocks, perturbation_mask_per_layer)
+              else (self.transformer_blocks, perturbation_mask_per_layer, layer_indices)
           )
           (hidden_states, audio_hidden_states, _), _ = nnx.scan(
               rematted_scan_fn,
@@ -1737,7 +1778,12 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
         else:
           for i, block in enumerate(self.transformer_blocks):
             hidden_states, audio_hidden_states = apply_block_in_scan(
-                block, hidden_states, audio_hidden_states, perturbation_mask_per_layer[i], unstacked_kv_layers[i]
+                block,
+                hidden_states,
+                audio_hidden_states,
+                perturbation_mask_per_layer[i],
+                unstacked_kv_layers[i],
+                layer_index=i,
             )
 
     # 6. Output layers
