@@ -179,6 +179,7 @@ class LTX2AttentionMaskContractTest(unittest.TestCase):
         "ulysses_ring",
         "ulysses_ring_custom",
         "ulysses_ring_custom_fixed_m",
+        "ulysses_ring_custom_fixed_m_per_q_block",
         "ulysses_ring_custom_bidir",
         "ulysses_custom",
         "ulysses_custom_fixed_m",

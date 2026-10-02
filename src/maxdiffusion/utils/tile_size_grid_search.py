@@ -46,6 +46,7 @@ ULYSSES_RING_ATTENTION_KERNELS = frozenset({
     "ulysses_ring",
     "ulysses_ring_custom",
     "ulysses_ring_custom_fixed_m",
+    "ulysses_ring_custom_fixed_m_per_q_block",
     "ulysses_ring_custom_bidir",
 })
 
@@ -259,6 +260,8 @@ def time_callable(fn, *, iters: int = 10, warmup: int = 2, sync=lambda x: x):
   import statistics
   import time
 
+  if iters < 1:
+    raise ValueError(f"iters must be >= 1, got {iters}.")
   t0 = time.perf_counter()
   sync(fn())  # call #1: compilation happens HERE, untimed
   compile_ms = (time.perf_counter() - t0) * 1e3
@@ -380,12 +383,13 @@ def _broadcast_winner(best: Optional[BenchResult], results: list[BenchResult]) -
   is_source = jax.process_index() == 0
   payload = np.zeros((4,), dtype=np.int64)
   if is_source and best is not None:
-    payload[:] = (1, best.bq, best.bkv, best.bkv_compute)
+    bkv_cmp = -1 if best.bkv_compute is None else best.bkv_compute
+    payload[:] = (1, best.bq, best.bkv, bkv_cmp)
   payload = np.asarray(multihost_utils.broadcast_one_to_all(payload, is_source=is_source))
   if payload[0] == 0:
     return None
 
-  winner_key = tuple(int(value) for value in payload[1:])
+  winner_key = (int(payload[1]), int(payload[2]), None if int(payload[3]) < 0 else int(payload[3]))
   for result in results:
     if (result.bq, result.bkv, result.bkv_compute) == winner_key and result.status == "ok":
       return result
