@@ -42,5 +42,11 @@ TESTS=(
   # Fused RMSNorm+RoPE producer, Wan switches in config (feat/wan-custom-kernels)
   "$T/fused_rmsnorm_rope_pallas_test.py"
   "$T/wan_runtime_options_test.py"
+  # Cross-attention kernel, token patch embed, shard-major A2A, lane padding
+  # (feat/wan-fast-inference-optimizations)
+  "$T/cross_attention_pallas_test.py"
+  "$T/ulysses_out_a2a_test.py"
+  "$T/wan_patch_embed_test.py"
+  "$T/wan_seq_pad_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
