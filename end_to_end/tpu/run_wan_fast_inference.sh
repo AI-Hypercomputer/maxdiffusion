@@ -49,8 +49,20 @@
 #                    autodetection
 #   ACCEL_TYPE / TPU_ACCELERATOR_TYPE
 #                    force the raw accelerator type (e.g. v6e-8, tpu7x-8)
-#   ATTENTION / ULYSSES_SHARDS / BQ / BKV / BKV_COMPUTE / BKV_COMPUTE_IN / BQ_DKV / VMEM_LIMIT_BYTES
+#   ATTENTION / USE_K_CENTERING / ULYSSES_SHARDS / BQ / BKV / BKV_COMPUTE / BKV_COMPUTE_IN / BQ_DKV / VMEM_LIMIT_BYTES
 #                    override the per-platform attention recipe
+#   USE_FUSED_ROPE_KERNEL / FUSED_ROPE_BLOCK_S / FUSED_ROPE_HEAD_BLOCK
+#                    override the fused RMSNorm+RoPE Pallas producer settings.
+#                    The v6e and v7 profiles turn the kernel ON, unlike the
+#                    YAML default (off) and the generic profile (off), because
+#                    it is measurably faster there: at the full 5-PR stack
+#                    (40 steps, 720p/81f, warm AOT, DVFS unpinned) denoise is
+#                    125.9s vs 131.2s on v6e-8 and 105.1s vs 106.7s on tpu7x-8.
+#                    Its output is equivalent but not bit-identical to the XLA
+#                    producer: on v6e the bf16 trajectory diverges (PSNR ~15 dB
+#                    against the XLA-path video, visually clean); on tpu7x the
+#                    output was bit-identical in that measurement.
+#                    USE_FUSED_ROPE_KERNEL=false restores the XLA producer.
 #   DP / CP / PER_DEVICE_BATCH / SEED
 #                    override mesh parallelism, per-device batch, or RNG seed (default 12345)
 set -euo pipefail
@@ -73,8 +85,6 @@ export HF_HUB_ENABLE_HF_TRANSFER=1
 export JAX_DEFAULT_MATMUL_PRECISION=bfloat16
 export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
-# Without these the JAX persistent cache silently skips most entries, so the
-# "warm" start still recompiles a large part of the graph.
 export JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=-1
 export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
 
@@ -85,14 +95,7 @@ export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-$CACHE_ROOT/torch_comp
 mkdir -p "$CACHE_ROOT/jax" "$CACHE_ROOT/aot_wan$MODEL" "$CACHE_ROOT/converted" \
          "$OUTPUT_DIR" "$TMPDIR" "$TORCHINDUCTOR_CACHE_DIR"
 
-# ---------------------------------------------------------------------------
-# TPU platform detection
-# ---------------------------------------------------------------------------
-# Preference order: explicit override -> TPU_ACCELERATOR_TYPE env (set by some
-# runtimes) -> GCE metadata "accelerator-type" (e.g. "v6e-8") -> the
-# ACCELERATOR_TYPE line inside the "tpu-env" metadata blob. Detection is pure
-# metadata/env: it must not initialise the TPU, or it would take the device
-# before the real process starts.
+# Detect TPU generation via env or GCE metadata without initializing the device.
 _tpu_metadata() {
   curl -s -f -m 2 -H 'Metadata-Flavor: Google' \
     "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" 2> /dev/null || true
@@ -102,8 +105,6 @@ _detect_accel_type() {
   local t="${TPU_ACCELERATOR_TYPE:-}"
   [ -z "$t" ] && t="$(_tpu_metadata accelerator-type)"
   [ -z "$t" ] && t="$(_tpu_metadata tpu-env | sed -n "s/^ACCELERATOR_TYPE: *'\([^']*\)'.*/\1/p")"
-  # Guard against metadata returning an HTML error page. Real names seen in the
-  # wild: "v6e-8", "v5litepod-8", "tpu7x-8" (v7 reports as tpu7x, not v7x).
   case "$t" in
     v[0-9]* | tpu[0-9]*) printf '%s' "$t" ;;
     *) printf '' ;;
@@ -112,8 +113,8 @@ _detect_accel_type() {
 
 ACCEL_TYPE=${ACCEL_TYPE:-$(_detect_accel_type)}
 if [ -n "$ACCEL_TYPE" ]; then
-  TPU_GEN="${ACCEL_TYPE%%-*}"  # v6e-8      -> v6e
-  TPU_CHIPS="${ACCEL_TYPE##*-}" # v6e-8      -> 8
+  TPU_GEN="${ACCEL_TYPE%%-*}"
+  TPU_CHIPS="${ACCEL_TYPE##*-}"
 else
   TPU_GEN=""
   TPU_CHIPS=""
@@ -165,6 +166,7 @@ case "$TPU_PROFILE" in
     DEFAULT_BATCHED_TE=true
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
+    DEFAULT_FUSED_ROPE=true
     ;;
   v7)
     PLATFORM_LIBTPU="$V7_LIBTPU"
@@ -180,6 +182,7 @@ case "$TPU_PROFILE" in
     DEFAULT_BATCHED_TE=true
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
+    DEFAULT_FUSED_ROPE=true
     ;;
   *)
     echo "== warning: unrecognised or non-v6e/v7 accelerator '${ACCEL_TYPE:-unknown}';" \
@@ -197,6 +200,7 @@ case "$TPU_PROFILE" in
     DEFAULT_BATCHED_TE=true
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
+    DEFAULT_FUSED_ROPE=false
     ;;
 esac
 
@@ -212,6 +216,7 @@ case "$LIBTPU_INIT_ARGS" in
 esac
 
 ATTENTION=${ATTENTION:-$DEFAULT_ATTENTION}
+USE_K_CENTERING=${USE_K_CENTERING:-auto}  # auto: on for non-ring (v6e), off for ring (v7)
 ULYSSES_SHARDS=${ULYSSES_SHARDS:-$DEFAULT_U}
 BQ=${BQ:-$DEFAULT_BQ}
 BKV=${BKV:-$DEFAULT_BKV}
@@ -223,6 +228,10 @@ COMPILE_TE=${COMPILE_TE:-$DEFAULT_COMPILE_TE}
 USE_BATCHED_TE=${USE_BATCHED_TE:-$DEFAULT_BATCHED_TE}
 VAE_SPATIAL=${VAE_SPATIAL:-$DEFAULT_VAE_SPATIAL}
 VAE_DECODE_CHUNK=${VAE_DECODE_CHUNK:-$DEFAULT_VAE_CHUNK}
+USE_FUSED_ROPE_KERNEL=${USE_FUSED_ROPE_KERNEL:-$DEFAULT_FUSED_ROPE}
+FUSED_ROPE_ARGS=()
+[ -n "${FUSED_ROPE_BLOCK_S:-}" ] && FUSED_ROPE_ARGS+=("fused_rope_block_s=$FUSED_ROPE_BLOCK_S")
+[ -n "${FUSED_ROPE_HEAD_BLOCK:-}" ] && FUSED_ROPE_ARGS+=("fused_rope_head_block=$FUSED_ROPE_HEAD_BLOCK")
 
 # Mesh: context parallelism carries the Ulysses shards, data parallelism takes
 # whatever chips remain. Defaults to CP=4 / DP=2 on an 8-chip slice. On a slice
@@ -272,6 +281,7 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   aot_cache_dir="$CACHE_ROOT/aot_wan$MODEL" \
   converted_weights_dir="$CACHE_ROOT/converted" \
   attention="$ATTENTION" \
+  use_k_centering="$USE_K_CENTERING" \
   ulysses_shards="$ULYSSES_SHARDS" \
   ici_data_parallelism="$DP" ici_fsdp_parallelism=1 \
   ici_context_parallelism="$CP" ici_tensor_parallelism=1 \
@@ -282,6 +292,8 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   vae_weights_dtype=bfloat16 vae_dtype=bfloat16 \
   text_encoder_dtype=bfloat16 compile_text_encoder="$COMPILE_TE" use_batched_text_encoder="$USE_BATCHED_TE" \
   use_kv_cache=true use_base2_exp=true use_experimental_scheduler=true \
+  use_fused_rope_kernel="$USE_FUSED_ROPE_KERNEL" \
+  ${FUSED_ROPE_ARGS[@]+"${FUSED_ROPE_ARGS[@]}"} \
   fps=16 ${GUIDANCE_ARGS[@]+"${GUIDANCE_ARGS[@]}"} \
   seed="${SEED:-12345}" \
   flash_block_sizes="$FLASH_BLOCK_SIZES" \
