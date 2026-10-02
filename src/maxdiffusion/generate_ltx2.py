@@ -19,7 +19,6 @@ import jax.numpy as jnp
 import time
 import os
 import subprocess
-import uuid
 from maxdiffusion.checkpointing.ltx2_checkpointer import LTX2Checkpointer
 from maxdiffusion import aot_cache, pyconfig, max_logging, max_utils
 from absl import app
@@ -148,7 +147,7 @@ def _canonical_aot_value(value):
 
 def _non_reusable_aot_revision():
   """Returns a unique identity so unversioned source can never hit old HLO."""
-  return f"unversioned:{uuid.uuid4().hex}"
+  return aot_cache.non_reusable_aot_revision()
 
 
 def _resolve_ltx2_aot_source_revision(config, commit_hash=None):
@@ -160,9 +159,7 @@ def _resolve_ltx2_aot_source_revision(config, commit_hash=None):
 
 
 def _is_reusable_aot_revision(source_revision) -> bool:
-  if source_revision is None or not str(source_revision).strip():
-    return False
-  return not str(source_revision).startswith(("dirty:", "unversioned:"))
+  return aot_cache.is_reusable_aot_revision(source_revision)
 
 
 def ltx2_aot_metadata(config, pipeline, source_revision=None):

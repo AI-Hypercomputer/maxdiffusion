@@ -318,29 +318,135 @@ def _torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
   return tensor.numpy()
 
 
+# v2: the source fingerprint no longer includes absolute paths (v1 caches are
+# rejected once and re-converted), and a missing fingerprint is rejected.
+# v3: the fingerprint includes the HF snapshot revision (read before symlinks
+# are resolved) and the subfolder. v2 manifests whose fingerprint matches the
+# v2 formula for the same index are migrated in place on first load.
+_CONVERTED_WEIGHTS_FORMAT_VERSION = 3
+_LEGACY_MIGRATABLE_FORMAT_VERSION = 2
+
+
 def _converted_key_to_filename(flax_key: tuple) -> str:
   return ".".join(str(k) for k in flax_key) + ".npy"
 
 
-def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn: Optional[Callable]) -> Optional[dict]:
+def _snapshot_revision(index_file_path: str) -> str:
+  """HF snapshot revision for an index under `.../snapshots/<revision>/`, else "".
+
+  Read from the path as given: HF snapshot entries are symlinks into `blobs/`,
+  so resolving them first (realpath) would always lose the revision. Scans from
+  the right (and prefers a `models--*/snapshots/<revision>` pair when present)
+  so a parent mount directory named `snapshots` does not shadow the HF cache.
+  """
+  parts = os.path.normpath(os.path.abspath(index_file_path)).split(os.sep)
+  for i in range(len(parts) - 2, 0, -1):
+    if parts[i] == "snapshots" and parts[i - 1].startswith("models--"):
+      return parts[i + 1]
+  for i in range(len(parts) - 2, -1, -1):
+    if parts[i] == "snapshots":
+      return parts[i + 1]
+  return ""
+
+
+def _compute_source_checkpoint_fingerprint(index_file_path: str, source_id: str = "", subfolder: str = "") -> str:
+  """Fingerprints the source checkpoint WITHOUT depending on where it is mounted.
+
+  Hashes `source_id` (the HF repo id, or "" for a local directory), the HF
+  snapshot revision when the index lives under `.../snapshots/<revision>/`,
+  `subfolder` (Wan 2.2's transformer and transformer_2 ship byte-identical
+  index files), and the index file's contents (shard names, tensor->shard map,
+  total size). Absolute paths are deliberately excluded, so a different
+  HF_HOME or mount point does not invalidate a ~28 GB converted cache.
+  """
+  import hashlib
+
+  hasher = hashlib.sha256()
+  for field in (source_id, _snapshot_revision(index_file_path), subfolder):
+    hasher.update(field.encode("utf-8") + b"\0")
+  with open(index_file_path, "rb") as f:
+    hasher.update(f.read())
+  return hasher.hexdigest()[:16]
+
+
+def _legacy_v2_source_fingerprint(index_file_path: str, source_id: str = "") -> str:
+  """The format-v2 fingerprint (revision read after realpath, no subfolder); for migration only."""
+  import hashlib
+
+  parts = os.path.normpath(os.path.realpath(index_file_path)).split(os.sep)
+  revision = parts[parts.index("snapshots") + 1] if "snapshots" in parts[:-1] else ""
+  hasher = hashlib.sha256()
+  for field in (source_id, revision):
+    hasher.update(field.encode("utf-8") + b"\0")
+  with open(index_file_path, "rb") as f:
+    hasher.update(f.read())
+  return hasher.hexdigest()[:16]
+
+
+def _free_bytes(path: str) -> int:
+  """Free bytes on the filesystem holding `path` (or its nearest existing ancestor)."""
+  probe = os.path.abspath(path)
+  while not os.path.exists(probe) and os.path.dirname(probe) != probe:
+    probe = os.path.dirname(probe)
+  return shutil.disk_usage(probe).free
+
+
+# Headroom kept free when writing large caches, so a nearly-full disk fails
+# with an actionable message instead of at 100%.
+_DISK_HEADROOM_BYTES = 2 * 1024**3
+
+
+def try_load_converted_weights(
+    cache_dir: str,
+    eval_shapes: dict,
+    cast_dtype_fn: Optional[Callable],
+    source_fingerprint: Optional[str],
+    legacy_source_fingerprint: Optional[str] = None,
+) -> Optional[dict]:
   """Loads a converted-weights cache as mmapped arrays, or None on mismatch.
 
   The torch->flax conversion (transpose + scan-stack + cast) is a pure
   function of the checkpoint, so it is paid once and memoized on disk.
   Keys/shapes are validated against eval_shapes and dtypes against
   cast_dtype_fn, so a policy or model change falls back to a fresh
-  conversion (which re-saves).
+  conversion (which re-saves). Fail-closed on provenance: a manifest without
+  a source fingerprint, or a call without one, is treated as a miss.
+
+  A format-v2 manifest is accepted only if its fingerprint equals
+  `legacy_source_fingerprint` (the v2 formula for the same index); after a
+  successful load its header is rewritten to the current version and
+  `source_fingerprint`, so the migration happens once.
   """
   manifest_path = os.path.join(cache_dir, "manifest.json")
   if not os.path.isfile(manifest_path):
     return None
   try:
     with open(manifest_path, "r") as f:
-      manifest = json.load(f)
-    expected_keys = set(flatten_dict(eval_shapes).keys())
+      raw_manifest = json.load(f)
+    if isinstance(raw_manifest, dict) and "__meta__" in raw_manifest:
+      meta_header = raw_manifest["__meta__"]
+      version = meta_header.get("format_version")
+      migrate = version == _LEGACY_MIGRATABLE_FORMAT_VERSION and bool(legacy_source_fingerprint)
+      if version != _CONVERTED_WEIGHTS_FORMAT_VERSION and not migrate:
+        raise ValueError(f"converted cache format_version {version} != {_CONVERTED_WEIGHTS_FORMAT_VERSION}")
+      cached_fingerprint = meta_header.get("source_fingerprint")
+      if not cached_fingerprint:
+        raise ValueError("converted cache has no source fingerprint (cannot verify its source checkpoint)")
+      if not source_fingerprint:
+        raise ValueError("no source fingerprint available for the requested checkpoint")
+      expected_fingerprint = legacy_source_fingerprint if migrate else source_fingerprint
+      if cached_fingerprint != expected_fingerprint:
+        raise ValueError("source checkpoint fingerprint changed")
+      manifest = {k: v for k, v in raw_manifest.items() if k != "__meta__"}
+    else:
+      raise ValueError("converted cache manifest missing __meta__ format header (written by an older version)")
+    flat_eval = flatten_dict(eval_shapes)
+    expected_keys = set(flat_eval.keys())
 
     def load_one(key_str, meta):
       flax_key = _tuple_str_to_int(tuple(key_str.split(".")))
+      if flax_key not in flat_eval:
+        raise ValueError(f"unexpected key {key_str} in converted cache")
       logical_dtype = np.dtype(meta["dtype"])
       if cast_dtype_fn is not None and logical_dtype != np.dtype(cast_dtype_fn(flax_key)):
         raise ValueError(f"dtype policy changed for {key_str}")
@@ -351,8 +457,9 @@ def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn:
         # Non-native dtypes (bf16/fp8) are stored as same-width uints:
         # npy cannot resolve ml_dtypes descriptors on all paths.
         value = value.view(logical_dtype)
-      if tuple(value.shape) != tuple(meta["shape"]):
-        raise ValueError(f"shape changed for {key_str}")
+      expected_shape = tuple(flat_eval[flax_key].shape)
+      if tuple(value.shape) != tuple(meta["shape"]) or tuple(value.shape) != expected_shape:
+        raise ValueError(f"shape changed for {key_str}: got {value.shape}, expected {expected_shape}")
       return flax_key, value
 
     flax_state_dict = {}
@@ -361,31 +468,130 @@ def try_load_converted_weights(cache_dir: str, eval_shapes: dict, cast_dtype_fn:
         flax_state_dict[flax_key] = value
     if set(flax_state_dict.keys()) != expected_keys:
       return None
+    if migrate:
+      _migrate_manifest_header(manifest_path, raw_manifest, source_fingerprint)
     return unflatten_dict(flax_state_dict)
   except (OSError, ValueError, KeyError, TypeError) as e:
-    max_logging.log(f"Converted-weights cache unusable ({e}); reconverting")
+    max_logging.log(
+        f"WARNING: converted-weights cache at {cache_dir} is unusable ({e}). The transformer will be "
+        "re-converted from the source safetensors (downloading any shards missing from the HF cache) "
+        "and the cache re-saved; for Wan 2.2 A14B that is ~28 GB per expert of disk."
+    )
     return None
 
 
-def save_converted_weights(cache_dir: str, flat_state_dict: dict) -> None:
-  """Writes the converted tree as per-tensor .npy + manifest, atomically."""
-  tmp_dir = f"{cache_dir}.tmp.{os.getpid()}"
+def _migrate_manifest_header(manifest_path: str, raw_manifest: dict, source_fingerprint: str) -> None:
+  """Best-effort atomic rewrite of a validated v2 manifest header to the current format."""
+  upgraded = dict(raw_manifest)
+  upgraded["__meta__"] = {
+      **raw_manifest["__meta__"],
+      "format_version": _CONVERTED_WEIGHTS_FORMAT_VERSION,
+      "source_fingerprint": source_fingerprint,
+  }
+  tmp_path = manifest_path + ".tmp"
+  try:
+    with open(tmp_path, "w") as f:
+      json.dump(upgraded, f)
+    os.replace(tmp_path, manifest_path)
+    max_logging.log(
+        f"Migrated converted-weights manifest {manifest_path} to format v{_CONVERTED_WEIGHTS_FORMAT_VERSION} "
+        "(fingerprint now includes the snapshot revision and subfolder)."
+    )
+  except OSError as e:
+    max_logging.log(f"WARNING: could not migrate {manifest_path} ({e}); it will be re-checked on the next load.")
+
+
+def save_converted_weights(
+    cache_dir: str,
+    flat_state_dict: dict,
+    source_fingerprint: str,
+) -> bool:
+  """Writes the converted tree as per-tensor .npy + manifest, atomically.
+
+  Returns False (after logging why) instead of writing when there is not
+  enough free disk for the tree plus headroom; the in-memory weights are
+  unaffected, only the memoization is skipped.
+  """
+  import uuid
+
+  if not source_fingerprint:
+    raise ValueError("save_converted_weights requires a source_fingerprint (unverifiable caches are never written).")
+
+  suffix = f"{os.getpid()}.{uuid.uuid4().hex[:8]}"
+  # Remove any invalidated cache_dir before writing tmp_dir so peak disk usage
+  # stays at 1x instead of 2x-3x when re-saving a ~28GB expert.
+  if os.path.isdir(cache_dir):
+    stale_dir = f"{cache_dir}.stale.{suffix}"
+    try:
+      os.rename(cache_dir, stale_dir)
+      shutil.rmtree(stale_dir, ignore_errors=True)
+    except OSError:
+      shutil.rmtree(cache_dir, ignore_errors=True)
+
+  needed = sum(int(v.nbytes) for v in flat_state_dict.values()) + _DISK_HEADROOM_BYTES
+  free = _free_bytes(cache_dir)
+  if free < needed:
+    max_logging.log(
+        f"WARNING: not saving the converted-weights cache to {cache_dir}: needs ~{needed / 1e9:.1f} GB "
+        f"(incl. headroom) but only {free / 1e9:.1f} GB is free. Free disk space or point "
+        "converted_weights_dir at a larger volume to enable the fast warm start."
+    )
+    return False
+
+  tmp_dir = f"{cache_dir}.tmp.{suffix}"
   os.makedirs(tmp_dir, exist_ok=True)
-  manifest = {}
-  uint_by_width = {1: np.uint8, 2: np.uint16, 4: np.uint32}
-  for flax_key, value in flat_state_dict.items():
-    filename = _converted_key_to_filename(flax_key)
-    bitview = value.dtype.kind not in "fiub"  # ml_dtypes (bf16/fp8) etc.
-    stored = value.view(uint_by_width[value.dtype.itemsize]) if bitview else value
-    np.save(os.path.join(tmp_dir, filename), stored)
-    key_str = ".".join(str(k) for k in flax_key)
-    manifest[key_str] = {"file": filename, "shape": list(value.shape), "dtype": str(value.dtype), "bitview": bitview}
-  with open(os.path.join(tmp_dir, "manifest.json"), "w") as f:
-    json.dump(manifest, f)
+  try:
+    manifest = {
+        "__meta__": {
+            "format_version": _CONVERTED_WEIGHTS_FORMAT_VERSION,
+            "source_fingerprint": source_fingerprint,
+        }
+    }
+    uint_by_width = {1: np.uint8, 2: np.uint16, 4: np.uint32}
+    for flax_key, value in flat_state_dict.items():
+      filename = _converted_key_to_filename(flax_key)
+      bitview = value.dtype.kind not in "fiub"  # ml_dtypes (bf16/fp8) etc.
+      stored = value.view(uint_by_width[value.dtype.itemsize]) if bitview else value
+      np.save(os.path.join(tmp_dir, filename), stored)
+      key_str = ".".join(str(k) for k in flax_key)
+      manifest[key_str] = {"file": filename, "shape": list(value.shape), "dtype": str(value.dtype), "bitview": bitview}
+    with open(os.path.join(tmp_dir, "manifest.json"), "w") as f:
+      json.dump(manifest, f)
+  except Exception:
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    raise
   try:
     os.rename(tmp_dir, cache_dir)
   except OSError:
     shutil.rmtree(tmp_dir, ignore_errors=True)  # another process won the race
+  return True
+
+
+def _check_disk_for_shard_download(repo_id: str, subfolder: str, model_files: list, index_dict: dict) -> None:
+  """Raises an actionable error if downloading the missing shards would fill the disk."""
+  try:
+    from huggingface_hub import constants as hf_constants
+    from huggingface_hub import try_to_load_from_cache
+
+    missing = [
+        f
+        for f in model_files
+        if not isinstance(try_to_load_from_cache(repo_id, f"{subfolder}/{f}" if subfolder else f), str)
+    ]
+    total_size = int(index_dict.get("metadata", {}).get("total_size", 0))
+    hub_cache = hf_constants.HF_HUB_CACHE
+  except Exception:  # noqa: BLE001 - best effort: never block loading on the estimate itself
+    return
+  if not missing or not total_size:
+    return
+  needed = total_size * len(missing) // max(len(model_files), 1) + _DISK_HEADROOM_BYTES
+  free = _free_bytes(hub_cache)
+  if free < needed:
+    raise OSError(
+        f"Refusing to download {len(missing)}/{len(model_files)} shards of {repo_id}/{subfolder}: needs ~{needed / 1e9:.1f} "
+        f"GB (incl. headroom) in {hub_cache} but only {free / 1e9:.1f} GB is free. Free disk space, set HF_HOME to a "
+        "larger volume, or restore a valid converted_weights_dir cache."
+    )
 
 
 def load_base_wan_transformer(
@@ -416,22 +622,49 @@ def load_base_wan_transformer(
   Returns a nested dict of numpy arrays (host memory).
   """
   del device  # weights stay in plain host numpy until device_put by the caller
-  if converted_cache_dir:
-    t_start = time.perf_counter()
-    cached = try_load_converted_weights(converted_cache_dir, eval_shapes, cast_dtype_fn)
-    if cached is not None:
-      max_logging.log(
-          f"Loaded converted {subfolder or 'transformer'} weights (mmap) in {time.perf_counter() - t_start:.1f}s"
-      )
-      return cached
   filename = "diffusion_pytorch_model.safetensors.index.json"
-  local_files = False
-  if os.path.isdir(pretrained_model_name_or_path):
+  local_files = os.path.isdir(pretrained_model_name_or_path)
+  source_id = "" if local_files else pretrained_model_name_or_path
+
+  def try_cache(index_path):
+    if not converted_cache_dir or not index_path:
+      return None
+    t_start = time.perf_counter()
+    cached = try_load_converted_weights(
+        converted_cache_dir,
+        eval_shapes,
+        cast_dtype_fn,
+        source_fingerprint=_compute_source_checkpoint_fingerprint(index_path, source_id, subfolder),
+        legacy_source_fingerprint=_legacy_v2_source_fingerprint(index_path, source_id),
+    )
+    if cached is not None:
+      max_logging.log(f"Loaded converted {subfolder or 'transformer'} weights in {time.perf_counter() - t_start:.1f}s")
+    return cached
+
+  index_file_path = None
+  checked_index = None
+  if local_files:
     index_file_path = os.path.join(pretrained_model_name_or_path, subfolder, filename)
     if not os.path.isfile(index_file_path):
       raise FileNotFoundError(f"File {index_file_path} not found for local directory.")
-    local_files = True
   elif hf_download:
+    # Warm start without the network: if the index is already in the local HF
+    # cache, check the converted cache against it first. Trade-off: while a
+    # valid converted cache exists for the locally cached revision, a newer
+    # upstream revision is not picked up (delete converted_weights_dir to force).
+    try:
+      with _HF_METADATA_LOCK:
+        checked_index = hf_hub_download(
+            pretrained_model_name_or_path,
+            subfolder=subfolder,
+            filename=filename,
+            local_files_only=True,
+        )
+    except Exception:  # noqa: BLE001 - not in the local HF cache: fall through to the network path
+      checked_index = None
+    cached = try_cache(checked_index)
+    if cached is not None:
+      return cached
     # download the index file for sharded models.
     with _HF_METADATA_LOCK:
       index_file_path = hf_hub_download(
@@ -439,6 +672,13 @@ def load_base_wan_transformer(
           subfolder=subfolder,
           filename=filename,
       )
+  if index_file_path is None:
+    raise ValueError(f"{pretrained_model_name_or_path} is not a local directory and hf_download is False.")
+  if index_file_path != checked_index:
+    cached = try_cache(index_file_path)
+    if cached is not None:
+      return cached
+  source_fingerprint = _compute_source_checkpoint_fingerprint(index_file_path, source_id, subfolder)
   t_start = time.perf_counter()
   with open(index_file_path, "r") as f:
     index_dict = json.load(f)
@@ -498,6 +738,8 @@ def load_base_wan_transformer(
   # across the ~12 shard files. norm_added_q is explicitly ignored by the
   # diffusers implementation.
   chunk_size = 16
+  if not local_files:
+    _check_disk_for_shard_download(pretrained_model_name_or_path, subfolder, model_files, index_dict)
   tasks = []
   for model_file in model_files:
     ckpt_shard_path = resolve_shard_path(model_file)
@@ -514,11 +756,11 @@ def load_base_wan_transformer(
       future.result()  # re-raise conversion errors
 
   validate_flax_state_dict(eval_shapes, flax_state_dict)
-  if converted_cache_dir and not os.path.isdir(converted_cache_dir):
+  if converted_cache_dir:
     t_save = time.perf_counter()
     if jax.process_index() == 0:
-      save_converted_weights(converted_cache_dir, flax_state_dict)
-      max_logging.log(f"Saved converted-weights cache to {converted_cache_dir} in {time.perf_counter() - t_save:.1f}s")
+      if save_converted_weights(converted_cache_dir, flax_state_dict, source_fingerprint=source_fingerprint):
+        max_logging.log(f"Saved converted-weights cache to {converted_cache_dir} in {time.perf_counter() - t_save:.1f}s")
   flax_state_dict = unflatten_dict(flax_state_dict)
   max_logging.log(f"Converted {subfolder or 'transformer'} weights to host arrays in {time.perf_counter() - t_start:.1f}s")
   return flax_state_dict
