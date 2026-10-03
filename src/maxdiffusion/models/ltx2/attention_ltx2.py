@@ -22,6 +22,7 @@ import jax
 import jax.numpy as jnp
 from ... import common_types
 from ..attention_flax import NNXAttentionOp
+from .. import svg_attention
 from .logical_sharding_ltx2 import get_sharding_specs, LTX2DiTShardingSpecs
 
 Array = common_types.Array
@@ -352,7 +353,14 @@ class LTX2Attention(nnx.Module):
       use_base2_exp: bool = False,
       use_experimental_scheduler: bool = False,
       enable_jax_named_scopes: bool = False,
+      attention_config: Optional[dict] = None,
   ):
+    svg_config = svg_attention.init_svg_config(attention_config, default_num_layers=48)
+    for name, value in svg_config.items():
+      setattr(self, name, value)
+    self.is_self_attention = context_dim is None
+    self.use_svg_attention = bool(self.use_svg_attention) and self.is_self_attention
+
     self.heads = heads
     self.rope_type = rope_type
     self.dim_head = dim_head
@@ -542,9 +550,17 @@ class LTX2Attention(nnx.Module):
       k_rotary_emb: Optional[Tuple[Array, Array]] = None,
       perturbation_mask: Optional[Array] = None,
       cached_kv: Optional[Tuple[Array, Array]] = None,
+      spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+      svg_layer_index: Optional[int | jax.Array] = None,
+      svg_timestep: Optional[int | float | jax.Array] = None,
+      svg_step_index: Optional[int | jax.Array] = None,
   ) -> Array:
     # Determine context (Self or Cross)
+    is_self_attention = encoder_hidden_states is None
     context = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+
+    if self.use_svg_attention and is_self_attention and spatiotemporal_shape is None:
+      raise ValueError("SVG attention requires spatiotemporal_shape.")
 
     # 1. Project and Norm
     with self.named_scope("QKV Projection"):
@@ -586,8 +602,28 @@ class LTX2Attention(nnx.Module):
 
     with self.named_scope("Attention and Output Project"):
       # 4. Attention
-      # NNXAttentionOp expects flattened input [B, S, InnerDim] for flash kernel
-      attn_output = self.attention_op.apply_attention(query=query, key=key, value=value, attention_mask=attention_mask)
+      def run_attention(**svg_kwargs):
+        return self.attention_op.apply_attention(
+            query=query,
+            key=key,
+            value=value,
+            attention_mask=attention_mask,
+            **svg_kwargs,
+        )
+
+      if self.use_svg_attention and is_self_attention:
+        attn_output = svg_attention.apply_svg_or_dense(
+            self,
+            run_attention,
+            spatiotemporal_shape,
+            svg_layer_index=svg_layer_index,
+            svg_step_index=svg_step_index,
+            svg_timestep=svg_timestep,
+            named_scope=self.named_scope,
+        )
+      else:
+        with self.named_scope("apply_attention"):
+          attn_output = run_attention()
 
       if perturbation_mask is not None:
         # value is [B, S, InnerDim]

@@ -20,10 +20,120 @@ from __future__ import annotations
 
 import math
 from numbers import Integral
-from typing import Tuple
+from typing import Any, Callable, Mapping, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+
+# Attention-level SVG keys and their defaults. `svg_num_layers` is model
+# specific and supplied by the caller. Pipeline-level keys such as
+# `svg_high_noise_density` / `svg_low_noise_density` (Wan expert selection)
+# are resolved into `svg_spatial_density` before reaching attention.
+SVG_ATTENTION_DEFAULTS = {
+    "use_svg_attention": False,
+    "svg_spatial_density": 0.25,
+    "svg_sample_max_row": 10000,
+    "svg_profile_query_count": 64,
+    "svg_profile_seed": 0,
+    "svg_dense_layer_fraction": 0.0,
+    "svg_dense_timestep_fraction": 0.0,
+    "svg_active_start_step": -1,
+    "svg_active_end_step": -1,
+    "svg_active_start_layer": -1,
+    "svg_active_end_layer": -1,
+    "svg_num_train_timesteps": 1000,
+    "svg_include_first_frame": True,
+    "svg_global_stride": 0,
+    "svg_flash_block_sizes": None,
+}
+
+
+def init_svg_config(attention_config: Optional[Mapping[str, Any]], default_num_layers: int) -> dict[str, Any]:
+  """Resolves the attention-level SVG settings from `attention_config`.
+
+  Returns a dict keyed by the names in `SVG_ATTENTION_DEFAULTS` plus
+  `svg_num_layers`; other keys are ignored. Settings that configs accept but
+  the head-local SVG kernel does not implement fail loudly instead of being
+  silently dropped.
+  """
+  attention_config = attention_config or {}
+  implementation = attention_config.get("svg_implementation", "official_svg")
+  if implementation != "official_svg":
+    raise ValueError(f"Unsupported svg_implementation={implementation!r}; only 'official_svg' is implemented.")
+  global_offset = attention_config.get("svg_global_offset", 0)
+  if global_offset:
+    raise ValueError(f"svg_global_offset={global_offset} is not supported by head-local SVG.")
+  resolved = {**SVG_ATTENTION_DEFAULTS, "svg_num_layers": default_num_layers}
+  for name in resolved:
+    if name in attention_config:
+      resolved[name] = attention_config[name]
+  return resolved
+
+
+def apply_svg_or_dense(
+    svg: Any,
+    run_attention: Callable[..., jax.Array],
+    spatiotemporal_shape: Tuple[int, int, int],
+    svg_layer_index: int | jax.Array | None,
+    svg_step_index: int | jax.Array | None,
+    svg_timestep: int | float | jax.Array | None,
+    named_scope: Callable[[str], Any] = jax.named_scope,
+) -> jax.Array:
+  """Runs SVG sparse attention on active steps/layers and dense attention otherwise.
+
+  Args:
+    svg: Object exposing the attributes resolved by `init_svg_config`
+      (the attention module itself).
+    run_attention: Calls the attention op. Invoked with no arguments for the
+      dense path, and with `spatiotemporal_shape` and `sparse_config_override`
+      keyword arguments for the sparse path.
+    spatiotemporal_shape: Latent token grid `(frames, height, width)`.
+    svg_layer_index: Transformer layer index (static int or traced array).
+    svg_step_index: Denoising step index (static int or traced array).
+    svg_timestep: Diffusion timestep, used by fraction-based schedules.
+    named_scope: Context manager factory used to label the dispatch.
+  """
+  is_active = is_svg_active(
+      step_index=svg_step_index,
+      layer_index=svg_layer_index,
+      timestep=svg_timestep,
+      start_step=svg.svg_active_start_step,
+      end_step=svg.svg_active_end_step,
+      start_layer=svg.svg_active_start_layer,
+      end_layer=svg.svg_active_end_layer,
+      dense_layer_fraction=svg.svg_dense_layer_fraction,
+      dense_timestep_fraction=svg.svg_dense_timestep_fraction,
+      num_train_timesteps=svg.svg_num_train_timesteps,
+      num_layers=svg.svg_num_layers,
+  )
+
+  def run_dense(_):
+    return run_attention()
+
+  def run_sparse(_):
+    sparse_config = {
+        "use_svg_attention": True,
+        "mask_type": "svg_spatial",
+        "band_width": svg_execution_band_width(spatiotemporal_shape, svg.svg_spatial_density),
+        "include_first_frame": svg.svg_include_first_frame,
+        "global_stride": svg.svg_global_stride,
+        "profile_query_count": svg.svg_profile_query_count,
+        "profile_seed": svg.svg_profile_seed,
+        "sample_max_row": svg.svg_sample_max_row,
+        "custom_flash_block_sizes": svg.svg_flash_block_sizes,
+        "svg_step_index": svg_step_index,
+        "svg_layer_index": svg_layer_index,
+        "svg_timestep": svg_timestep,
+    }
+    return run_attention(
+        spatiotemporal_shape=spatiotemporal_shape,
+        sparse_config_override=sparse_config,
+    )
+
+  with named_scope("apply_attention"):
+    if isinstance(is_active, bool):
+      return run_sparse(None) if is_active else run_dense(None)
+    return jax.lax.cond(is_active, run_sparse, run_dense, operand=None)
 
 
 def svg_execution_band_width(token_grid: Tuple[int, int, int], density: float) -> int:
