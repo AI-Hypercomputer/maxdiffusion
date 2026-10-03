@@ -17,7 +17,7 @@
 # Heavily influenced by
 # https://github.com/openxla/iree/tree/main/build_tools/github_actions/runner/config
 
-# This file sets up a tpu vm to be used as a github runner for testing. 
+# This file sets up a tpu vm to be used as a github runner for testing.
 # It creates a user runner without sudo permissions to
 # run the config file and authenticate to github
 

@@ -14,7 +14,7 @@
 
 """
 Update src/maxdiffusion/dependency_versions_table.py based on the dependencies
-defined in dependencies/requirements/base_requirements/requirements.txt.
+defined in dependencies/requirements/generated_requirements/requirements.txt.
 """
 
 import os

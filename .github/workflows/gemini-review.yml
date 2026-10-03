@@ -7,6 +7,13 @@ on:
         type: 'string'
         description: 'Any additional context from the request'
         required: false
+    secrets:
+      APP_PRIVATE_KEY:
+        required: false
+      GEMINI_API_KEY:
+        required: false
+      GOOGLE_API_KEY:
+        required: false
 
 concurrency:
   # any single pull request, only one review runs at a time
@@ -31,7 +38,7 @@ jobs:
         id: 'mint_identity_token'
         if: |-
           ${{ vars.APP_ID }}
-        uses: 'actions/create-github-app-token@v2'
+        uses: 'actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349' # v2.2.2
         with:
           app-id: '${{ vars.APP_ID }}'
           private-key: '${{ secrets.APP_PRIVATE_KEY }}'
@@ -41,7 +48,7 @@ jobs:
 
       - name: 'Checkout repository'
         # downloads the code to be analyzed
-        uses: 'actions/checkout@v5'
+        uses: 'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09' # v5.1.0
 
       - name: 'Prepare prompt context'
         shell: 'bash'
@@ -58,8 +65,8 @@ jobs:
             '{repository: $repo, pull_request_number: $pr, additional_context: $context}' > .gemini/context.json
 
       - name: 'Run Gemini pull request review'
-        # reviews code with detailed set of instructions for the Gemini 
-        uses: 'google-github-actions/run-gemini-cli@main'
+        # reviews code with detailed set of instructions for the Gemini
+        uses: 'google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489' # v0.1.22
         id: 'gemini_pr_review'
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
@@ -69,7 +76,7 @@ jobs:
           PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
           REPOSITORY: '${{ github.repository }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
-        with:          
+        with:
           gcp_location: '${{ vars.GOOGLE_CLOUD_LOCATION }}'
           gcp_project_id: '${{ vars.GOOGLE_CLOUD_PROJECT }}'
           gcp_service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'

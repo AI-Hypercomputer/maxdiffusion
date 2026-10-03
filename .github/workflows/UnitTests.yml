@@ -30,6 +30,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -39,9 +42,9 @@ jobs:
     name: "TPU test (${{ matrix.tpu-type }})"
     runs-on: ["self-hosted","${{ matrix.tpu-type }}"]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
       with:
         python-version: '3.12'
     - name: Install dependencies
@@ -49,7 +52,6 @@ jobs:
         bash setup.sh MODE=stable
         export PATH=$PATH:$HOME/.local/bin
         pip install ruff
-        pip install isort
         pip install pytest
     - name: Analysing the code with ruff
       run: |
@@ -62,10 +64,3 @@ jobs:
       run: | #--deselect=src/maxdiffusion/tests/input_pipeline_interface_test.py
         export LIBTPU_INIT_ARGS='--xla_tpu_scoped_vmem_limit_kib=65536'
         HF_HUB_CACHE=/mnt/disks/github-runner-disk/ HF_HOME=/mnt/disks/github-runner-disk/ TOKENIZERS_PARALLELISM=false python3 -m pytest --ignore=src/maxdiffusion/kernels/ --deselect=src/maxdiffusion/tests/ltx_transformer_step_test.py -x
-#  add_pull_ready
-#    if: github.ref != 'refs/heads/main'
-#    permissions:
-#      checks: read
-#      pull-requests: write
-#    needs: build
-#    uses: ./.github/workflows/AddLabel.yml

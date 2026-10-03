@@ -5,9 +5,7 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        exclude: ^\.github/
       - id: end-of-file-fixer
-        exclude: ^\.github/
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=5000']

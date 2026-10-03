@@ -1,13 +1,14 @@
 # Data Input Guide
 
 ## Overview
-Currently MaxDiffusion supports 3 data input pipelines, controlled by the flag `dataset_type`
+Currently MaxDiffusion supports 5 data input pipelines, controlled by the flag `dataset_type`
 | Pipeline | Dataset Location | Dataset formats | Features or limitations |
 | -------- | ---------------- | --------------- | ----------------------- |
 | HuggingFace (hf) | datasets in HuggingFace Hub or local/Cloud Storage | Formats supported in HF Hub: parquet, arrow, json, csv, txt | data are not loaded in memory but streamed from the saved location, good for big dataset |
-| tf | dataset will be downloaded form HuggingFace Hub to disk | Formats supported in HF Hub: parquet, arrow, json, csv, txt | Will read the whole dataset into memory, works for small dataset |
+| tf | dataset will be downloaded from HuggingFace Hub to disk | Formats supported in HF Hub: parquet, arrow, json, csv, txt | Will read the whole dataset into memory, works for small dataset |
 | tfrecord | local/Cloud Storage | TFRecord | data are not loaded in memory but streamed from the saved location, good for big dataset |
 | Grain | local/Cloud Storage | ArrayRecord (or any random access format) | data are not loaded in memory but streamed from the saved location, good for big dataset, supports global shuffle and data iterator checkpoint for determinism (see details in [doc](https://github.com/AI-Hypercomputer/maxtext/blob/main/getting_started/Data_Input_Pipeline.md#grain-pipeline---for-determinism)) |
+| synthetic | n/a (generated on device) | n/a | random tensors of the configured shape; no I/O, useful for performance benchmarking and pipeline debugging (see the `synthetic_*` keys in the Wan configs) |
 
 ## Usage examples
 
@@ -54,7 +55,7 @@ grain_train_files: gs://<bucket>/<folder>/*.arrayrecord  # match the file patter
 
 ## Best Practice
 ### Multihost Dataloading
-In multihost environment, if use a streaming type of input pipeline and the data format only supports sequential reads (dataset_type in (hf, tfrecord in MaxDiffusion)), the most performant way is to have each data file only accessed by one host, and each host access a subset of data files (shuffle is within the subset of files). This requires (# of data files) > (# of hosts loading data). We recommand users to reshard the dataset if this requirement is not met.
+In a multihost environment, if using a streaming type of input pipeline and the data format only supports sequential reads (dataset_type in (hf, tfrecord in MaxDiffusion)), the most performant way is to have each data file only accessed by one host, and each host access a subset of data files (shuffle is within the subset of files). This requires (# of data files) > (# of hosts loading data). We recommend users reshard the dataset if this requirement is not met.
 #### HuggingFace pipeline when streaming from Hub
-* When (# of data files) >= (# of hosts loading data), assign files to each host as evenly as possible, some host may ended up with 1 file more than the others. When a host run out of data, it will automatically start another epoch. Since each host run out of data at different speed, different host come to next epoch at different time.
-* When (# of data files) < (# of hosts loading data), files are read sequentially with multiple hosts accessing each file, perf can degrade quickly as # of host increases.
+* When (# of data files) >= (# of hosts loading data), files are assigned to each host as evenly as possible; some hosts may end up with 1 file more than the others. When a host runs out of data, it will automatically start another epoch. Since each host runs out of data at a different speed, different hosts reach the next epoch at different times.
+* When (# of data files) < (# of hosts loading data), files are read sequentially with multiple hosts accessing each file, and perf can degrade quickly as the # of hosts increases.

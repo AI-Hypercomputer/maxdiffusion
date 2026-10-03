@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# python3 -m pylint $(git ls-files '*.py')
+# Runs the unit tests. For lint/format checks use `bash code_style.sh --check`.
 
 cd src/maxdiffusion
 python3 -m pytest
