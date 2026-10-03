@@ -25,8 +25,8 @@ dynamic = ["version", "dependencies"]
 requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
-description = "State-of-the-art diffusion in PyTorch and JAX."
-keywords = ["deep learning", "diffusion", "jax", "pytorch", "stable diffusion", "audioldm"]
+description = "High-performance diffusion model training and inference in JAX for Cloud TPUs and GPUs."
+keywords = ["deep learning", "diffusion", "jax", "flax", "tpu", "stable diffusion", "video generation"]
 authors = [
   {name = "Google LLC", email = "shahrokhi@google.com"},
 ]
@@ -43,8 +43,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-quality = ["urllib3", "black", "isort", "ruff", "hf-doc-builder"]
-docs = ["hf-doc-builder"]
+quality = ["pyink==23.10.0", "pylint", "ruff"]
 training = ["accelerate", "datasets", "protobuf", "tensorboard", "Jinja2"]
 test = [
     "compel",
@@ -67,7 +66,7 @@ test = [
 torch = ["torch", "accelerate"]
 flax = ["jax", "jaxlib", "flax"]
 dev = [
-    "urllib3", "black", "isort", "ruff", "hf-doc-builder", "compel", "datasets", "Jinja2",
+    "pyink==23.10.0", "pylint", "ruff", "compel", "datasets", "Jinja2",
     "invisible-watermark", "k-diffusion", "librosa", "omegaconf", "parameterized", "pytest",
     "pytest-timeout", "pytest-xdist", "requests-mock", "safetensors", "sentencepiece", "scipy",
     "torchvision", "accelerate", "protobuf", "tensorboard", "torch", "jax", "jaxlib", "flax"
@@ -91,8 +90,9 @@ files = ["dependencies/requirements/generated_requirements/requirements.txt"]
 packages = ["src/maxdiffusion", "src/install_maxdiffusion_extra_deps"]
 
 [tool.ruff]
-# Never enforce `E501` (line length violations).
-line-length = 119
+# Keep in sync with pylintrc (max-line-length) and the pyink --line-length used in CI / pre-commit.
+# E501 (line length) is not enforced by ruff; pyink is the formatter of record.
+line-length = 125
 
 [tool.ruff.lint]
 ignore = ["C901", "E501", "E741", "F402", "F823", "E402", "I001"]

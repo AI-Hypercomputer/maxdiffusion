@@ -31,4 +31,4 @@ If permissions are not configured correctly, your job will fail with an error si
 ## 4. Viewing Your Runs
 Once your job is running with diagnostics enabled, you can monitor the profiles, execution times, and metrics in the Cluster Director console here:
 
-🔗 **https://pantheon.corp.google.com/cluster-director/diagnostics**
+🔗 **https://console.cloud.google.com/cluster-director/diagnostics**

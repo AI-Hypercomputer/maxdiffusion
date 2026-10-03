@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:experimental
-# Note: This pulls in the lastest of jax:base
+# syntax=docker/dockerfile:1
+# Note: This pulls in the latest of jax:base
 ARG BASEIMAGE=ghcr.io/nvidia/jax:base
 FROM $BASEIMAGE
 
@@ -18,8 +18,6 @@ RUN apt-get update && \
 # Set environment variables for Google Cloud SDK
 ENV PATH="/usr/local/google-cloud-sdk/bin:${PATH}"
 
-
-
 ARG MODE
 ENV ENV_MODE=$MODE
 
@@ -36,9 +34,6 @@ WORKDIR /deps
 
 # Copy all files from local workspace into docker container
 COPY . .
-RUN ls .
 
 RUN echo "Running command: bash setup.sh MODE=$ENV_MODE JAX_VERSION=$ENV_JAX_VERSION DEVICE=${ENV_DEVICE}"
 RUN --mount=type=cache,target=/root/.cache/pip bash setup.sh MODE=${ENV_MODE} JAX_VERSION=${ENV_JAX_VERSION} DEVICE=${ENV_DEVICE}
-
-WORKDIR /deps

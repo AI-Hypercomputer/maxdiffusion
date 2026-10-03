@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+# This workflow builds the MaxDiffusion stable and nightly dependency/runner Docker images
+# and pushes them to GCR via .github/workflows/build_and_upload_images.sh.
 
 name: Build Images
 
@@ -21,14 +21,17 @@ on:
   schedule:
     # Run the job daily at 12AM UTC
     - cron:  '0 0 * * *'
-  
+
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-image:
     runs-on: ["self-hosted", "e2", "cpu"]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
     - name: Cleanup old docker images
       run: docker system prune --all --force
     - name: build maxdiffusion stable image

@@ -37,14 +37,7 @@ if ! python3 -c 'import sys; assert sys.version_info >= (3, 12)' 2>/dev/null; th
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Check if uv is installed first; if not, install uv
         if ! command -v uv &> /dev/null; then
-            # echo -e "\n'uv' command not found. Installing it now via the official installer..."
-            # curl -LsSf https://astral.sh/uv/install.sh | sh
-
-            # echo -e "\n\e[33m'uv' has been installed.\e[0m"
-            # echo "The installer likely printed instructions to update your shell's PATH."
-            # echo "Please open a NEW terminal session (or 'source ~/.bashrc') and re-run this script."
-            # exit 1
-            pip install uv
+            python3 -m pip install uv
         fi
         maxdiffusion_dir=$(pwd)
         cd
@@ -139,7 +132,7 @@ if [[ "$MODE" == "stable" || ! -v MODE ]]; then
         echo "Installing stable jax, jaxlib ${JAX_VERSION}"
         python3 -m uv pip install -U "jax[cuda12]==${JAX_VERSION}" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     else
-        echo "Installing stable jax, jaxlib, libtpu for NVIDIA gpu"
+        echo "Installing stable jax, jaxlib for NVIDIA gpu"
         python3 -m uv pip install "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     fi
     export NVTE_FRAMEWORK=jax
