@@ -1,6 +1,9 @@
 # How to run MaxDiffusion with XPK?
 
-This document focuses on steps required to setup XPK on TPU VM and assumes you have gone through the [README](https://github.com/google/xpk/blob/main/README.md) to understand XPK basics.
+> [!WARNING]
+> **XPK is deprecated.** Per the [XPK deprecation notice](https://github.com/AI-Hypercomputer/xpk), the project is in maintenance mode through Q3 2026 and will then be archived; new TPU and GPU generations are only supported through Cluster Toolkit. Existing XPK clusters keep running, but in-place migration is not supported. For new work please follow [Running MaxDiffusion with Cluster Toolkit](run_maxdiffusion_via_cluster_toolkit.md) and the official [XPK → Cluster Toolkit migration guide](https://github.com/GoogleCloudPlatform/cluster-toolkit/blob/main/docs/migration/xpk_to_clustertoolkit.md). The instructions below are kept for users with existing XPK clusters.
+
+This document focuses on steps required to setup XPK on TPU VM and assumes you have gone through the [README](https://github.com/AI-Hypercomputer/xpk/blob/main/README.md) to understand XPK basics.
 
 ## Steps to setup XPK on TPU VM
 
@@ -64,7 +67,7 @@ after which log out and log back in to the machine.
 
 3. After building the dependency image `maxdiffusion_base_image`, xpk can handle updates to the working directory when running `xpk workload create` and using `--base-docker-image`.
 
-    See details on docker images in xpk here: https://github.com/google/xpk/blob/main/README.md#how-to-add-docker-images-to-a-xpk-workload
+    See details on docker images in xpk here: https://github.com/AI-Hypercomputer/xpk/blob/main/docs/usage/docker.md
 
     **Note:** When using the XPK command, ensure you include `pip install .` to install the package from the current directory. This is necessary because the container is created from a copy of your local directory, and `pip install .` ensures any local changes you've made are applied within the container.
 
@@ -91,10 +94,10 @@ after which log out and log back in to the machine.
       --command "pip install . && python src/maxdiffusion/train.py src/maxdiffusion/configs/base_2_base.yml run_name="my_run" output_dir="gs://your-bucket/""
       ```
 
-      __Using [xpk github repo](https://github.com/google/xpk.git)__
+      __Using [xpk github repo](https://github.com/AI-Hypercomputer/xpk.git)__
 
       ```shell
-      git clone https://github.com/google/xpk.git
+      git clone https://github.com/AI-Hypercomputer/xpk.git
 
       # Make sure you are still in the MaxDiffusion github root directory when running this command
       python3 xpk/xpk.py workload create \

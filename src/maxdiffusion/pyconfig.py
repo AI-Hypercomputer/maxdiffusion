@@ -214,7 +214,7 @@ class _HyperParameters:
     raw_keys["weights_dtype"] = jax.numpy.dtype(raw_keys["weights_dtype"])
     raw_keys["activations_dtype"] = jax.numpy.dtype(raw_keys["activations_dtype"])
     if raw_keys["run_name"] == "":
-      raw_keys["run_name"] = os.environ.get("JOBSET_NAME")  # using XPK default
+      raw_keys["run_name"] = os.environ.get("JOBSET_NAME")  # injected by XPK; not set by Cluster Toolkit
     run_name = raw_keys["run_name"]
     base_output_directory = raw_keys["output_dir"]
     if run_name:
