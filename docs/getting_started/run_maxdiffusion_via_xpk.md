@@ -50,8 +50,8 @@ after which log out and log back in to the machine.
 1. Git clone MaxDiffusion locally
 
     ```shell
-    git clone https://github.com/google/MaxDiffusion.git
-    cd MaxDiffusion
+    git clone https://github.com/AI-Hypercomputer/maxdiffusion.git
+    cd maxdiffusion
     ```
 2. Build local MaxDiffusion docker image
 
@@ -74,7 +74,7 @@ after which log out and log back in to the machine.
       gcloud config set project $PROJECT_ID
       gcloud config set compute/zone $ZONE
 
-      # See instructions in README.me to create below buckets.
+      # See instructions in README.md to create the buckets below.
       BASE_OUTPUT_DIR=gs://output_bucket/
       DATASET_PATH=gs://dataset_bucket/
 

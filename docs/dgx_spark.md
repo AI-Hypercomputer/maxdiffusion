@@ -1,4 +1,4 @@
-# MaxDiffusion on Nvidia DGX Spark GPU: A complete User Guide
+# MaxDiffusion on NVIDIA DGX Spark GPU: A complete User Guide
 
 This guide provides a detailed step-by-step walkthrough for setting up and running the maxdiffusion library within a custom Docker environment on an ARM-based machine with NVIDIA GPU support. We will cover everything from building the optimized Docker image to generating your first image and retrieving it successfully.
 
@@ -15,13 +15,13 @@ Before you begin, ensure you have the following:
 
 The foundation of a smooth workflow is a well-built Docker image. The following Dockerfile is optimized for build speed by caching dependencies, ensuring that code changes don't require a full reinstall of all libraries.
 
-### Step1: Create the Dockerfile
+### Step 1: Create the Dockerfile
 
 In the root directory of your maxdiffusion project, create a file named box.Dockerfile and paste the following content into it.
 
 ```docker
-# Nvidia Base image for ARM64 with CUDA support
-# As JAX AI Image as it currently doesn't support ARM builds.
+# NVIDIA base image for ARM64 with CUDA support.
+# Used instead of the JAX AI Image, which currently doesn't support ARM builds.
 FROM nvcr.io/nvidia/cuda-dl-base@sha256:3631d968c12ef22b1dfe604de63dbc71a55f3ffcc23a085677a6d539d98884a4
 
 # Set environment variables (these rarely change)
@@ -56,7 +56,7 @@ RUN pip install .
 CMD ["/bin/bash"]
 ```
 
-### Step2: Build the Image
+### Step 2: Build the Image
 
 Open your terminal on DGX Spark, navigate to the root directory of the maxdiffusion project, and run the build command:
 
@@ -101,7 +101,7 @@ huggingface-cli  login
 
 You will be prompted to paste a Hugging Face User Access Token.
 
-1.  Go to[  huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) in your web browser.
+1.  Go to [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) in your web browser.
 
 2.  Copy your token (or create a new one with write permissions).
 
