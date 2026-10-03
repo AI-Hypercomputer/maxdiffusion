@@ -17,6 +17,29 @@ a2v_attention_kernel: 'dot_product'
 v2a_attention_kernel: 'dot_product'
 attention_sharding_uniform: True
 precision: 'bf16'
+# Sparse VideoGen (SVG) Attention configuration
+use_svg_attention: False
+svg_spatial_density: 0.25
+svg_sample_max_row: 10000
+svg_profile_query_count: 64
+svg_profile_seed: 0
+svg_active_start_step: -1
+svg_active_end_step: -1
+svg_active_start_layer: -1
+svg_active_end_layer: -1
+svg_include_first_frame: True
+svg_implementation: 'official_svg'
+svg_dense_layer_fraction: 0.0
+svg_dense_timestep_fraction: 0.0
+svg_num_train_timesteps: 1000
+svg_num_layers: 48
+svg_global_stride: 0
+svg_global_offset: 0
+# Tiling for the sparse SVG kernel only. Empty means "reuse flash_block_sizes",
+# which is rarely what you want: the dense ring kernel is tuned for large kv
+# compute blocks and the sparse kernel for small ones. Must stay a dict so the
+# command line can override it with JSON.
+svg_flash_block_sizes: {}
 
 # For scanning transformer layers
 scan_layers: True
@@ -131,6 +154,8 @@ enable_jax_named_scopes: False
 
 replicate_vae: False
 use_bwe: False
+enable_vae_tiling: False
+enable_vae_slicing: False
 
 run_text_encoder_on_tpu: False
 # Dynamically disables VAE slicing and distributes the batch dimension to avoid HBM OOM for larger batch sizes.

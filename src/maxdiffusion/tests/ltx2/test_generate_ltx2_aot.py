@@ -88,6 +88,45 @@ class LTX2AotMetadataTest(unittest.TestCase):
     self.assertNotEqual(fingerprint_b, fingerprint_c)
     self.assertNotEqual(fingerprint_c, fingerprint_d)
 
+  def _set_svg(self, **svg):
+    for name, value in svg.items():
+      setattr(self.config, name, value)
+    attention_config = {"use_base2_exp": False}
+    attention_config.update({k: v for k, v in svg.items() if k.startswith("svg_")})
+    # Like create_sharded_logical_transformer, record the effective SVG flag.
+    attention_config["use_svg_attention"] = generate_ltx2.svg_attention_enabled(self.config)
+    self.pipeline.transformer.config = {"attention_config": attention_config}
+
+  def test_unused_svg_settings_do_not_change_cache_fingerprint(self):
+    self._set_svg(use_svg_attention=False, svg_spatial_density=0.25, svg_active_start_step=10)
+    _, fingerprint_a = self._fingerprint("same-revision")
+    self._set_svg(use_svg_attention=False, svg_spatial_density=0.5, svg_active_start_step=20)
+    _, fingerprint_b = self._fingerprint("same-revision")
+
+    self.assertEqual(fingerprint_a, fingerprint_b)
+
+  def test_svg_settings_change_cache_fingerprint_when_svg_is_active(self):
+    self._set_svg(use_svg_attention=True, svg_spatial_density=0.25, svg_active_start_step=10)
+    _, fingerprint_a = self._fingerprint("same-revision")
+    self._set_svg(use_svg_attention=True, svg_spatial_density=0.5, svg_active_start_step=10)
+    _, fingerprint_b = self._fingerprint("same-revision")
+    self._set_svg(use_svg_attention=True, svg_spatial_density=0.5, svg_active_start_step=20)
+    _, fingerprint_c = self._fingerprint("same-revision")
+
+    self.assertNotEqual(fingerprint_a, fingerprint_b)
+    self.assertNotEqual(fingerprint_b, fingerprint_c)
+
+  def test_svg_at_density_one_shares_the_dense_cache_fingerprint(self):
+    self._set_svg(use_svg_attention=False, svg_spatial_density=0.25)
+    _, dense = self._fingerprint("same-revision")
+    self._set_svg(use_svg_attention=True, svg_spatial_density=1.0)
+    _, density_one = self._fingerprint("same-revision")
+    self._set_svg(use_svg_attention=True, svg_spatial_density=0.25)
+    _, sparse = self._fingerprint("same-revision")
+
+    self.assertEqual(dense, density_one)
+    self.assertNotEqual(dense, sparse)
+
   def test_tile_search_rejects_a_prebuilt_pipeline(self):
     config = SimpleNamespace(get_keys=lambda: {"enable_tile_search": True})
     with self.assertRaisesRegex(ValueError, "cannot be used with a prebuilt pipeline"):

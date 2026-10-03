@@ -287,6 +287,18 @@ def _add_sharding_rule(vs: nnx.Variable, logical_axis_rules) -> nnx.Variable:
   return vs
 
 
+def svg_attention_enabled(config) -> bool:
+  """Returns whether SVG sparse attention is actually active for `config`.
+
+  A density of 1.0 or more is dense attention, so SVG stays off even when
+  `use_svg_attention` is set.
+  """
+  if not bool(getattr(config, "use_svg_attention", False)):
+    return False
+  density = getattr(config, "svg_spatial_density", None)
+  return float(0.25 if density is None else density) < 1.0
+
+
 def create_sharded_logical_transformer(
     devices_array: np.array,
     mesh: Mesh,
@@ -335,6 +347,36 @@ def create_sharded_logical_transformer(
   transformer_strategy = sharding_config.get("transformer", "default")
   dit_specs = get_sharding_specs(transformer_strategy, "ltx2_dit")
   ltx2_config["sharding_specs"] = dit_specs
+
+  def _cfg(name, default):
+    """Returns config.<name>, falling back to default if missing or None."""
+    value = getattr(config, name, None)
+    return default if value is None else value
+
+  ltx2_config["attention_config"] = {
+      "use_base2_exp": getattr(config, "use_base2_exp", False),
+      "use_experimental_scheduler": getattr(config, "use_experimental_scheduler", False),
+      "ulysses_shards": getattr(config, "ulysses_shards", -1),
+      "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
+      "use_svg_attention": svg_attention_enabled(config),
+      "svg_implementation": _cfg("svg_implementation", "official_svg"),
+      "svg_spatial_density": float(_cfg("svg_spatial_density", 0.25)),
+      "svg_sample_max_row": _cfg("svg_sample_max_row", 10000),
+      "svg_profile_query_count": _cfg("svg_profile_query_count", 64),
+      "svg_profile_seed": _cfg("svg_profile_seed", 0),
+      "svg_dense_layer_fraction": _cfg("svg_dense_layer_fraction", 0.0),
+      "svg_dense_timestep_fraction": _cfg("svg_dense_timestep_fraction", 0.0),
+      "svg_active_start_step": _cfg("svg_active_start_step", -1),
+      "svg_active_end_step": _cfg("svg_active_end_step", -1),
+      "svg_active_start_layer": _cfg("svg_active_start_layer", -1),
+      "svg_active_end_layer": _cfg("svg_active_end_layer", -1),
+      "svg_num_train_timesteps": _cfg("svg_num_train_timesteps", 1000),
+      "svg_num_layers": _cfg("svg_num_layers", ltx2_config.get("num_layers", 48)),
+      "svg_include_first_frame": _cfg("svg_include_first_frame", True),
+      "svg_global_stride": _cfg("svg_global_stride", 0),
+      "svg_global_offset": _cfg("svg_global_offset", 0),
+      "svg_flash_block_sizes": getattr(config, "svg_flash_block_sizes", None) or None,
+  }
 
   # 2. eval_shape
   p_model_factory = partial(create_model, ltx2_config=ltx2_config)
@@ -1832,6 +1874,10 @@ class LTX2Pipeline:
     if stg_scale > 0.0 and guidance_scale <= 1.0:
       raise ValueError("Spatio-temporal guidance requires guidance_scale > 1.0.")
 
+    if self.config and svg_attention_enabled(self.config):
+      if getattr(self.config, "use_cfg_cache", False) or getattr(self.config, "use_magcache", False):
+        raise ValueError("SVG sparse attention cannot be combined with CFG cache or MagCache.")
+
     # 2. Encode inputs (Text)
     t0_encode = time.perf_counter()
     (
@@ -2136,6 +2182,7 @@ class LTX2Pipeline:
               is_cfg_stg_mode=do_cfg and do_stg,
               kv_cache=kv_cache,
               rope_cache=rope_cache,
+              svg_step_index=jnp.asarray(i, dtype=jnp.int32),
           )
 
           latents_step, audio_latents_step = _select_guidance_latents(
@@ -2437,6 +2484,7 @@ def transformer_forward_pass(
     kv_cache=None,
     rope_cache=None,
     time_embed_cache=None,
+    svg_step_index=None,
 ):
   """Forward pass for the transformer."""
   # pylint: disable=too-many-positional-arguments,unused-argument
@@ -2491,6 +2539,7 @@ def transformer_forward_pass(
       cached_kv=kv_cache,
       rope_cache=rope_cache,
       time_embed_cache=time_embed_cache,
+      svg_step_index=svg_step_index,
   )
 
   return noise_pred, noise_pred_audio
@@ -2598,9 +2647,9 @@ def run_diffusion_loop(
 
   def scan_body(carry, inputs):
     if use_kv_cache:
-      t, sigma_t, time_embed_cache_step = inputs
+      t, sigma_t, time_embed_cache_step, step_idx = inputs
     else:
-      t, sigma_t = inputs
+      t, sigma_t, step_idx = inputs
       time_embed_cache_step = None
 
     latents, audio_latents, s_state = carry
@@ -2634,6 +2683,7 @@ def run_diffusion_loop(
         kv_cache=kv_cache,
         rope_cache=rope_cache,
         time_embed_cache=time_embed_cache_step,
+        svg_step_index=step_idx,
     )
 
     latents_step, audio_latents_step = _select_guidance_latents(
@@ -2680,10 +2730,11 @@ def run_diffusion_loop(
 
   initial_carry = (latents_jax, audio_latents_jax, scheduler_state)
 
+  step_indices = jnp.arange(len(timesteps_jax), dtype=jnp.int32)
   if use_kv_cache:
-    scan_inputs = (timesteps_jax, sigmas, time_embed_cache_full)
+    scan_inputs = (timesteps_jax, sigmas, time_embed_cache_full, step_indices)
   else:
-    scan_inputs = (timesteps_jax, sigmas)
+    scan_inputs = (timesteps_jax, sigmas, step_indices)
 
   final_carry, _ = jax.lax.scan(scan_body, initial_carry, scan_inputs)
 
