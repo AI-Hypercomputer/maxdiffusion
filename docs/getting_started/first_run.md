@@ -33,4 +33,6 @@ source ~/$venv_name/bin/activate
 
 ## Getting Started: Multihost development
 
-[GKE, recommended] [Running MaxDiffusion with xpk](run_maxdiffusion_via_xpk.md) - Quick Experimentation and Production support
+[GKE, recommended] [Running MaxDiffusion with Cluster Toolkit](run_maxdiffusion_via_cluster_toolkit.md) - Quick Experimentation and Production support
+
+[GKE, deprecated] [Running MaxDiffusion with XPK](run_maxdiffusion_via_xpk.md) - Kept for existing XPK clusters only; XPK is deprecated in favor of Cluster Toolkit

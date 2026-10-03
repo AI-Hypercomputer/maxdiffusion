@@ -5,7 +5,8 @@ This folder contains documentation for getting started with and using MaxDiffusi
 ## Getting Started
 
 * **[First Run](getting_started/first_run.md)** - Provides instructions for setting up and running MaxDiffusion for the first time.
-* **[Running MaxDiffusion via XPK](getting_started/run_maxdiffusion_via_xpk.md)** - Explains how to run MaxDiffusion on GKE using XPK.
+* **[Running MaxDiffusion via Cluster Toolkit](getting_started/run_maxdiffusion_via_cluster_toolkit.md)** - Recommended way to run MaxDiffusion at scale on GKE using Cluster Toolkit's `gcluster` CLI.
+* **[Running MaxDiffusion via XPK](getting_started/run_maxdiffusion_via_xpk.md)** - Explains how to run MaxDiffusion on GKE using XPK (deprecated, kept for existing XPK clusters).
 * **[NVIDIA DGX Spark](dgx_spark.md)** - Explains how to run MaxDiffusion on an NVIDIA DGX Spark.
 
 ## Contributing & Community
