@@ -6,7 +6,7 @@ av
 chex
 datasets
 einops
-flax
+flax>=0.12.10
 ftfy
 google-cloud-storage
 grain
