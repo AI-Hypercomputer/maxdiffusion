@@ -231,9 +231,12 @@ class VerifyCandidatesTest(unittest.TestCase):
     # Untimed pass + timed pass per candidate, each with the full 3-step schedule.
     self.assertEqual(runner.calls, [(3, 512), (3, 512), (3, 1024), (3, 1024), (3, 2048), (3, 2048)])
     # Config: candidate 2 applied on top of the BASELINE (candidate 1's block_q_sub=128 must not leak).
+    self.assertNotIn("block_q_sub", config.flash_block_sizes)
     self.assertEqual(
         config.flash_block_sizes,
-        {"block_q": 1024, "block_kv": 512, "block_kv_compute": 256, "block_kv_compute_in": 256, "block_q_outer": 2},
+        max_utils.flash_block_sizes_for_candidate(
+            BASELINE, config.attention, 1024, 512, 256, block_q_sub=None, block_q_outer=2
+        ),
     )
     expected = max_utils.get_flash_block_sizes(config)
     for model, original in zip((pipeline.high_noise_transformer, pipeline.low_noise_transformer), originals):

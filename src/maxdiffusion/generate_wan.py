@@ -476,8 +476,9 @@ def _plan_wan_aot_cache(config, source_revision) -> tuple[str, bool]:
 
 def run(config, pipeline=None, filename_prefix="", commit_hash=None):
   model_key = config.model_name
+  candidates = None  # tile-search candidates, proxy-ranked; e2e-verified once the pipeline is loaded
   if pipeline is None:
-    maybe_tune_block_sizes(config)
+    candidates = maybe_tune_block_sizes(config)
   writer = max_utils.initialize_summary_writer(config)
   if jax.process_index() == 0 and writer:
     max_logging.log(f"TensorBoard logs will be written to: {config.tensorboard_dir}")
@@ -563,6 +564,14 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
             scan_layers=config.scan_layers,
             dtype=config.weights_dtype,
         )
+
+  # E2E-verify the tile search's top-K candidates on the loaded pipeline (no-op unless it
+  # returned >= 2). Must precede aot_cache.install(): AOT metadata and executables may only
+  # ever see the verified winner.
+  if candidates:
+    from maxdiffusion.utils import tile_e2e_verify  # pylint: disable=import-outside-toplevel
+
+    tile_e2e_verify.maybe_verify(config, pipeline, candidates, call_pipeline=call_pipeline)
 
   # Per-shape AOT executable cache: deserialization starts on background
   # threads now and overlaps the remaining setup; unknown shapes silently
