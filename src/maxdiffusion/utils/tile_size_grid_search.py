@@ -26,7 +26,7 @@ Two hardware granularities drive the candidate math (do NOT conflate them):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 import csv
 import os
 import sys
@@ -192,7 +192,6 @@ _VMEM_FIT = {  # family -> (score scale a, per-bq bytes b)
 }
 
 
-
 # Measured ceilings from the sweeps (~3,300 points), MIN across configs so the
 # search never proposes a tile that OOMs for some shape. Preferred over the
 # fit wherever the exact bq was swept -- a 2-term model provably cannot bracket
@@ -343,6 +342,452 @@ def bkv_candidates(seq_len: int, *, k: int = 3, align: int = VPU_LANE, max_block
     out.append(b)
     b -= align
   return out
+
+
+# ================================================================================
+# Internal-permutation (iperm) kernels with a real ring: resident-Q VMEM model.
+# ================================================================================
+# With ring_shards > 1 every iperm kernel runs ONE pallas_call per head for the
+# whole ring. The ENTIRE local Q shard -- R = ceil_to(q_seq, block_q) rows, so
+# block_q only matters through the padding it adds -- stays resident in VMEM
+# and is walked in `block_q_sub`-row chunks while K/V stream through in
+# `block_kv` blocks. The per-(bq, bkv) tile model above never sees R or
+# block_q_sub, so for these kernels it is wrong in both directions: it passes
+# the production OOM (R=48640, block_kv=1024) and it caps away resident blocks
+# that fit. Calibrated replacement (bytes; bf16 Q/K/V, head_dim 128):
+#
+#   VMEM(R, q_sub, bkv) = 1024*R + 4.02*q_sub*block_kv_compute + 1024*bkv
+#
+#   1024*R    per resident row: the bf16 Q row plus the f32 accumulator and
+#             online-softmax statistics the kernel keeps for every row.
+#   4.02*q*c  the f32 (block_q_sub x block_kv_compute) score/probability tile.
+#   1024*bkv  the double-buffered bf16 K and V blocks.
+#
+# Fitted on the `Used` figure of the Mosaic VMEM-OOM reports (126) from ten
+# iperm-hybrid sweeps (dp1cp8 and dp2cp4, 2.5-12.5 s) plus the production
+# failure. Production (R=48640, auto q_sub=12160, bkv=1024): 96.2 MiB predicted,
+# 98.0 MiB measured (-1.8%). Predicted-minus-used spans [-7.0, +2.5] MiB, the
+# large misses on huge tiles far past the budget; the 12.5 s sweep (largest R)
+# is within [-0.9, -0.6] MiB. Against a 64 MiB budget every swept config that
+# OOMed predicts >= 103.7% and every config that ran predicts <= 98.9%, so
+# IPERM_VMEM_MARGIN = 0.98 admits no config that OOMed and covers the
+# production under-prediction. It does exclude the four configs that ran at
+# 98-98.9%, all slow (e.g. R=28160, q_sub=7040, bkv=1280: 233.9 ms vs 146.6 ms
+# at bkv=1024); 0.97 would exclude the measured 10 s winner (97.5%).
+IPERM_VMEM_MARGIN = 0.98
+_IPERM_ROW_BYTES = 1024
+_IPERM_SCORE_BYTES = 4.02
+_IPERM_KV_BYTES = 1024
+# block_q_outer < R switches the kernel from the single-buffered resident Q to
+# double-buffered Q/output blocks (RESIDENT_SINGLE_BUFFER gate in
+# internal_ring_attention.py). No sweep has exercised it yet, so this is an
+# UNCALIBRATED upper estimate (1.5x the per-row cost plus 3 MiB of slack); the
+# run-time OOM classification is the backstop.
+_IPERM_OUTER_ROW_BYTES = 1536
+_IPERM_OUTER_SLACK_BYTES = 3 * 1024 * 1024
+
+# Planner knobs (see `iperm_candidates`).
+IPERM_MAX_CANDIDATES = 30
+IPERM_SAFE_FRACTION = 0.85  # the "safe" anchor leaves >= 15% VMEM headroom
+IPERM_MAX_PAD_FRACTION = 0.04  # resident lengths considered: up to 4% over q_seq
+IPERM_RESIDENT_TOP_K = 3  # best-scoring resident lengths kept from that sweep
+IPERM_MAX_OUTER_BLOCKS = 8  # block_q_outer: at most 8 ring re-walks
+IPERM_BKV_ANCHORS = (1024, 1280)
+IPERM_BKV_EXTRAS = (512, 768, 1536, 2048)
+# block_q_sub values that won (or tied for best) across the measured sweeps.
+IPERM_KNOWN_GOOD_Q_SUB = (7040, 6272, 5760, 4736, 3840, 3584, 2816, 2688, 1920, 1664)
+# block_q_sub admissibility (see `_q_sub_admissible`). Every candidate walks R
+# in at least two chunks: a single whole-block chunk is the instruction-memory
+# cliff (the static program grows with R; ~2.1x slower). Formula-driven
+# candidates also stay inside the measured regime:
+#  * q_sub * block_kv_compute <= 8 Mi elements -- the largest score tile that
+#    measured fast is 3840 x 2176; 7040 x 1280 ran 233.9 ms vs 146.6 ms at
+#    7040 x 1024.
+#  * q_sub >= 1024 once R >= 8192 -- at those sizes every measured q_sub
+#    below 1024 ran 1.2-2.1x slower than the shape's best (e.g. 384: 453.6 ms
+#    vs 234.3 ms at 10 s).
+IPERM_MAX_SCORE_TILE = 8 * 1024 * 1024
+IPERM_MIN_Q_SUB = 1024
+IPERM_MIN_Q_SUB_FROM_RESIDENT = 8192
+# When the resident length is not on the existing bq ladder, block_q is picked
+# as the largest divisor of R up to this size that still pads q_seq to R.
+# block_q is still the flash (cross-attention) tile, and this keeps it in the
+# range the sweeps exercised.
+_IPERM_PREFERRED_MAX_BQ = 8192
+
+
+def iperm_vmem_bytes(
+    resident: int,
+    block_q_sub: int,
+    block_kv: int,
+    block_kv_compute: Optional[int] = None,
+) -> float:
+  """Predicted VMEM bytes of a whole-shard-resident iperm launch (see above)."""
+  cmp = block_kv if block_kv_compute is None else block_kv_compute
+  return _IPERM_ROW_BYTES * resident + _IPERM_SCORE_BYTES * block_q_sub * cmp + _IPERM_KV_BYTES * block_kv
+
+
+def iperm_outer_vmem_bytes(
+    block_q_outer: int,
+    block_q_sub: int,
+    block_kv: int,
+    block_kv_compute: Optional[int] = None,
+) -> float:
+  """Predicted VMEM bytes of an iperm launch split by block_q_outer (uncalibrated, conservative)."""
+  cmp = block_kv if block_kv_compute is None else block_kv_compute
+  return (
+      _IPERM_OUTER_ROW_BYTES * block_q_outer
+      + _IPERM_SCORE_BYTES * block_q_sub * cmp
+      + _IPERM_KV_BYTES * block_kv
+      + _IPERM_OUTER_SLACK_BYTES
+  )
+
+
+def ring_shards_for(attention: str, context_shards: int, ulysses_shards: int) -> int:
+  """Ring size the attention kernel runs: CP for pure ring, CP / U for Ulysses x ring, else 1."""
+  if attention in PURE_RING_ATTENTION_KERNELS:
+    return max(1, context_shards)
+  if attention in ULYSSES_RING_ATTENTION_KERNELS:
+    return max(1, context_shards // max(1, ulysses_shards))
+  return 1
+
+
+def iperm_uses_resident_q(attention: str, ring_shards: Optional[int]) -> bool:
+  """True when the resident-Q model (not the per-tile one) governs this kernel's VMEM.
+
+  iperm kernels only take the whole-ring, whole-shard-resident path with more
+  than one ring shard; with one they fall back to the standard splash kernel.
+  An unknown ring size is treated as resident -- the conservative model.
+  """
+  return attention in INTERNAL_PERM_KERNELS and (ring_shards is None or ring_shards > 1)
+
+
+def _divisors_128(n: int) -> list[int]:
+  """Ascending VPU_LANE-multiple divisors of n (itself a VPU_LANE multiple)."""
+  if n <= 0 or n % VPU_LANE:
+    raise ValueError(f"expected a positive multiple of {VPU_LANE}, got {n}")
+  m = n // VPU_LANE
+  small, large = [], []
+  i = 1
+  while i * i <= m:
+    if m % i == 0:
+      small.append(i * VPU_LANE)
+      if i != m // i:
+        large.append((m // i) * VPU_LANE)
+    i += 1
+  return small + large[::-1]
+
+
+def _iperm_cost(resident: int, block_q_sub: int, block_kv: int, outer_blocks: int = 1) -> float:
+  """Relative cost proxy that ONLY orders and caps candidates; the bench picks the winner.
+
+  Rows to compute, plus a per-chunk overhead that falls with bigger block_q_sub
+  and block_kv (the measured sweeps' dominant trend), plus a ring re-walk per
+  extra outer block.
+  """
+  return resident * (1.0 + 300.0 / block_q_sub) * (1.0 + 100.0 / block_kv) * (1.0 + 0.25 * (outer_blocks - 1))
+
+
+@dataclass(frozen=True)
+class TileCandidate:
+  """One configuration the search compiles and times.
+
+  block_q_sub / block_q_outer are None for kernels that don't read them (and
+  None block_q_sub means the iperm kernel's own auto rule). `resident` (the Q
+  rows one launch holds in VMEM: R, or block_q_outer when set),
+  `pred_vmem_bytes` and `tag` are planner metadata carried into the results.
+  """
+
+  bq: int
+  bkv: int
+  bkv_compute: int
+  block_q_sub: Optional[int] = None
+  block_q_outer: Optional[int] = None
+  resident: Optional[int] = None
+  pred_vmem_bytes: Optional[float] = None
+  tag: str = ""
+
+
+@dataclass(frozen=True)
+class IpermStructure:
+  """Result of the pre-compilation structural check for a resident-Q iperm shape."""
+
+  q_seq: int
+  min_resident: int
+  min_resident_bytes: float
+  budget_bytes: float
+  fits_resident: bool
+  fits_outer: bool
+  message: str
+
+
+def iperm_structural_check(q_seq: int, *, vmem_bytes: int, margin: float = IPERM_VMEM_MARGIN) -> IpermStructure:
+  """Can a whole-shard-resident Q block fit VMEM AT ALL for this local q_seq?
+
+  The cheapest resident launch is R = ceil_to(q_seq, 128) with block_q_sub =
+  block_kv = 128; the 1024*R term alone decides it. If even that exceeds the
+  budget, no (block_q, block_kv, block_q_sub) can fit and the search must use
+  block_q_outer < R -- decided here, before anything is compiled.
+  `fits_outer` is the same floor for the smallest block_q_outer the planner
+  allows (R / IPERM_MAX_OUTER_BLOCKS): when it is False not even splitting the
+  shard helps, and the fix is a different sharding (more ring shards).
+  """
+  r_min = _ceil_to(q_seq, VPU_LANE)
+  need = iperm_vmem_bytes(r_min, VPU_LANE, VPU_LANE)
+  outer_min = _ceil_to(_ceil_div(r_min, IPERM_MAX_OUTER_BLOCKS), VPU_LANE)
+  need_outer = iperm_outer_vmem_bytes(outer_min, VPU_LANE, VPU_LANE)
+  budget = margin * vmem_bytes
+  mib = 1024 * 1024
+  fits_resident = need <= budget
+  fits_outer = need_outer <= budget
+  where = f"{budget / mib:.1f} MiB budget ({margin:.0%} of {vmem_bytes / mib:.0f} MiB)"
+  if fits_resident:
+    msg = f"whole-shard-resident Q fits: R >= {r_min} rows needs >= {need / mib:.1f} MiB of the {where}"
+  elif fits_outer:
+    msg = (
+        f"whole-shard-resident Q cannot fit VMEM at local q_seq={q_seq}: R >= {r_min} resident rows "
+        f"need >= {need / mib:.1f} MiB even at block_q_sub=block_kv={VPU_LANE}, over the {where}. "
+        f"No (block_q, block_kv, block_q_sub) choice fixes this; it needs block_q_outer < R "
+        "(the kernel grid splits the shard and re-walks the ring per outer block), or more ring "
+        "shards / fewer Ulysses shards."
+    )
+  else:
+    msg = (
+        f"iperm cannot fit VMEM at local q_seq={q_seq} with any tiling: the resident block needs "
+        f">= {need / mib:.1f} MiB and even block_q_outer={outer_min} ({IPERM_MAX_OUTER_BLOCKS} outer blocks) "
+        f"needs >= {need_outer / mib:.1f} MiB, over the {where}. Use more ring shards / fewer Ulysses shards, "
+        "or a non-iperm kernel."
+    )
+  return IpermStructure(q_seq, r_min, need, budget, fits_resident, fits_outer, msg)
+
+
+def _bq_for_resident(q_seq: int, resident: int, ladder_bqs: Sequence[int]) -> int:
+  """A block_q that pads q_seq to exactly `resident` rows.
+
+  Prefers a bq from the existing ladder (the ones the sweeps validated), then
+  the single-tile bq, then the largest divisor of R <= _IPERM_PREFERRED_MAX_BQ.
+  Any divisor d of R with d > R - q_seq pads to R exactly.
+  """
+  hits = [bq for bq in ladder_bqs if _ceil_to(q_seq, bq) == resident]
+  if hits:
+    return max(hits)
+  if resident == _ceil_to(q_seq, VPU_LANE):
+    return resident
+  valid = [d for d in _divisors_128(resident) if d > resident - q_seq]
+  preferred = [d for d in valid if d <= _IPERM_PREFERRED_MAX_BQ]
+  return max(preferred) if preferred else min(valid)
+
+
+def _q_sub_admissible(rows: int, q_sub: int, block_kv: int, *, formula: bool) -> bool:
+  """Whether block_q_sub may walk a `rows`-row Q block (resident R or block_q_outer).
+
+  Always: a lane-multiple divisor of `rows` giving at least two chunks. With
+  `formula` (every candidate except the explicit anchors) also the measured
+  regime: IPERM_MAX_SCORE_TILE and IPERM_MIN_Q_SUB. VMEM is checked separately.
+  """
+  if q_sub < VPU_LANE or q_sub % VPU_LANE or rows % q_sub:
+    return False
+  if q_sub > max(VPU_LANE, rows // 2):
+    return False
+  if formula:
+    if q_sub * block_kv > IPERM_MAX_SCORE_TILE:
+      return False
+    if rows >= IPERM_MIN_Q_SUB_FROM_RESIDENT and q_sub < IPERM_MIN_Q_SUB:
+      return False
+  return True
+
+
+def _fitting_q_subs(resident: int, block_kv: int, budget: float, *, formula: bool = True) -> list[int]:
+  """Admissible block_q_sub values (descending) whose resident launch fits `budget`."""
+  return [
+      q
+      for q in reversed(_divisors_128(resident))
+      if _q_sub_admissible(resident, q, block_kv, formula=formula) and iperm_vmem_bytes(resident, q, block_kv) <= budget
+  ]
+
+
+def iperm_candidates(
+    q_seq: int,
+    kv_seq: int,
+    *,
+    vmem_bytes: int,
+    margin: float = IPERM_VMEM_MARGIN,
+    max_candidates: int = IPERM_MAX_CANDIDATES,
+    ladder_bqs: Sequence[int] = (),
+) -> list[TileCandidate]:
+  """Joint (block_q, block_kv, block_q_sub[, block_q_outer]) candidates for an iperm kernel with a ring.
+
+  Every candidate is predicted to fit `margin * vmem_bytes` (see
+  `iperm_vmem_bytes`); nothing predicted to OOM is proposed. block_q only sets
+  the resident length R, so the planner searches R directly:
+
+    * R values: the single-tile R (ceil_to(q_seq, 128)), the
+      IPERM_RESIDENT_TOP_K best-scoring R in [q_seq, q_seq * 1.04] (an R with
+      a large fitting divisor beats "least padding": the 10 s winner pads 2%
+      to R=37632 for q_sub=6272), and every R the existing bq ladder reaches.
+    * block_q_sub, per R: the largest admissible value that fits (the
+      "frontier"), the next one down, and the repeat sweep winners
+      (IPERM_KNOWN_GOOD_Q_SUB) wherever they divide R; plus the kernel's auto
+      rule (`auto_block_q_sub`) when it fits.
+    * block_kv: 1024 and 1280 always, plus IPERM_BKV_EXTRAS at the frontier.
+    * one "safe" anchor at <= IPERM_SAFE_FRACTION of VMEM.
+
+  Anchors are always kept; the rest is ordered by `_iperm_cost` and capped at
+  `max_candidates`. When no resident block can fit at all
+  (`iperm_structural_check`) the candidates are block_q_outer < R instead;
+  when one fits only with a tiny block_q_sub, both kinds are returned. An
+  empty list means not even block_q_outer fits: a structural failure.
+  """
+  budget = margin * vmem_bytes
+  kv_cap = _ceil_to(kv_seq, VPU_LANE)
+  anchor_bkvs = sorted({min(b, kv_cap) for b in IPERM_BKV_ANCHORS})
+  extra_bkvs = sorted({min(b, kv_cap) for b in IPERM_BKV_EXTRAS} - set(anchor_bkvs))
+  ref_bkv = min(1024, kv_cap)
+  ladder_bqs = [bq for bq in ladder_bqs if bq >= VPU_LANE and bq % VPU_LANE == 0]
+
+  def outer_candidates() -> list[TileCandidate]:
+    return _iperm_outer_candidates(
+        q_seq,
+        budget=budget,
+        max_candidates=max_candidates,
+        ladder_bqs=ladder_bqs,
+        bkvs=(*anchor_bkvs, min(512, kv_cap)),
+    )
+
+  if not iperm_structural_check(q_seq, vmem_bytes=vmem_bytes, margin=margin).fits_resident:
+    return outer_candidates()
+
+  single = _ceil_to(q_seq, VPU_LANE)
+  scored: list[tuple[float, int]] = []
+  for r in range(single, max(single, _floor_to(int(q_seq * (1 + IPERM_MAX_PAD_FRACTION)), VPU_LANE)) + 1, VPU_LANE):
+    fits = _fitting_q_subs(r, ref_bkv, budget)
+    if fits:
+      scored.append((_iperm_cost(r, fits[0], ref_bkv), r))
+  scored.sort()
+  primary = scored[0][1] if scored else single
+  residents = [primary, single]
+  residents += [r for _, r in scored[:IPERM_RESIDENT_TOP_K]]
+  residents += sorted({_ceil_to(q_seq, bq) for bq in ladder_bqs})
+  residents = list(dict.fromkeys(residents))  # dedupe, keep order
+  bq_of = {r: _bq_for_resident(q_seq, r, ladder_bqs) for r in residents}
+
+  picked: dict[tuple, tuple[int, float, TileCandidate]] = {}
+
+  def add(
+      priority: int,
+      resident: int,
+      q_sub: Optional[int],
+      bkv: int,
+      tag: str,
+      *,
+      formula: bool = True,
+      bq: Optional[int] = None,
+  ) -> None:
+    if q_sub is None or not _q_sub_admissible(resident, q_sub, bkv, formula=formula):
+      return
+    pred = iperm_vmem_bytes(resident, q_sub, bkv)
+    if pred > budget:
+      return
+    cand = TileCandidate(bq or bq_of[resident], bkv, bkv, q_sub, None, resident, pred, tag)
+    key = (cand.bq, cand.bkv, cand.block_q_sub, cand.block_q_outer)
+    if key not in picked or priority < picked[key][0]:
+      picked[key] = (priority, _iperm_cost(resident, q_sub, bkv), cand)
+
+  def first(*seqs: list[int]) -> Optional[int]:
+    return next((seq[0] for seq in seqs if seq), None)
+
+  # Priority 0: anchors, always kept.
+  for bkv in anchor_bkvs:
+    fits = _fitting_q_subs(primary, bkv, budget)
+    add(0, primary, first(fits), bkv, "frontier")
+    if bkv == ref_bkv:
+      add(0, primary, first(fits[1:]), bkv, "below-frontier")
+  add(0, primary, auto_block_q_sub(primary), ref_bkv, "auto-q-sub", formula=False)
+  single_fits = _fitting_q_subs(single, ref_bkv, budget)
+  single_any = _fitting_q_subs(single, ref_bkv, budget, formula=False)
+  # Literally block_q = R (one tile): it is also the cross-attention flash tile,
+  # so it is not interchangeable with a ladder bq that pads to the same R.
+  add(0, single, first(single_fits, single_any), ref_bkv, "single-tile", formula=False, bq=single)
+  for r in residents:
+    for q_sub in IPERM_KNOWN_GOOD_Q_SUB:
+      add(0, r, q_sub, ref_bkv, "known-good", formula=False)
+  safe_budget = IPERM_SAFE_FRACTION * vmem_bytes
+  for bkv in dict.fromkeys(b for b in (ref_bkv, 512, 256, VPU_LANE) if b <= kv_cap):
+    safe = first(_fitting_q_subs(primary, bkv, safe_budget), _fitting_q_subs(primary, bkv, safe_budget, formula=False))
+    if safe is not None:
+      add(0, primary, safe, bkv, "safe", formula=False)
+      break
+  # Priority 1: the frontier at the anchor block_kv for every other R, and the
+  # known-good block_q_sub values at the second anchor block_kv.
+  for r in residents:
+    for bkv in anchor_bkvs:
+      add(1, r, first(_fitting_q_subs(r, bkv, budget)), bkv, "frontier")
+      if bkv != ref_bkv:
+        for q_sub in IPERM_KNOWN_GOOD_Q_SUB:
+          add(1, r, q_sub, bkv, "known-good", formula=False)
+  # Priority 2: the frontier at the extra block_kv values.
+  for r in residents:
+    for bkv in extra_bkvs:
+      add(2, r, first(_fitting_q_subs(r, bkv, budget)), bkv, "frontier-bkv")
+
+  ranked = sorted(picked.values(), key=lambda t: (t[0], t[1]))
+  anchors = [c for p, _, c in ranked if p == 0]
+  rest = [c for p, _, c in ranked if p > 0]
+  out = anchors + rest[: max(0, max_candidates - len(anchors))]
+  if not scored:
+    # A resident block fits only with a block_q_sub below the measured regime:
+    # also measure the block_q_outer path, which may well be faster.
+    out += outer_candidates()
+  return out
+
+
+def _iperm_outer_candidates(
+    q_seq: int,
+    *,
+    budget: float,
+    max_candidates: int,
+    ladder_bqs: Sequence[int],
+    bkvs: Sequence[int],
+) -> list[TileCandidate]:
+  """block_q_outer < R candidates, for shapes whose resident block can't fit (well).
+
+  For the single-tile R and every ladder R: the two largest block_q_outer
+  (divisors of R, at most IPERM_MAX_OUTER_BLOCKS outer blocks) that have an
+  admissible, fitting block_q_sub, at each block_kv in `bkvs`, under
+  `iperm_outer_vmem_bytes`.
+  """
+  single = _ceil_to(q_seq, VPU_LANE)
+  residents = list(dict.fromkeys([single, *sorted({_ceil_to(q_seq, bq) for bq in ladder_bqs})]))
+  scored: list[tuple[float, TileCandidate]] = []
+  seen = set()
+  for r in residents:
+    bq = _bq_for_resident(q_seq, r, ladder_bqs)
+    feasible_outers = 0
+    for outer in reversed(_divisors_128(r)):
+      if outer >= r:
+        continue
+      blocks = r // outer
+      if blocks > IPERM_MAX_OUTER_BLOCKS or feasible_outers >= 2:
+        break
+      any_fit = False
+      for bkv in dict.fromkeys(bkvs):
+        fits = [
+            q
+            for q in reversed(_divisors_128(outer))
+            if _q_sub_admissible(outer, q, bkv, formula=True) and iperm_outer_vmem_bytes(outer, q, bkv) <= budget
+        ]
+        if not fits:
+          continue
+        any_fit = True
+        pred = iperm_outer_vmem_bytes(outer, fits[0], bkv)
+        cand = TileCandidate(bq, bkv, bkv, fits[0], outer, outer, pred, "outer")
+        key = (cand.bq, cand.bkv, cand.block_q_sub, cand.block_q_outer)
+        if key not in seen:
+          seen.add(key)
+          scored.append((_iperm_cost(r, fits[0], bkv, blocks), cand))
+      feasible_outers += int(any_fit)
+  scored.sort(key=lambda t: t[0])
+  return [c for _, c in scored[:max_candidates]]
 
 
 # ================================================================================

@@ -21,12 +21,18 @@ import numpy as np
 from maxdiffusion.utils.tile_size_grid_search import (
     MXU_TILE,
     VPU_LANE,
+    IPERM_VMEM_MARGIN,
     _aggregate_process_measurements,
     BenchResult,
     BlockBenchmark,
+    auto_block_q_sub,
     bkv_candidates,
     bq_candidates,
     grid_search,
+    iperm_candidates,
+    iperm_outer_vmem_bytes,
+    iperm_structural_check,
+    iperm_vmem_bytes,
     local_tiled_seq_len,
     padding_of,
     smart_grid,
@@ -221,6 +227,121 @@ class OrchestratorTest(unittest.TestCase):
     ):
       out = _broadcast_winner(cand, [cand])
     self.assertIs(out, cand)
+
+
+MIB = 1024 * 1024
+
+# Measured iperm-hybrid sweep winners (64 MiB VMEM): local q_seq -> (resident R,
+# block_q_sub, block_kv). Any block_q with ceil_to(q_seq, block_q) == R runs the
+# same self-attention kernel.
+IPERM_MEASURED_WINNERS = {
+    27900: (28160, 7040, 1024),  # dp2cp4 7.5 s, 146.6 ms
+    36900: (37632, 6272, 1024),  # dp2cp4 10 s, 234.3 ms (next best 453.6 ms)
+    22950: (23040, 5760, 1280),  # dp1cp8 12.5 s, 175.3 ms
+    9450: (9600, 1920, 1280),  # dp1cp8 5 s, 50.2 ms
+}
+
+
+def _internal_ladder(q_seq):
+  """The bq ladder the production search passes to the iperm planner."""
+  return sorted({bq for bq, _ in smart_grid(q_seq, q_seq, vmem_bytes=VMEM_64MB, dtype_bytes=4, family="internal")})
+
+
+class IpermPlannerTest(unittest.TestCase):
+  """The resident-Q VMEM model, structural precheck and joint (bq, bkv, q_sub) planner."""
+
+  def test_vmem_model_reproduces_production_oom(self):
+    # R=48640 (bq=12160), auto q_sub=12160, bkv=1024: Mosaic reported 98.04 MiB used.
+    pred = iperm_vmem_bytes(48640, 12160, 1024)
+    self.assertGreater(pred, VMEM_64MB)
+    self.assertAlmostEqual(pred / MIB, 98.04, delta=0.03 * 98.04)
+    # ...which is exactly the config the unset default resolves to.
+    self.assertEqual(auto_block_q_sub(48640), 12160)
+
+  def test_vmem_model_reproduces_documented_q_sub_wall(self):
+    # attention_flax: at R=30720, q_sub=7680 ran (104.65 ms) and 10240 OOMed at 71.17M.
+    budget = IPERM_VMEM_MARGIN * VMEM_64MB
+    self.assertLessEqual(iperm_vmem_bytes(30720, 7680, 1024), budget)
+    self.assertAlmostEqual(iperm_vmem_bytes(30720, 10240, 1024) / MIB, 71.17, delta=0.02 * 71.17)
+
+  def test_measured_winners_are_candidates(self):
+    for q_seq, (resident, q_sub, bkv) in IPERM_MEASURED_WINNERS.items():
+      for ladder in (_internal_ladder(q_seq), ()):
+        with self.subTest(q_seq=q_seq, ladder=bool(ladder)):
+          cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=ladder)
+          hits = [c for c in cands if (c.resident, c.block_q_sub, c.bkv, c.block_q_outer) == (resident, q_sub, bkv, None)]
+          self.assertTrue(hits, f"winner R={resident} q_sub={q_sub} bkv={bkv} missing")
+          self.assertEqual(-(-q_seq // hits[0].bq) * hits[0].bq, resident)
+
+  def test_block_q_sub_is_searched_jointly(self):
+    # Requirement 1: several measured block_q_sub per resident length, not one derived value.
+    q_seq = 27900
+    cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+    q_subs_at_winner_r = {c.block_q_sub for c in cands if c.resident == 28160}
+    self.assertGreaterEqual(len(q_subs_at_winner_r), 2)
+    self.assertTrue(q_subs_at_winner_r - {auto_block_q_sub(28160)})
+
+  def test_every_candidate_is_predicted_to_fit_and_well_formed(self):
+    budget = IPERM_VMEM_MARGIN * VMEM_64MB
+    for q_seq in (4950, 9450, 13950, 18450, 22950, 27900, 36900, 45900, 48600, 60000, 70000, 90000):
+      cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+      self.assertTrue(cands, q_seq)
+      for c in cands:
+        with self.subTest(q_seq=q_seq, cand=c):
+          resident = -(-q_seq // c.bq) * c.bq
+          self.assertEqual(c.bkv_compute, c.bkv)
+          if c.block_q_outer is None:
+            rows = resident
+            self.assertEqual(c.resident, resident)
+            self.assertLessEqual(iperm_vmem_bytes(rows, c.block_q_sub, c.bkv), budget)
+          else:
+            rows = c.block_q_outer
+            self.assertLess(rows, resident)
+            self.assertEqual(resident % rows, 0)
+            self.assertLessEqual(iperm_outer_vmem_bytes(rows, c.block_q_sub, c.bkv), budget)
+          self.assertEqual(rows % c.block_q_sub, 0)
+          self.assertEqual(c.block_q_sub % VPU_LANE, 0)
+          # Never the whole block as one chunk: that is the instruction-memory cliff.
+          self.assertLessEqual(c.block_q_sub, rows // 2)
+
+  def test_anchors_always_present(self):
+    # Requirement 7: the single-tile block_q and block_kv 1024 / 1280, at every shape.
+    for q_seq in (9450, 22950, 27900, 36900, 45900, 48600):
+      with self.subTest(q_seq=q_seq):
+        cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+        single_tile = -(-q_seq // VPU_LANE) * VPU_LANE
+        self.assertIn(single_tile, {c.bq for c in cands})
+        self.assertTrue({1024, 1280} <= {c.bkv for c in cands})
+
+  def test_production_oom_shape_gets_fitting_q_sub(self):
+    # The U=2 production shape: every old candidate and the unset default OOMed. The
+    # resident block itself fits; it is block_q_sub that has to shrink.
+    q_seq = 48600
+    self.assertTrue(iperm_structural_check(q_seq, vmem_bytes=VMEM_64MB).fits_resident)
+    cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+    self.assertTrue(cands)
+    self.assertNotIn((48640, 12160), {(c.resident, c.block_q_sub) for c in cands})
+    self.assertTrue(all(c.block_q_outer is None for c in cands))
+
+  def test_structural_check_separates_failure_classes(self):
+    fits = iperm_structural_check(48600, vmem_bytes=VMEM_64MB)
+    needs_outer = iperm_structural_check(70000, vmem_bytes=VMEM_64MB)
+    hopeless = iperm_structural_check(600000, vmem_bytes=VMEM_64MB)
+    self.assertEqual((fits.fits_resident, fits.fits_outer), (True, True))
+    self.assertEqual((needs_outer.fits_resident, needs_outer.fits_outer), (False, True))
+    self.assertEqual((hopeless.fits_resident, hopeless.fits_outer), (False, False))
+    self.assertIn("block_q_outer", needs_outer.message)
+    self.assertIn("ring shards", hopeless.message)
+
+  def test_no_resident_fit_switches_to_block_q_outer(self):
+    # Requirement 2/3: decided before compiling, and it yields block_q_outer candidates.
+    q_seq = 70000
+    cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+    self.assertTrue(cands)
+    self.assertTrue(all(c.block_q_outer is not None and c.block_q_outer < c.bq * -(-q_seq // c.bq) for c in cands))
+
+  def test_nothing_fits_returns_no_candidates(self):
+    self.assertEqual(iperm_candidates(600000, 600000, vmem_bytes=VMEM_64MB, ladder_bqs=()), [])
 
 
 if __name__ == "__main__":
