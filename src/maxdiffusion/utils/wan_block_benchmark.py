@@ -65,8 +65,10 @@ from maxdiffusion.models.wan.transformers.transformer_wan import WanModel
 from maxdiffusion.utils.tile_size_grid_search import (
     BenchResult,
     BlockBenchmark,
+    candidate_flash_block_sizes,
     grid_search,
     local_tiled_seq_len,
+    resolve_block_sizes,
     time_callable,
 )
 
@@ -181,11 +183,11 @@ class WanBlockBenchmark(BlockBenchmark):
   def vmem_bytes(self):
     return self._vmem
 
-  def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2):
+  def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2, block_q_sub=None, block_q_outer=None):
     cmp = bkv_compute or bkv
     try:
       with self._mesh:
-        model = self._build_model(bq, bkv, cmp)
+        model = self._build_model(bq, bkv, cmp, block_q_sub=block_q_sub, block_q_outer=block_q_outer)
       latents, timestep, prompt_embeds = self._inputs
       with self._mesh, nn_partitioning.axis_rules(self._rules):
         mean, std, times, compile_ms = time_callable(
@@ -210,19 +212,23 @@ class WanBlockBenchmark(BlockBenchmark):
       return BenchResult(bq, bkv, cmp, "oom" if oom else "error", detail=msg[:200])
 
   # --- WAN model build (adapted from scripts/bench_block_worker.py) ----------------
-  def _flash_block_sizes(self, bq, bkv, cmp):
-    from maxdiffusion.max_utils import CustomFlashBlockSizes
-
-    return CustomFlashBlockSizes(
-        block_q=bq,
-        block_kv=bkv,
-        block_kv_compute=cmp,
-        block_kv_compute_in=cmp,
-        heads_per_tile=1,
-        vmem_limit_bytes=self._vmem,
+  def _flash_block_sizes(self, bq, bkv, cmp, *, block_q_sub=None, block_q_outer=None):
+    """Exactly the block-size object production builds once this candidate is applied:
+    the same candidate mapping maybe_tune_block_sizes writes into the config, resolved by
+    the same max_utils.get_flash_block_sizes the WAN pipeline calls."""
+    cand = {
+        "block_q": bq,
+        "block_kv": bkv,
+        "block_kv_compute": cmp,
+        "block_q_sub": block_q_sub,
+        "block_q_outer": block_q_outer,
+    }
+    fbs = candidate_flash_block_sizes(
+        getattr(self._config, "flash_block_sizes", None) or {}, self._attention, cand, vmem_limit_bytes=self._vmem
     )
+    return resolve_block_sizes(self._attention, fbs)
 
-  def _build_model(self, bq, bkv, cmp):
+  def _build_model(self, bq, bkv, cmp, *, block_q_sub=None, block_q_outer=None):
     c = self._config
     wan_config = dict(self._hf_cfg)
     fused_rope_head_block = getattr(c, "fused_rope_head_block", -1)
@@ -232,7 +238,7 @@ class WanBlockBenchmark(BlockBenchmark):
         weights_dtype=c.weights_dtype,
         attention=c.attention,
         precision=max_utils.get_precision(c),
-        flash_block_sizes=self._flash_block_sizes(bq, bkv, cmp),
+        flash_block_sizes=self._flash_block_sizes(bq, bkv, cmp, block_q_sub=block_q_sub, block_q_outer=block_q_outer),
         remat_policy=c.remat_policy,
         names_which_can_be_saved=c.names_which_can_be_saved,
         names_which_can_be_offloaded=c.names_which_can_be_offloaded,

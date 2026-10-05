@@ -344,5 +344,237 @@ class IpermPlannerTest(unittest.TestCase):
     self.assertEqual(iperm_candidates(600000, 600000, vmem_bytes=VMEM_64MB, ladder_bqs=()), [])
 
 
+IPERM_HYBRID = "ulysses_ring_custom_iperm_fixed_m_hybrid"
+
+
+class _MockIpermBench(BlockBenchmark):
+  """Resident-Q iperm bench (dp2cp4 ring with U=2 -> 2 ring shards) that records the knobs
+  every run receives. Larger block_q_sub and less resident padding are faster."""
+
+  label = "mock-iperm"
+
+  def __init__(self, seq=27900, vmem=VMEM_64MB, attention=IPERM_HYBRID, context_shards=4, ulysses_shards=2):
+    self.seq, self._vmem = seq, vmem
+    self._attention = attention
+    self._context_shards = context_shards
+    self._ulysses_shards = ulysses_shards
+    self.calls = []
+
+  def tiled_seq_lens(self):
+    return (self.seq, self.seq)
+
+  def vmem_bytes(self):
+    return self._vmem
+
+  def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2, block_q_sub=None, block_q_outer=None):
+    self.calls.append((bq, bkv, bkv_compute, block_q_sub, block_q_outer))
+    cmp = bkv_compute or bkv
+    resident = -(-self.seq // bq) * bq
+    ms = 100.0 + 0.01 * (resident - self.seq) + 1e5 / (block_q_sub or 128) + 0.001 * abs(cmp - 1024)
+    return BenchResult(bq, bkv, cmp, "ok", mean_ms=round(ms, 4), std_ms=0.1, compile_ms=1.0)
+
+
+class _FakeConfig:
+  """pyconfig-like: attribute reads go through the raw keys dict maybe_tune mutates."""
+
+  def __init__(self, **keys):
+    self.__dict__["_keys"] = dict(keys)
+
+  def get_keys(self):
+    return self._keys
+
+  def __getattr__(self, name):
+    try:
+      return self.__dict__["_keys"][name]
+    except KeyError as e:
+      raise AttributeError(name) from e
+
+
+def _quiet(*_a, **_k):
+  pass
+
+
+class JointSearchPropagationTest(unittest.TestCase):
+  """block_q_sub / block_q_outer travel planner -> bench -> result -> CSV/broadcast -> config."""
+
+  def test_iperm_search_passes_joint_knobs_to_bench(self):
+    bench = _MockIpermBench()
+    res = grid_search(bench, mode="smart", iters=1, log=_quiet)
+    self.assertIsNotNone(res.structure)
+    self.assertTrue(res.structure.fits_resident)
+    planned = {(c.bq, c.bkv, c.bkv_compute, c.block_q_sub, c.block_q_outer) for c in res.candidates}
+    self.assertEqual(set(bench.calls), planned)
+    self.assertTrue(all(call[3] is not None for call in bench.calls))
+    for r in res.results:
+      self.assertIn(r.key(), planned)
+      self.assertIsNotNone(r.resident)
+      self.assertIsNotNone(r.pred_vmem_bytes)
+    best = res.best.as_candidate()
+    self.assertEqual(min(res.results, key=lambda r: r.mean_ms).key(), res.best.key())
+    self.assertIsNotNone(best["block_q_sub"])
+    self.assertEqual(res.ranked_candidates()[0], best)
+    self.assertEqual(len(res.ranked_candidates()), len(res.results))
+
+  def test_legacy_bench_without_knob_kwargs_still_runs(self):
+    # _MockRingBench.run has no block_q_sub/block_q_outer parameters.
+    res = grid_search(_MockRingBench(), mode="smart", iters=1, log=_quiet)
+    self.assertIsNone(res.structure)
+    self.assertTrue(all(r.block_q_sub is None and r.block_q_outer is None for r in res.results))
+    self.assertIsNone(res.best.as_candidate()["block_q_sub"])
+
+  def test_csv_carries_joint_knobs(self):
+    import csv
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+      res = grid_search(_MockIpermBench(), mode="smart", iters=1, out_dir=d, log=_quiet)
+      with open(res.csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    self.assertEqual(len(rows), len(res.results))
+    self.assertEqual(int(rows[0]["block_q_sub"]), res.best.block_q_sub)
+    self.assertEqual(rows[0]["block_q_outer"], "")
+    self.assertTrue(all(row["pred_vmem_mib"] and row["resident"] for row in rows))
+
+  def test_broadcast_winner_distinguishes_block_q_sub(self):
+    from unittest import mock
+    from maxdiffusion.utils.tile_size_grid_search import _broadcast_winner
+
+    small = BenchResult(7040, 1024, 1024, "ok", mean_ms=2.0, block_q_sub=3520)
+    big = BenchResult(7040, 1024, 1024, "ok", mean_ms=1.0, block_q_sub=7040)
+    payload = np.asarray([1, 7040, 1024, 1024, 7040, -1])
+    with (
+        mock.patch("jax.process_count", return_value=2),
+        mock.patch("jax.process_index", return_value=1),
+        mock.patch("jax.experimental.multihost_utils.broadcast_one_to_all", return_value=payload),
+    ):
+      self.assertIs(_broadcast_winner(None, [small, big]), big)
+
+
+class BlockSizePropagationTest(unittest.TestCase):
+  """Requirement 5: no tunable field is dropped, and the bench runs what production runs."""
+
+  def test_every_custom_field_round_trips_through_get_flash_block_sizes(self):
+    import dataclasses
+    from types import SimpleNamespace
+    from maxdiffusion import max_utils
+
+    names = [f.name for f in dataclasses.fields(max_utils.CustomFlashBlockSizes)]
+    self.assertTrue({"block_q", "block_kv", "block_kv_compute", "block_q_sub", "block_q_outer"} <= set(names))
+    fbs = {name: 128 * (i + 1) for i, name in enumerate(names)}
+    out = max_utils.get_flash_block_sizes(SimpleNamespace(attention=IPERM_HYBRID, flash_block_sizes=fbs))
+    self.assertIsInstance(out, max_utils.CustomFlashBlockSizes)
+    self.assertEqual({name: getattr(out, name) for name in names}, fbs)
+
+  def test_candidate_reaches_custom_kernel_unchanged(self):
+    from maxdiffusion.models.attention_flax import _extract_custom_block_sizes
+    from maxdiffusion.utils.tile_size_grid_search import apply_candidate_to_config, resolve_block_sizes
+
+    cfg = _FakeConfig(attention=IPERM_HYBRID, flash_block_sizes={"heads_per_tile": 1})
+    cand = {"block_q": 7040, "block_kv": 1024, "block_kv_compute": 1024, "block_q_sub": 3520, "block_q_outer": 14080}
+    apply_candidate_to_config(cfg, cand, vmem_limit_bytes=VMEM_64MB)
+    out = resolve_block_sizes(cfg.attention, cfg.flash_block_sizes)
+    self.assertEqual((out.block_q_sub, out.block_q_outer), (3520, 14080))
+    self.assertEqual(_extract_custom_block_sizes(out), (7040, 1024, 1024, 1024, 1, VMEM_64MB))
+
+  def test_bench_and_production_build_identical_block_sizes(self):
+    from types import SimpleNamespace
+    from maxdiffusion import max_utils
+    from maxdiffusion.utils.ltx2_block_benchmark import LTX2BlockBenchmark
+    from maxdiffusion.utils.tile_size_grid_search import apply_candidate_to_config
+    from maxdiffusion.utils.wan_block_benchmark import WanBlockBenchmark
+
+    base = {"heads_per_tile": 2, "block_q_sub": 999, "block_q_outer": 4096, "vmem_limit_bytes": 1}
+    cands = (
+        {"block_q": 7040, "block_kv": 1024, "block_kv_compute": 1024, "block_q_sub": 3520, "block_q_outer": 14080},
+        {"block_q": 1792, "block_kv": 1280, "block_kv_compute": 1280, "block_q_sub": None, "block_q_outer": None},
+    )
+    for attention in (IPERM_HYBRID, "ulysses_custom", "flash", "tokamax_flash"):
+      for cand in cands:
+        with self.subTest(attention=attention, cand=cand):
+          cfg = _FakeConfig(attention=attention, flash_block_sizes=dict(base))
+          apply_candidate_to_config(cfg, cand, vmem_limit_bytes=VMEM_64MB)
+          production = max_utils.get_flash_block_sizes(cfg)
+          for bench_cls in (WanBlockBenchmark, LTX2BlockBenchmark):
+            bench = object.__new__(bench_cls)
+            bench._config = SimpleNamespace(flash_block_sizes=dict(base))
+            bench._attention = attention
+            bench._vmem = VMEM_64MB
+            built = bench._flash_block_sizes(
+                cand["block_q"],
+                cand["block_kv"],
+                cand["block_kv_compute"],
+                block_q_sub=cand["block_q_sub"],
+                block_q_outer=cand["block_q_outer"],
+            )
+            self.assertEqual(built, production, bench_cls.__name__)
+          if "custom" in attention:
+            self.assertEqual(production.heads_per_tile, 2)  # inherited from the config, not forced
+            self.assertEqual(production.vmem_limit_bytes, VMEM_64MB)
+
+  def test_apply_candidate_clears_stale_knobs(self):
+    from maxdiffusion.utils.tile_size_grid_search import apply_candidate_to_config, resolve_block_sizes
+
+    cfg = _FakeConfig(attention=IPERM_HYBRID, flash_block_sizes={"block_q_sub": 999, "block_q_outer": 4096})
+    cand = {"block_q": 1792, "block_kv": 1024, "block_kv_compute": 1024, "block_q_sub": None, "block_q_outer": None}
+    fbs = apply_candidate_to_config(cfg, cand)
+    self.assertNotIn("block_q_sub", fbs)
+    self.assertNotIn("block_q_outer", fbs)
+    out = resolve_block_sizes(cfg.attention, cfg.flash_block_sizes)
+    self.assertEqual((out.block_q_sub, out.block_q_outer), (None, None))
+
+  def test_apply_candidate_fails_loud_when_a_field_is_dropped(self):
+    from unittest import mock
+    from maxdiffusion import max_utils
+    from maxdiffusion.utils.tile_size_grid_search import apply_candidate_to_config
+
+    def drops_q_sub(config):
+      fbs = config.flash_block_sizes
+      return max_utils.CustomFlashBlockSizes(block_q=fbs["block_q"], block_kv=fbs["block_kv"])
+
+    cfg = _FakeConfig(attention=IPERM_HYBRID, flash_block_sizes={})
+    cand = {"block_q": 7040, "block_kv": 1024, "block_kv_compute": 1024, "block_q_sub": 3520, "block_q_outer": None}
+    with mock.patch.object(max_utils, "get_flash_block_sizes", side_effect=drops_q_sub):
+      with self.assertRaisesRegex(RuntimeError, "block_q_sub"):
+        apply_candidate_to_config(cfg, cand)
+
+  def test_tune_block_sizes_applies_winner_and_logs_one_using_line(self):
+    import re
+    from maxdiffusion.utils.tile_size_grid_search import tune_block_sizes
+
+    cfg = _FakeConfig(
+        attention=IPERM_HYBRID,
+        flash_block_sizes={"heads_per_tile": 1},
+        tile_search_mode="smart",
+        tile_search_iters=1,
+    )
+    lines = []
+    ranked = tune_block_sizes(cfg, _MockIpermBench(), vmem_limit_bytes=VMEM_64MB, log=lines.append)
+    using = [line for line in lines if line.startswith("[tile-search] using ")]
+    self.assertEqual(len(using), 1)
+    m = re.fullmatch(
+        r"\[tile-search\] using block_q=(\d+) block_kv=(\d+) block_kv_compute=(\d+) "
+        r"block_q_sub=(\d+|auto) block_q_outer=(\d+|none) \(block-bench ([\d.]+) ms\)",
+        using[0],
+    )
+    self.assertIsNotNone(m, using[0])
+    best = ranked[0]
+    self.assertEqual(
+        m.groups()[:5],
+        tuple(str(best[k]) for k in ("block_q", "block_kv", "block_kv_compute", "block_q_sub")) + ("none",),
+    )
+    fbs = cfg.flash_block_sizes
+    for k in ("block_q", "block_kv", "block_kv_compute", "block_q_sub"):
+      self.assertEqual(fbs[k], best[k])
+    self.assertEqual(fbs["vmem_limit_bytes"], VMEM_64MB)
+
+  def test_tile_search_vmem_limit_bytes_resolution(self):
+    from maxdiffusion.utils.tile_size_grid_search import DEFAULT_VMEM_LIMIT_BYTES, tile_search_vmem_limit_bytes
+
+    self.assertEqual(tile_search_vmem_limit_bytes(_FakeConfig(flash_block_sizes={})), DEFAULT_VMEM_LIMIT_BYTES)
+    self.assertEqual(tile_search_vmem_limit_bytes(_FakeConfig(flash_block_sizes={"vmem_limit_bytes": 5})), 5)
+    cfg = _FakeConfig(flash_block_sizes={"vmem_limit_bytes": 5}, tile_search_vmem_limit_bytes=7)
+    self.assertEqual(tile_search_vmem_limit_bytes(cfg), 7)
+
+
 if __name__ == "__main__":
   unittest.main()

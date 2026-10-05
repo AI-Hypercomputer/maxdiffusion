@@ -410,43 +410,28 @@ def inference_generate_video(config, pipeline, filename_prefix=""):
 
 
 def maybe_tune_block_sizes(config):
-  """If enable_tile_search, run a fast one-DiT-block tile-size grid search and overwrite
-  flash_block_sizes' block_q/block_kv/block_kv_compute with the winner IN PLACE, before the
-  transformer (which bakes block sizes in at construction) is built.
+  """If enable_tile_search, run a fast one-DiT-block tile-size grid search and apply the
+  winner to flash_block_sizes IN PLACE, before the transformer (which bakes block sizes in at
+  construction) is built: block_q/block_kv/block_kv_compute, block_q_sub/block_q_outer for the
+  internal-permutation kernels, and the VMEM limit the candidates were sized and timed under
+  (tile_search_vmem_limit_bytes, else flash_block_sizes.vmem_limit_bytes, else 64 MiB).
+
+  Returns the proxy-ranked successful candidates, best first (dicts with block_q, block_kv,
+  block_kv_compute, block_q_sub, block_q_outer, proxy_ms); [] when tuning is off.
 
   Flags are read defensively so this is a safe no-op (grid search OFF) for any config that
   doesn't declare them -- not every WAN yaml carries the tile_search_* keys."""
   keys = config.get_keys()
   if not keys.get("enable_tile_search", False):
-    return
-  from maxdiffusion.utils.tile_size_grid_search import grid_search
+    return []
+  from maxdiffusion.utils.tile_size_grid_search import tile_search_vmem_limit_bytes, tune_block_sizes
   from maxdiffusion.utils.wan_block_benchmark import WanBlockBenchmark
 
+  vmem_limit_bytes = tile_search_vmem_limit_bytes(config)
   mesh = jax.sharding.Mesh(max_utils.create_device_mesh(config), config.mesh_axes)
-  bench = WanBlockBenchmark.from_config(config, mesh)
+  bench = WanBlockBenchmark.from_config(config, mesh, vmem_limit_bytes=vmem_limit_bytes)
   max_logging.log(f"[tile-search] tuning block sizes for {bench.label} before inference...")
-  result = grid_search(
-      bench,
-      mode=keys.get("tile_search_mode", "smart"),
-      iters=keys.get("tile_search_iters", 10),
-      out_dir=(keys.get("tile_search_out", "") or None),
-      log=max_logging.log,
-  )
-  if result.best is None:
-    max_logging.log("[tile-search] no config succeeded; keeping configured flash_block_sizes")
-    return
-  fbs = dict(config.flash_block_sizes)
-  fbs.update({
-      "block_q": result.best.bq,
-      "block_kv": result.best.bkv,
-      "block_kv_compute": result.best.bkv_compute,
-      "block_kv_compute_in": result.best.bkv_compute,
-  })
-  config.get_keys()["flash_block_sizes"] = fbs  # config is immutable via setattr; mutate raw dict
-  max_logging.log(
-      f"[tile-search] using block_q={result.best.bq} block_kv={result.best.bkv} "
-      f"(block-bench {result.best.mean_ms:.2f} ms)"
-  )
+  return tune_block_sizes(config, bench, vmem_limit_bytes=vmem_limit_bytes, log=max_logging.log)
 
 
 def _plan_wan_aot_cache(config, source_revision) -> tuple[str, bool]:

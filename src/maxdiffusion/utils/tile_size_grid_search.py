@@ -25,8 +25,8 @@ Two hardware granularities drive the candidate math (do NOT conflate them):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from dataclasses import dataclass, field, replace
+from typing import Any, Mapping, Optional, Sequence
 import csv
 import os
 import sys
@@ -806,18 +806,73 @@ class BenchResult:
   times_ms: list[float] = field(default_factory=list)
   compile_ms: Optional[float] = None  # first-call (compile+first-exec) wall time, reported separately
   detail: str = ""
+  # Internal-permutation kernels only (None elsewhere): the in-kernel Q chunk
+  # and the outer Q block the candidate ran with -- None block_q_sub is the
+  # kernel's auto rule -- plus the planner's metadata (see TileCandidate).
+  block_q_sub: Optional[int] = None
+  block_q_outer: Optional[int] = None
+  resident: Optional[int] = None
+  pred_vmem_bytes: Optional[float] = None
+  tag: str = ""
+
+  def key(self) -> tuple:
+    """Identity of the configuration: every field production is set to."""
+    return (self.bq, self.bkv, self.bkv_compute, self.block_q_sub, self.block_q_outer)
+
+  def describe(self) -> str:
+    s = f"bq={self.bq} bkv={self.bkv}"
+    if self.bkv_compute not in (None, self.bkv):
+      s += f" cmp={self.bkv_compute}"
+    if self.block_q_sub is not None:
+      s += f" q_sub={self.block_q_sub}"
+    if self.block_q_outer is not None:
+      s += f" q_outer={self.block_q_outer}"
+    return s
+
+  def as_candidate(self) -> dict:
+    """The candidate dict `apply_candidate_to_config` (and the e2e pass) consume."""
+    return {
+        "block_q": self.bq,
+        "block_kv": self.bkv,
+        "block_kv_compute": self.bkv if self.bkv_compute is None else self.bkv_compute,
+        "block_q_sub": self.block_q_sub,
+        "block_q_outer": self.block_q_outer,
+        "proxy_ms": self.mean_ms,
+    }
 
   def csv_row(self) -> dict:
     return {
         "bq": self.bq,
         "bkv": self.bkv,
         "bkv_compute": self.bkv_compute,
+        "block_q_sub": self.block_q_sub,
+        "block_q_outer": self.block_q_outer,
+        "resident": self.resident,
+        "pred_vmem_mib": None if self.pred_vmem_bytes is None else round(self.pred_vmem_bytes / (1024 * 1024), 2),
+        "tag": self.tag,
         "status": self.status,
         "mean_ms": self.mean_ms,
         "std_ms": self.std_ms,
         "compile_ms": self.compile_ms,
         "detail": self.detail,
     }
+
+
+CSV_FIELDS = (
+    "bq",
+    "bkv",
+    "bkv_compute",
+    "block_q_sub",
+    "block_q_outer",
+    "resident",
+    "pred_vmem_mib",
+    "tag",
+    "status",
+    "mean_ms",
+    "std_ms",
+    "compile_ms",
+    "detail",
+)
 
 
 def time_callable(fn, *, iters: int = 10, warmup: int = 2, sync=lambda x: x):
@@ -870,6 +925,18 @@ class BlockBenchmark:
   def dtype_bytes(self) -> int:
     return 2  # bf16 q/k/v; the score tile is f32 (4) -> see _MEASURED_BKV_CEILING
 
+  def attention_kernel(self) -> str:
+    """The attention kernel name the block runs (selects the candidate planner/VMEM model)."""
+    return getattr(self, "_attention", "") or ""
+
+  def ring_shards(self) -> Optional[int]:
+    """Ring size the kernel runs, or None if unknown (iperm then assumes the resident path)."""
+    context_shards = getattr(self, "_context_shards", None)
+    if context_shards is None:
+      return None
+    ulysses_shards = int(getattr(self, "_ulysses_shards", 1) or 1)
+    return ring_shards_for(self.attention_kernel(), int(context_shards), ulysses_shards)
+
   def run(
       self,
       bq: int,
@@ -878,10 +945,17 @@ class BlockBenchmark:
       bkv_compute: Optional[int] = None,
       iters: int = 10,
       warmup: int = 2,
+      block_q_sub: Optional[int] = None,
+      block_q_outer: Optional[int] = None,
   ) -> BenchResult:
     """Build/reuse the 1-block model with these block sizes and time a forward.  MUST use
     `time_callable` (or equivalent) so `mean_ms` EXCLUDES compilation + warmup; report the
     one-time compile cost in `compile_ms`.  Catch out-of-VMEM -> status='oom' (don't raise).
+
+    `block_q_sub` / `block_q_outer` are only passed (as keywords) for candidates that set
+    them -- the internal-permutation kernels' in-kernel Q chunk and outer Q block -- and must
+    reach the kernel through the same block-size object production builds
+    (`candidate_flash_block_sizes`), never be dropped.
     """
     raise NotImplementedError
 
@@ -896,6 +970,21 @@ class SearchResult:
   q_seq: int
   kv_seq: int
   mode: str
+  # Resident-Q iperm shapes only: the pre-compilation structural verdict.
+  structure: Optional[IpermStructure] = None
+  candidates: list[TileCandidate] = field(default_factory=list)
+  csv_path: Optional[str] = None
+
+  def ranked(self) -> list[BenchResult]:
+    """Successful results, best (the broadcast winner) first, then by proxy time."""
+    ok = sorted((r for r in self.results if r.status == "ok" and r.mean_ms is not None), key=lambda r: r.mean_ms)
+    if self.best is None:
+      return ok
+    return [self.best] + [r for r in ok if r.key() != self.best.key()]
+
+  def ranked_candidates(self) -> list[dict]:
+    """`ranked()` as candidate dicts (see BenchResult.as_candidate)."""
+    return [r.as_candidate() for r in self.ranked()]
 
 
 _STATUS_TO_CODE = {"ok": 0, "oom": 1, "error": 2}
@@ -936,35 +1025,28 @@ def _aggregate_process_result(result: BenchResult) -> BenchResult:
   status, mean_ms, std_ms, compile_ms = _aggregate_process_measurements(gathered)
   failed_hosts = int(np.count_nonzero(np.asarray(gathered).reshape((-1, 4))[:, 0]))
   detail = result.detail if status == "ok" else f"{status} on {failed_hosts}/{jax.process_count()} process(es)"
-  return BenchResult(
-      bq=result.bq,
-      bkv=result.bkv,
-      bkv_compute=result.bkv_compute,
-      status=status,
-      mean_ms=mean_ms,
-      std_ms=std_ms,
-      times_ms=result.times_ms,
-      compile_ms=compile_ms,
-      detail=detail,
-  )
+  if status != "ok" and result.detail:
+    detail += f"; this process: {result.detail}"
+  # `replace` keeps every other field (block_q_sub, block_q_outer, planner metadata).
+  return replace(result, status=status, mean_ms=mean_ms, std_ms=std_ms, compile_ms=compile_ms, detail=detail)
 
 
 def _broadcast_winner(best: Optional[BenchResult], results: list[BenchResult]) -> Optional[BenchResult]:
   if jax.process_count() == 1:
     return best
 
+  # Payload: (found, bq, bkv, bkv_compute, block_q_sub, block_q_outer); None -> -1.
   is_source = jax.process_index() == 0
-  payload = np.zeros((4,), dtype=np.int64)
+  payload = np.zeros((6,), dtype=np.int64)
   if is_source and best is not None:
-    bkv_cmp = -1 if best.bkv_compute is None else best.bkv_compute
-    payload[:] = (1, best.bq, best.bkv, bkv_cmp)
+    payload[:] = (1, *(-1 if v is None else int(v) for v in best.key()))
   payload = np.asarray(multihost_utils.broadcast_one_to_all(payload, is_source=is_source))
   if payload[0] == 0:
     return None
 
-  winner_key = (int(payload[1]), int(payload[2]), None if int(payload[3]) < 0 else int(payload[3]))
+  winner_key = tuple(None if int(v) < 0 else int(v) for v in payload[1:])
   for result in results:
-    if (result.bq, result.bkv, result.bkv_compute) == winner_key and result.status == "ok":
+    if result.key() == winner_key and result.status == "ok":
       return result
   raise RuntimeError(f"Process 0 selected tile candidate {winner_key}, but it is unavailable on this process.")
 
@@ -1037,6 +1119,71 @@ def full_grid(q_seq: int, kv_seq: int, *, step: int = MXU_TILE, max_configs: Opt
   return pairs
 
 
+def plan_candidates(
+    bench: BlockBenchmark,
+    *,
+    mode: str = "smart",
+    k: int = 3,
+    step: int = MXU_TILE,
+    max_configs: Optional[int] = None,
+    log=print,
+) -> tuple[list[TileCandidate], Optional[IpermStructure], str]:
+  """The candidates `grid_search` runs on `bench`, plus the resident-Q structural verdict
+  (None unless the iperm resident model governs this shape) and the VMEM family label.
+
+  Iperm kernels with a ring hold the whole padded shard resident, so the per-tile
+  (bq, bkv) model that `smart_grid` encodes does not describe them: their candidates come
+  from the joint planner (`iperm_candidates`), seeded with `smart_grid`'s bq ladder only
+  for the resident lengths it reaches. Every other kernel keeps the (bq, bkv) ladders.
+  """
+  if mode not in ("smart", "full"):
+    raise ValueError(f"mode must be 'smart' or 'full', got {mode!r}")
+  q_seq, kv_seq = bench.tiled_seq_lens()
+  vmem = bench.vmem_bytes()
+  # The VMEM fit is per kernel family (see `_VMEM_FIT`); read the attention name
+  # off the bench when it exposes one, else assume the external ring.
+  attention = bench.attention_kernel()
+  family = vmem_family(attention)
+  resident_q = iperm_uses_resident_q(attention, bench.ring_shards())
+  structure = iperm_structural_check(q_seq, vmem_bytes=vmem) if resident_q else None
+  if mode == "full":
+    log(
+        "Warning: tile_search mode is 'full', not 'smart' -- this is an exhaustive O(N^2) 2D BQ x BKV"
+        " sweep (often hundreds to thousands of configs, each separately compiled) and is meant for"
+        " one-off characterization; use mode='smart' for routine tuning."
+    )
+    if resident_q:
+      log(
+          "Warning: mode='full' sweeps (block_q, block_kv) only; block_q_sub stays on the iperm "
+          "kernel's auto rule (and block_q_outer unset). mode='smart' searches them jointly."
+      )
+    pairs = full_grid(q_seq, kv_seq, step=step, max_configs=max_configs)
+    return [TileCandidate(bq, bkv, bkv) for bq, bkv in pairs], structure, family
+  pairs = smart_grid(q_seq, kv_seq, vmem_bytes=vmem, dtype_bytes=4, k_bq=k, k_bkv=max(k, 4), family=family)
+  if not resident_q:
+    return [TileCandidate(bq, bkv, bkv) for bq, bkv in pairs], None, family
+  ladder = sorted({bq for bq, _ in pairs})
+  return iperm_candidates(q_seq, kv_seq, vmem_bytes=vmem, ladder_bqs=ladder), structure, "iperm-resident"
+
+
+def _run_candidate(bench: BlockBenchmark, cand: TileCandidate, *, iters: int, warmup: int) -> BenchResult:
+  """Runs one candidate; the knobs it does not set are not passed (benches may not take them)."""
+  extra = {}
+  if cand.block_q_sub is not None:
+    extra["block_q_sub"] = cand.block_q_sub
+  if cand.block_q_outer is not None:
+    extra["block_q_outer"] = cand.block_q_outer
+  r = bench.run(cand.bq, cand.bkv, bkv_compute=cand.bkv_compute, iters=iters, warmup=warmup, **extra)
+  return replace(
+      r,
+      block_q_sub=cand.block_q_sub,
+      block_q_outer=cand.block_q_outer,
+      resident=cand.resident,
+      pred_vmem_bytes=cand.pred_vmem_bytes,
+      tag=cand.tag,
+  )
+
+
 def grid_search(
     bench: BlockBenchmark,
     *,
@@ -1053,67 +1200,48 @@ def grid_search(
   winner (lowest mean_ms among status=='ok').  `mode`: 'smart' (candidate ladders) | 'full'.
   """
   q_seq, kv_seq = bench.tiled_seq_lens()
-  # The VMEM fit is per kernel family (see `_VMEM_FIT`); read the attention name
-  # off the bench when it exposes one, else assume the external ring.
-  family = vmem_family(getattr(bench, "_attention", "") or "")
-  if mode == "smart":
-    pairs = smart_grid(q_seq, kv_seq, vmem_bytes=bench.vmem_bytes(), dtype_bytes=4, k_bq=k, k_bkv=max(k, 4), family=family)
-  elif mode == "full":
-    log(
-        "Warning: tile_search mode is 'full', not 'smart' -- this is an exhaustive O(N^2) 2D BQ x BKV"
-        " sweep (often hundreds to thousands of configs, each separately compiled) and is meant for"
-        " one-off characterization; use mode='smart' for routine tuning."
-    )
-    pairs = full_grid(q_seq, kv_seq, step=step, max_configs=max_configs)
-  else:
-    raise ValueError(f"mode must be 'smart' or 'full', got {mode!r}")
+  cands, structure, family = plan_candidates(bench, mode=mode, k=k, step=step, max_configs=max_configs, log=log)
+  vmem = bench.vmem_bytes()
+  if structure is not None:
+    log(f"[tile-search] {bench.label}: {structure.message}")
 
   log(
       f"[tile-search] {bench.label}: q_seq={q_seq} kv_seq={kv_seq} mode={mode} "
-      f"family={family} -> {len(pairs)} configs (iters={iters})"
+      f"family={family} -> {len(cands)} configs (iters={iters})"
   )
   results: list[BenchResult] = []
-  for i, (bq, bkv) in enumerate(pairs, 1):
+  for i, cand in enumerate(cands, 1):
     if jax.process_count() > 1:
       multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_start")
-    r = bench.run(bq, bkv, bkv_compute=bkv, iters=iters, warmup=warmup)
+    r = _run_candidate(bench, cand, iters=iters, warmup=warmup)
     if jax.process_count() > 1:
       multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_complete")
       r = _aggregate_process_result(r)
     results.append(r)
-    tag = "" if bq % MXU_TILE == 0 and bkv % MXU_TILE == 0 else " [½MXU]"
+    tag = "" if cand.bq % MXU_TILE == 0 and cand.bkv % MXU_TILE == 0 else " [½MXU]"
+    if cand.pred_vmem_bytes is not None:
+      tag += f" [{cand.tag}, pred {cand.pred_vmem_bytes / vmem:.0%} VMEM]"
     compile_note = f"  (compile {r.compile_ms/1e3:.0f}s, excluded)" if r.compile_ms else ""
     log(
-        f"  [{i}/{len(pairs)}] bq={bq} bkv={bkv}{tag}: "
-        + (f"{r.mean_ms:.2f}ms{compile_note}" if r.status == "ok" else r.status)
+        f"  [{i}/{len(cands)}] {r.describe()}{tag}: "
+        + (f"{r.mean_ms:.2f}ms{compile_note}" if r.status == "ok" else f"{r.status} {r.detail}".rstrip())
     )
 
   ok = [r for r in results if r.status == "ok" and r.mean_ms is not None]
   best = min(ok, key=lambda r: r.mean_ms) if ok and jax.process_index() == 0 else None
   best = _broadcast_winner(best, results)
-  _emit(results, best, q_seq, kv_seq, mode, out_dir, log)
-  return SearchResult(best, results, q_seq, kv_seq, mode)
+  csv_path = _emit(results, best, q_seq, kv_seq, mode, out_dir, log)
+  return SearchResult(best, results, q_seq, kv_seq, mode, structure=structure, candidates=cands, csv_path=csv_path)
 
 
-def _emit(results, best, q_seq, kv_seq, mode, out_dir, log) -> None:
+def _emit(results, best, q_seq, kv_seq, mode, out_dir, log) -> Optional[str]:
+  path = None
   if out_dir:
+    path = os.path.join(out_dir, "tile_size_grid_search.csv")
     if jax.process_index() == 0:
       os.makedirs(out_dir, exist_ok=True)
-      path = os.path.join(out_dir, "tile_size_grid_search.csv")
       with open(path, "w", newline="") as f:
-        w = csv.DictWriter(
-            f,
-            fieldnames=[
-                "bq",
-                "bkv",
-                "bkv_compute",
-                "status",
-                "mean_ms",
-                "std_ms",
-                "compile_ms",
-                "detail",
-            ],
-        )
+        w = csv.DictWriter(f, fieldnames=list(CSV_FIELDS))
         w.writeheader()
         for r in sorted(results, key=lambda r: (r.mean_ms is None, r.mean_ms or 0)):
           w.writerow(r.csv_row())
@@ -1121,14 +1249,130 @@ def _emit(results, best, q_seq, kv_seq, mode, out_dir, log) -> None:
   else:
     log(f"[tile-search] results (q_seq={q_seq}, kv_seq={kv_seq}, mode={mode}):")
     for r in sorted(results, key=lambda r: (r.mean_ms is None, r.mean_ms or 0)):
+      knobs = ""
+      if r.block_q_sub is not None or r.block_q_outer is not None:
+        knobs = f" q_sub={r.block_q_sub!s:>5} q_outer={r.block_q_outer!s:>5}"
       log(
-          f"    bq={r.bq:>6} bkv={r.bkv:>5} cmp={r.bkv_compute:>5}  "
+          f"    bq={r.bq:>6} bkv={r.bkv:>5} cmp={r.bkv_compute!s:>5}{knobs}  "
           + (f"{r.mean_ms:7.2f} ms  (±{r.std_ms:.2f})" if r.status == "ok" else f"  {r.status}")
       )
   if best:
-    log(f"[tile-search] WINNER: bq={best.bq} bkv={best.bkv} bkv_compute={best.bkv_compute} " f"-> {best.mean_ms:.2f} ms")
+    log(f"[tile-search] WINNER: {best.describe()} bkv_compute={best.bkv_compute} -> {best.mean_ms:.2f} ms")
   else:
     log("[tile-search] no config succeeded (all OOM/error)")
+  return path
+
+
+# --------------------------------------------------------------------------------
+# Applying a candidate: ONE path for the bench and for production
+# --------------------------------------------------------------------------------
+def candidate_flash_block_sizes(
+    flash_block_sizes: Mapping[str, Any],
+    attention: str,
+    cand: Mapping[str, Any],
+    *,
+    vmem_limit_bytes: Optional[int] = None,
+) -> dict:
+  """The raw `flash_block_sizes` mapping that runs candidate `cand` (keys as in
+  `BenchResult.as_candidate`). Benches build their kernel block sizes from this AND
+  production writes exactly this into the config, so both resolve the same object via
+  `max_utils.get_flash_block_sizes`."""
+  from maxdiffusion import max_utils  # pylint: disable=g-import-not-at-top  # keeps this module light
+
+  return max_utils.flash_block_sizes_for_candidate(
+      dict(flash_block_sizes or {}),
+      attention,
+      int(cand["block_q"]),
+      int(cand["block_kv"]),
+      cand.get("block_kv_compute"),
+      vmem_limit_bytes=vmem_limit_bytes,
+      block_q_sub=cand.get("block_q_sub"),
+      block_q_outer=cand.get("block_q_outer"),
+  )
+
+
+def resolve_block_sizes(attention: str, flash_block_sizes: Mapping[str, Any]):
+  """What production's `max_utils.get_flash_block_sizes` builds from this mapping."""
+  from types import SimpleNamespace  # pylint: disable=g-import-not-at-top
+  from maxdiffusion import max_utils  # pylint: disable=g-import-not-at-top
+
+  return max_utils.get_flash_block_sizes(SimpleNamespace(attention=attention, flash_block_sizes=flash_block_sizes))
+
+
+DEFAULT_VMEM_LIMIT_BYTES = 64 * 1024 * 1024
+
+
+def tile_search_vmem_limit_bytes(config) -> int:
+  """The scoped-VMEM limit candidates are sized and benchmarked under, and that production is
+  then run with (apply_candidate_to_config writes it): `tile_search_vmem_limit_bytes`, else the
+  configured `flash_block_sizes.vmem_limit_bytes`, else 64 MiB. A candidate sized to ~98% of
+  64 MiB must not ship under Mosaic's (much smaller) default scoped limit."""
+  keys = config.get_keys()
+  fbs = getattr(config, "flash_block_sizes", None) or {}
+  return int(keys.get("tile_search_vmem_limit_bytes") or fbs.get("vmem_limit_bytes") or DEFAULT_VMEM_LIMIT_BYTES)
+
+
+def apply_candidate_to_config(config, cand: Mapping[str, Any], *, vmem_limit_bytes: Optional[int] = None) -> dict:
+  """Writes candidate `cand` into `config.flash_block_sizes` exactly the way
+  maybe_tune_block_sizes does, then checks that production's block-size object carries it
+  (block_q, block_kv, and for the custom kernels block_q_sub / block_q_outer -- a field the
+  carrier does not know is silently dropped, requirement 5). Returns the new mapping.
+
+  `vmem_limit_bytes=None` keeps whatever limit the config already carries.
+  """
+  fbs = candidate_flash_block_sizes(config.flash_block_sizes, config.attention, cand, vmem_limit_bytes=vmem_limit_bytes)
+  config.get_keys()["flash_block_sizes"] = fbs  # config is immutable via setattr; mutate raw dict
+  effective = resolve_block_sizes(config.attention, config.flash_block_sizes)
+  want = {"block_q": int(cand["block_q"]), "block_kv": int(cand["block_kv"])}
+  if "custom" in config.attention:
+    want["block_q_sub"] = cand.get("block_q_sub")
+    want["block_q_outer"] = cand.get("block_q_outer")
+  got = {name: getattr(effective, name, None) for name in want}
+  if got != want:
+    raise RuntimeError(f"[tile-search] applied candidate {want}, but production block sizes resolved to {got}.")
+  return fbs
+
+
+def format_using_line(cand: Mapping[str, Any]) -> str:
+  """The single parseable line announcing the configuration production will run."""
+  q_sub = cand.get("block_q_sub")
+  q_outer = cand.get("block_q_outer")
+  return (
+      f"[tile-search] using block_q={int(cand['block_q'])} block_kv={int(cand['block_kv'])} "
+      f"block_kv_compute={int(cand['block_kv_compute'])} "
+      f"block_q_sub={'auto' if q_sub is None else int(q_sub)} "
+      f"block_q_outer={'none' if q_outer is None else int(q_outer)} "
+      f"(block-bench {float(cand['proxy_ms']):.2f} ms)"
+  )
+
+
+def tune_block_sizes(
+    config,
+    bench: BlockBenchmark,
+    *,
+    vmem_limit_bytes: Optional[int] = None,
+    log=print,
+) -> list[dict]:
+  """maybe_tune_block_sizes' model-agnostic core: proxy-search `bench` with the config's
+  tile_search_* settings, apply the best candidate to `config.flash_block_sizes`, print the
+  parseable `using` line, and return the proxy-ranked successful candidates, best first
+  (dicts as in `BenchResult.as_candidate`).
+  """
+  keys = config.get_keys()
+  result = grid_search(
+      bench,
+      mode=keys.get("tile_search_mode", "smart"),
+      iters=keys.get("tile_search_iters", 10),
+      out_dir=(keys.get("tile_search_out", "") or None),
+      log=log,
+  )
+  ranked = result.ranked_candidates()
+  if not ranked:
+    log("[tile-search] no config succeeded; keeping configured flash_block_sizes")
+    return ranked
+  apply_candidate_to_config(config, ranked[0], vmem_limit_bytes=vmem_limit_bytes)
+  log(format_using_line(ranked[0]))
+  return ranked
 
 
 # --------------------------------------------------------------------------------

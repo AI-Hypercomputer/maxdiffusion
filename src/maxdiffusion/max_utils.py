@@ -864,6 +864,8 @@ def flash_block_sizes_for_candidate(
     block_kv_compute: int | None = None,
     *,
     vmem_limit_bytes: int | None = None,
+    block_q_sub: int | None = None,
+    block_q_outer: int | None = None,
 ) -> Dict[str, int]:
   """Returns a production-compatible block-size mapping for a tuned candidate.
 
@@ -871,6 +873,13 @@ def flash_block_sizes_for_candidate(
   padding decisions. Tokamax also derives its effective forward ``block_q``
   from ``block_q_dkv``. Updating only ``block_q`` therefore does not faithfully
   apply or benchmark a candidate.
+
+  ``block_q_sub`` / ``block_q_outer`` (internal-permutation kernels only) are
+  part of the candidate's identity: they are always written or removed, never
+  inherited from ``flash_block_sizes``. A ``block_q_sub`` tuned for one resident
+  length need not divide another one, and ``None`` must mean "the dispatch's
+  auto rule" (attention_kernel_registry.auto_block_q_sub), exactly as it did
+  when the candidate was benchmarked.
   """
   block_kv_compute = block_kv if block_kv_compute is None else block_kv_compute
   candidate = dict(flash_block_sizes)
@@ -883,6 +892,11 @@ def flash_block_sizes_for_candidate(
       "block_kv_dkv": block_kv,
       "block_kv_dkv_compute": block_kv_compute,
   })
+  for key, value in (("block_q_sub", block_q_sub), ("block_q_outer", block_q_outer)):
+    if value is None:
+      candidate.pop(key, None)
+    else:
+      candidate[key] = int(value)
 
   if not candidate.get("use_fused_bwd_kernel", False):
     candidate["block_q_dq"] = block_q

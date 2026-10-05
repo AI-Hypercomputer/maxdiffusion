@@ -118,22 +118,37 @@ def maybe_tune_block_sizes(config):
         "[tile-search] tuning was explicitly enabled, but no candidate succeeded. "
         "Inspect the per-candidate errors instead of running with an untuned configuration."
     )
+  best = result.best
+  block_q_sub = getattr(best, "block_q_sub", None)
+  block_q_outer = getattr(best, "block_q_outer", None)
   fbs = max_utils.flash_block_sizes_for_candidate(
       config.flash_block_sizes,
       config.attention,
-      result.best.bq,
-      result.best.bkv,
-      result.best.bkv_compute,
+      best.bq,
+      best.bkv,
+      best.bkv_compute,
       vmem_limit_bytes=vmem_limit_bytes,
+      block_q_sub=block_q_sub,
+      block_q_outer=block_q_outer,
   )
   config.get_keys()["flash_block_sizes"] = fbs
   effective_block_sizes = max_utils.get_flash_block_sizes(config)
-  if effective_block_sizes is None or effective_block_sizes.block_q != result.best.bq:
+  if effective_block_sizes is None or effective_block_sizes.block_q != best.bq:
     effective_bq = None if effective_block_sizes is None else effective_block_sizes.block_q
-    raise RuntimeError(f"[tile-search] selected block_q={result.best.bq}, but production resolved block_q={effective_bq}.")
+    raise RuntimeError(f"[tile-search] selected block_q={best.bq}, but production resolved block_q={effective_bq}.")
+  if "custom" in config.attention and (
+      getattr(effective_block_sizes, "block_q_sub", None),
+      getattr(effective_block_sizes, "block_q_outer", None),
+  ) != (block_q_sub, block_q_outer):
+    raise RuntimeError(
+        f"[tile-search] selected block_q_sub={block_q_sub} block_q_outer={block_q_outer}, but production "
+        "block sizes did not carry them."
+    )
   max_logging.log(
-      f"[tile-search] using block_q={result.best.bq} block_kv={result.best.bkv} "
-      f"(block-bench {result.best.mean_ms:.2f} ms)"
+      f"[tile-search] using block_q={best.bq} block_kv={best.bkv} block_kv_compute={best.bkv_compute} "
+      f"block_q_sub={'auto' if block_q_sub is None else block_q_sub} "
+      f"block_q_outer={'none' if block_q_outer is None else block_q_outer} "
+      f"(block-bench {best.mean_ms:.2f} ms)"
   )
 
 

@@ -18,7 +18,6 @@ LTX2 implementation of the model-agnostic `BlockBenchmark` (see tile_size_grid_s
 """
 import os
 import functools
-from types import SimpleNamespace
 
 os.environ.setdefault(
     "LIBTPU_INIT_ARGS",
@@ -53,8 +52,10 @@ from maxdiffusion.models.ltx2.transformer_ltx2 import LTX2VideoTransformer3DMode
 from maxdiffusion.utils.tile_size_grid_search import (
     BenchResult,
     BlockBenchmark,
+    candidate_flash_block_sizes,
     grid_search,
     local_tiled_seq_len,
+    resolve_block_sizes,
     time_callable,
 )
 
@@ -165,11 +166,11 @@ class LTX2BlockBenchmark(BlockBenchmark):
   def vmem_bytes(self):
     return self._vmem
 
-  def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2):
+  def run(self, bq, bkv, *, bkv_compute=None, iters=10, warmup=2, block_q_sub=None, block_q_outer=None):
     cmp = bkv_compute or bkv
     try:
       with self._mesh:
-        model = self._build_model(bq, bkv, cmp)
+        model = self._build_model(bq, bkv, cmp, block_q_sub=block_q_sub, block_q_outer=block_q_outer)
       (
           latents,
           timestep,
@@ -216,19 +217,18 @@ class LTX2BlockBenchmark(BlockBenchmark):
       oom = any(t in msg for t in ("RESOURCE_EXHAUSTED", "out of memory", "Mosaic", "VMEM"))
       return BenchResult(bq, bkv, cmp, "oom" if oom else "error", detail=msg[:200])
 
-  def _flash_block_sizes(self, bq, bkv, cmp):
-    candidate = max_utils.flash_block_sizes_for_candidate(
-        self._config.flash_block_sizes,
-        self._attention,
-        bq,
-        bkv,
-        cmp,
-        vmem_limit_bytes=self._vmem,
-    )
-    candidate_config = SimpleNamespace(attention=self._attention, flash_block_sizes=candidate)
-    return max_utils.get_flash_block_sizes(candidate_config)
+  def _flash_block_sizes(self, bq, bkv, cmp, *, block_q_sub=None, block_q_outer=None):
+    cand = {
+        "block_q": bq,
+        "block_kv": bkv,
+        "block_kv_compute": cmp,
+        "block_q_sub": block_q_sub,
+        "block_q_outer": block_q_outer,
+    }
+    fbs = candidate_flash_block_sizes(self._config.flash_block_sizes, self._attention, cand, vmem_limit_bytes=self._vmem)
+    return resolve_block_sizes(self._attention, fbs)
 
-  def _build_model(self, bq, bkv, cmp):
+  def _build_model(self, bq, bkv, cmp, *, block_q_sub=None, block_q_outer=None):
     c = self._config
     ltx2_config = dict(self._hf_cfg)
     if ltx2_config.get("activation_fn") == "gelu-approximate":
@@ -241,7 +241,7 @@ class LTX2BlockBenchmark(BlockBenchmark):
         a2v_attention_kernel=getattr(c, "a2v_attention_kernel", "flash"),
         v2a_attention_kernel=getattr(c, "v2a_attention_kernel", "dot_product"),
         precision=max_utils.get_precision(c),
-        flash_block_sizes=self._flash_block_sizes(bq, bkv, cmp),
+        flash_block_sizes=self._flash_block_sizes(bq, bkv, cmp, block_q_sub=block_q_sub, block_q_outer=block_q_outer),
         flash_min_seq_length=getattr(c, "flash_min_seq_length", 4096),
         ulysses_shards=getattr(c, "ulysses_shards", -1),
         ulysses_attention_chunks=getattr(c, "ulysses_attention_chunks", 1),

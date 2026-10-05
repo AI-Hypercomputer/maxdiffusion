@@ -149,6 +149,8 @@ class LTX2AotMetadataTest(unittest.TestCase):
         256,
         256,
         vmem_limit_bytes=123456,
+        block_q_sub=None,
+        block_q_outer=None,
     )
     self.assertEqual(keys["flash_block_sizes"], {"block_q": 128})
 
