@@ -38,21 +38,14 @@ from jax.experimental import multihost_utils
 VPU_LANE = 128  # kernel hard floor: block sizes must be multiples of this
 MXU_TILE = 256  # 256x256 MXU: multiples of this fully pack the systolic array
 
-PURE_RING_ATTENTION_KERNELS = frozenset({
-    "tokamax_ring",
-    "tokamax_ring_custom",
-})
-ULYSSES_RING_ATTENTION_KERNELS = frozenset({
-    "ulysses_ring",
-    "ulysses_ring_custom",
-    "ulysses_ring_custom_fixed_m",
-    "ulysses_ring_custom_fixed_m_per_q_block",
-    "ulysses_ring_custom_bidir",
-    "ulysses_ring_custom_iperm",
-    "ulysses_ring_custom_iperm_fixed_m",
-    "ulysses_ring_custom_iperm_fixed_m_nocond",
-    "ulysses_ring_custom_iperm_fixed_m_hybrid",
-})
+# Kernel-family sets live in ONE place (attention_kernel_registry); they are
+# re-exported here because the benches and tests import them from this module.
+from maxdiffusion.attention_kernel_registry import (  # pylint: disable=g-importing-member
+    INTERNAL_PERM_KERNELS,
+    PURE_RING_ATTENTION_KERNELS,
+    ULYSSES_RING_ATTENTION_KERNELS,
+    auto_block_q_sub,
+)
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -198,19 +191,6 @@ _VMEM_FIT = {  # family -> (score scale a, per-bq bytes b)
     "internal": (0.982, 1295),
 }
 
-INTERNAL_PERM_KERNELS = frozenset({
-    "ulysses_ring_custom_iperm",
-    "ulysses_ring_custom_iperm_fixed_m",
-    "ulysses_ring_custom_iperm_fixed_m_nocond",
-    # The hybrid kernel single-buffers a whole-head resident Q instead of
-    # double-buffering per-block Q, so its true VMEM ceiling differs from the
-    # plain iperm kernels' calibrated fit -- this reuses "internal" as the
-    # closer of the two available fits (not a from-scratch calibration for
-    # this kernel). The resident buffer should only ADD headroom vs. iperm,
-    # so any error here is in the safe (over-conservative) direction; the
-    # search's own OOM-pruning is the backstop if it isn't.
-    "ulysses_ring_custom_iperm_fixed_m_hybrid",
-})
 
 
 # Measured ceilings from the sweeps (~3,300 points), MIN across configs so the

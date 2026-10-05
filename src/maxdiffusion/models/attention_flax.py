@@ -26,6 +26,7 @@ import jax.numpy as jnp
 from jax.experimental import shard_map
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
+from maxdiffusion import attention_kernel_registry
 from maxdiffusion import wan_runtime_options
 from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokamax_splash_attention_mask
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
@@ -2463,16 +2464,9 @@ def _ulysses_ring_custom_attention(
         if _resident_q % _outer_q:
           raise ValueError(f"block_q ({_resident_q}) must be a multiple of block_q_outer ({_outer_q}).")
         if not q_sub_cfg:
-          _q_sub_ceiling = max(128, (_outer_q // 4) // 128 * 128)
-          _d = 128
-          q_sub_cfg = 128
-          while _d <= _outer_q:
-            if _outer_q % _d == 0:
-              if _d <= _q_sub_ceiling:
-                q_sub_cfg = _d
-              else:
-                break
-            _d += 128
+          # Shared with the tile search (attention_kernel_registry), so the
+          # search knows exactly what an unset block_q_sub resolves to.
+          q_sub_cfg = attention_kernel_registry.auto_block_q_sub(_outer_q)
         if _outer_q % q_sub_cfg:
           raise ValueError(f"block_q_outer ({_outer_q}) must be a multiple of block_q_sub ({q_sub_cfg}).")
         bsizes_whole = custom_splash._BlockSizes(  # pylint: disable=protected-access
@@ -4244,21 +4238,9 @@ class FlaxWanAttention(nnx.Module):
     self.is_self_attention = is_self_attention
     self.eps = eps
 
-    cross_attention_remapped_to_flash = not is_self_attention and attention_kernel in (
-        "tokamax_ring",
-        "tokamax_ring_custom",
-        "ulysses_ring",
-        "ulysses_ring_custom",
-        "ulysses_ring_custom_fixed_m",
-        "ulysses_ring_custom_fixed_m_per_q_block",
-        "ulysses_ring_custom_bidir",
-        "ulysses_ring_custom_iperm",
-        "ulysses_ring_custom_iperm_fixed_m",
-        "ulysses_ring_custom_iperm_fixed_m_nocond",
-        "ulysses_ring_custom_iperm_fixed_m_hybrid",
-        "ulysses_custom",
-        "ulysses_custom_fixed_m",
-        "ulysses_custom_fixed_m_per_q_block",
+    cross_attention_remapped_to_flash = (
+        not is_self_attention
+        and attention_kernel in attention_kernel_registry.CROSS_ATTENTION_REMAPPED_TO_FLASH_KERNELS
     )
     cross_attention_uses_local_kv = not is_self_attention and (
         cross_attention_remapped_to_flash or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te")

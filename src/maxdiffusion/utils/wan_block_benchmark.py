@@ -66,6 +66,7 @@ from maxdiffusion.utils.tile_size_grid_search import (
     BenchResult,
     BlockBenchmark,
     grid_search,
+    local_tiled_seq_len,
     time_callable,
 )
 
@@ -73,20 +74,6 @@ from maxdiffusion.utils.tile_size_grid_search import (
 _IN_CHANNELS = 16
 _VAE_T, _VAE_S = 4, 8  # VAE temporal / spatial compression
 _PATCH_T, _PATCH_H, _PATCH_W = 1, 2, 2
-_RING_VARIANTS = {
-    "ulysses_ring",
-    "ulysses_ring_custom",
-    "ulysses_ring_custom_fixed_m",
-    "ulysses_ring_custom_fixed_m_per_q_block",
-    "ulysses_ring_custom_bidir",
-    "ulysses_ring_custom_iperm",
-    "ulysses_ring_custom_iperm_fixed_m",
-    "ulysses_ring_custom_iperm_fixed_m_nocond",
-    "ulysses_ring_custom_iperm_fixed_m_hybrid",
-    "tokamax_ring",
-    "tokamax_ring_custom",
-    "ring",
-}
 
 
 def latent_seq_len(num_frames: int, height: int, width: int) -> int:
@@ -99,13 +86,11 @@ def latent_seq_len(num_frames: int, height: int, width: int) -> int:
 def tiled_seq_len(full_seq: int, attention: str, context_shards: int, ulysses_shards: int) -> int:
   """Per-shard sequence the kernel actually TILES (what the bq/bkv candidate math runs on).
 
-  Ring shards the sequence, so each ring step tiles full_seq / R (R = CP / U).  Pure ulysses
-  gathers the full sequence per device (heads sharded), and non-CP flash sees the full seq.
+  Delegates to the shared `local_tiled_seq_len` (kernel families come from
+  attention_kernel_registry), so the WAN and LTX2 benches and production agree:
+  ceil(full / CP) per context shard, times U for Ulysses x ring kernels.
   """
-  if attention in _RING_VARIANTS and ulysses_shards >= 1 and context_shards >= 1:
-    ring_shards = max(1, context_shards // max(1, ulysses_shards))
-    return full_seq // ring_shards
-  return full_seq
+  return local_tiled_seq_len(full_seq, attention, context_shards, ulysses_shards)
 
 
 @nnx.jit
