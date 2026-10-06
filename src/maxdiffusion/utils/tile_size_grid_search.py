@@ -25,10 +25,12 @@ Two hardware granularities drive the candidate math (do NOT conflate them):
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Optional, Sequence
 import csv
 import os
+import re
 import sys
 import jax
 import numpy as np
@@ -388,6 +390,7 @@ _IPERM_OUTER_SLACK_BYTES = 3 * 1024 * 1024
 
 # Planner knobs (see `iperm_candidates`).
 IPERM_MAX_CANDIDATES = 30
+IPERM_FALLBACK_MAX_CANDIDATES = 12  # grid_search's runtime block_q_outer round (failure path only)
 IPERM_SAFE_FRACTION = 0.85  # the "safe" anchor leaves >= 15% VMEM headroom
 IPERM_MAX_PAD_FRACTION = 0.04  # resident lengths considered: up to 4% over q_seq
 IPERM_RESIDENT_TOP_K = 3  # best-scoring resident lengths kept from that sweep
@@ -646,12 +649,8 @@ def iperm_candidates(
   ladder_bqs = [bq for bq in ladder_bqs if bq >= VPU_LANE and bq % VPU_LANE == 0]
 
   def outer_candidates() -> list[TileCandidate]:
-    return _iperm_outer_candidates(
-        q_seq,
-        budget=budget,
-        max_candidates=max_candidates,
-        ladder_bqs=ladder_bqs,
-        bkvs=(*anchor_bkvs, min(512, kv_cap)),
+    return iperm_outer_candidates(
+        q_seq, kv_seq, vmem_bytes=vmem_bytes, margin=margin, max_candidates=max_candidates, ladder_bqs=ladder_bqs
     )
 
   if not iperm_structural_check(q_seq, vmem_bytes=vmem_bytes, margin=margin).fits_resident:
@@ -739,6 +738,29 @@ def iperm_candidates(
     # also measure the block_q_outer path, which may well be faster.
     out += outer_candidates()
   return out
+
+
+def iperm_outer_candidates(
+    q_seq: int,
+    kv_seq: int,
+    *,
+    vmem_bytes: int,
+    margin: float = IPERM_VMEM_MARGIN,
+    max_candidates: int = IPERM_MAX_CANDIDATES,
+    ladder_bqs: Sequence[int] = (),
+) -> list[TileCandidate]:
+  """The block_q_outer < R candidates: what `iperm_candidates` proposes when no resident
+  block fits (well), and what `grid_search` falls back to when every resident candidate
+  ran out of memory at run time although the model predicted it fits."""
+  kv_cap = _ceil_to(kv_seq, VPU_LANE)
+  anchor_bkvs = sorted({min(b, kv_cap) for b in IPERM_BKV_ANCHORS})
+  return _iperm_outer_candidates(
+      q_seq,
+      budget=margin * vmem_bytes,
+      max_candidates=max_candidates,
+      ladder_bqs=[bq for bq in ladder_bqs if bq >= VPU_LANE and bq % VPU_LANE == 0],
+      bkvs=(*anchor_bkvs, min(512, kv_cap)),
+  )
 
 
 def _iperm_outer_candidates(
@@ -875,6 +897,45 @@ CSV_FIELDS = (
 )
 
 
+# --------------------------------------------------------------------------------
+# Failure classification, shared by every bench
+# --------------------------------------------------------------------------------
+# "oom" only when the compiler/runtime reports memory exhaustion: XLA's RESOURCE_EXHAUSTED
+# (every over-budget candidate in the iperm sweeps failed with "RESOURCE_EXHAUSTED: XLA:TPU
+# compile permanent error. Ran out of memory in memory space vmem. Used 97.63M of 64.00M
+# vmem.") or an explicit out-of-memory / exceeded-VMEM text. Everything else -- including
+# Mosaic lowering and verification failures, which the benches used to file under OOM -- is
+# an "error": it says nothing about whether a smaller tile would fit.
+_OOM_RE = re.compile(r"RESOURCE_EXHAUSTED|out of memory|exceed\w*\s+(?:the\s+)?(?:scoped\s+)?vmem", re.IGNORECASE)
+_VMEM_USED_RE = re.compile(r"Used ([0-9.]+)([KMG]) of ([0-9.]+)([KMG]) vmem")
+_UNIT_BYTES = {"K": 1024, "M": 1024**2, "G": 1024**3}
+FAILURE_DETAIL_CHARS = 300
+
+
+def classify_failure(message: str) -> str:
+  """'oom' if `message` reports memory exhaustion, else 'error' (see above)."""
+  return "oom" if _OOM_RE.search(str(message)) else "error"
+
+
+def failure_result(bq: int, bkv: int, bkv_compute: int, exc: BaseException) -> BenchResult:
+  """The result a bench returns for a candidate that raised: classified, on one line, with
+  the compiler's measured VMEM usage kept even if it falls past the truncation."""
+  msg = f"{type(exc).__name__}: {' '.join(str(exc).split())}"
+  detail = msg[:FAILURE_DETAIL_CHARS]
+  used = _VMEM_USED_RE.search(msg)
+  if used and used.end() > FAILURE_DETAIL_CHARS:
+    detail += f" ... {used.group(0)}"
+  return BenchResult(bq, bkv, bkv_compute, classify_failure(msg), detail=detail)
+
+
+def measured_vmem_bytes(detail: str) -> Optional[tuple[float, float]]:
+  """(used, capacity) bytes from an XLA VMEM OOM message ("Used 97.63M of 64.00M vmem")."""
+  m = _VMEM_USED_RE.search(detail or "")
+  if not m:
+    return None
+  return float(m.group(1)) * _UNIT_BYTES[m.group(2)], float(m.group(3)) * _UNIT_BYTES[m.group(4)]
+
+
 def time_callable(fn, *, iters: int = 10, warmup: int = 2, sync=lambda x: x):
   """Correct microbenchmark that ALWAYS excludes compilation and warmup from mean_ms.
 
@@ -908,7 +969,8 @@ def time_callable(fn, *, iters: int = 10, warmup: int = 2, sync=lambda x: x):
 class BlockBenchmark:
   """Interface a model implements so the grid search can drive it.  `run` must build (or
   reuse) a single-block model with the given block sizes, execute a forward `warmup`+`iters`
-  times, and return timings.  Catch out-of-VMEM and return status="oom" (don't raise).
+  times, and return timings.  Catch failures and return `failure_result(...)` (don't raise):
+  it classifies genuine memory exhaustion as status="oom" and anything else as "error".
   """
 
   label: str = "block"
@@ -974,6 +1036,8 @@ class SearchResult:
   structure: Optional[IpermStructure] = None
   candidates: list[TileCandidate] = field(default_factory=list)
   csv_path: Optional[str] = None
+  # How many of `candidates` were grid_search's runtime block_q_outer fallback round.
+  outer_fallback: int = 0
 
   def ranked(self) -> list[BenchResult]:
     """Successful results, best (the broadcast winner) first, then by proxy time."""
@@ -1167,13 +1231,20 @@ def plan_candidates(
 
 
 def _run_candidate(bench: BlockBenchmark, cand: TileCandidate, *, iters: int, warmup: int) -> BenchResult:
-  """Runs one candidate; the knobs it does not set are not passed (benches may not take them)."""
+  """Runs one candidate; the knobs it does not set are not passed (benches may not take them).
+
+  A bench that raises instead of returning a failure is caught here too: one bad candidate
+  must not abort the search (or, multi-host, leave the other hosts waiting at a sync point).
+  """
   extra = {}
   if cand.block_q_sub is not None:
     extra["block_q_sub"] = cand.block_q_sub
   if cand.block_q_outer is not None:
     extra["block_q_outer"] = cand.block_q_outer
-  r = bench.run(cand.bq, cand.bkv, bkv_compute=cand.bkv_compute, iters=iters, warmup=warmup, **extra)
+  try:
+    r = bench.run(cand.bq, cand.bkv, bkv_compute=cand.bkv_compute, iters=iters, warmup=warmup, **extra)
+  except Exception as e:  # pylint: disable=broad-except
+    r = failure_result(cand.bq, cand.bkv, cand.bkv_compute, e)
   return replace(
       r,
       block_q_sub=cand.block_q_sub,
@@ -1182,6 +1253,71 @@ def _run_candidate(bench: BlockBenchmark, cand: TileCandidate, *, iters: int, wa
       pred_vmem_bytes=cand.pred_vmem_bytes,
       tag=cand.tag,
   )
+
+
+def _run_candidates(
+    bench: BlockBenchmark,
+    cands: Sequence[TileCandidate],
+    *,
+    iters: int,
+    warmup: int,
+    log,
+    first_index: int = 1,
+    total: Optional[int] = None,
+) -> list[BenchResult]:
+  total = total or len(cands)
+  vmem = bench.vmem_bytes()
+  results: list[BenchResult] = []
+  for i, cand in enumerate(cands, first_index):
+    if jax.process_count() > 1:
+      multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_start")
+    r = _run_candidate(bench, cand, iters=iters, warmup=warmup)
+    if jax.process_count() > 1:
+      multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_complete")
+      r = _aggregate_process_result(r)
+    results.append(r)
+    tag = "" if cand.bq % MXU_TILE == 0 and cand.bkv % MXU_TILE == 0 else " [½MXU]"
+    if cand.pred_vmem_bytes is not None:
+      tag += f" [{cand.tag}, pred {cand.pred_vmem_bytes / vmem:.0%} VMEM]"
+    compile_note = f"  (compile {r.compile_ms/1e3:.0f}s, excluded)" if r.compile_ms else ""
+    log(
+        f"  [{i}/{total}] {r.describe()}{tag}: "
+        + (f"{r.mean_ms:.2f}ms{compile_note}" if r.status == "ok" else f"{r.status} {r.detail}".rstrip())
+    )
+  return results
+
+
+def outer_fallback_candidates(
+    q_seq: int,
+    kv_seq: int,
+    *,
+    vmem_bytes: int,
+    structure: Optional[IpermStructure],
+    cands: Sequence[TileCandidate],
+    results: Sequence[BenchResult],
+) -> list[TileCandidate]:
+  """grid_search's runtime block_q_outer round (requirement 2), else [].
+
+  Runs only for a resident-Q iperm search in which nothing succeeded and at least one
+  candidate ran out of memory although the model predicted it fits: the model under-predicts
+  this shape, and splitting the shard (block_q_outer < R) is the remaining lever. Not when
+  every failure was a non-memory error (a smaller block would not fix a kernel bug), when the
+  first round already measured block_q_outer, or when not even that is predicted to fit.
+  """
+  if structure is None or not structure.fits_outer:
+    return []
+  if any(r.status == "ok" for r in results) or not any(r.status == "oom" for r in results):
+    return []
+  if any(c.block_q_outer is not None for c in cands):
+    return []
+  fallback = iperm_outer_candidates(
+      q_seq,
+      kv_seq,
+      vmem_bytes=vmem_bytes,
+      max_candidates=IPERM_FALLBACK_MAX_CANDIDATES,
+      ladder_bqs=sorted({c.bq for c in cands}),
+  )
+  return [replace(c, tag="outer-fallback") for c in fallback]
 
 
 def grid_search(
@@ -1198,6 +1334,9 @@ def grid_search(
 ) -> SearchResult:
   """Run the tile-size grid on `bench`, write CSV to `out_dir` (or pretty-print), return the
   winner (lowest mean_ms among status=='ok').  `mode`: 'smart' (candidate ladders) | 'full'.
+
+  A resident-Q iperm search in which every candidate failed and some ran out of memory gets
+  one more round of block_q_outer candidates (`outer_fallback_candidates`) before giving up.
   """
   q_seq, kv_seq = bench.tiled_seq_lens()
   cands, structure, family = plan_candidates(bench, mode=mode, k=k, step=step, max_configs=max_configs, log=log)
@@ -1209,29 +1348,33 @@ def grid_search(
       f"[tile-search] {bench.label}: q_seq={q_seq} kv_seq={kv_seq} mode={mode} "
       f"family={family} -> {len(cands)} configs (iters={iters})"
   )
-  results: list[BenchResult] = []
-  for i, cand in enumerate(cands, 1):
-    if jax.process_count() > 1:
-      multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_start")
-    r = _run_candidate(bench, cand, iters=iters, warmup=warmup)
-    if jax.process_count() > 1:
-      multihost_utils.sync_global_devices(f"tile_search_candidate_{i}_complete")
-      r = _aggregate_process_result(r)
-    results.append(r)
-    tag = "" if cand.bq % MXU_TILE == 0 and cand.bkv % MXU_TILE == 0 else " [½MXU]"
-    if cand.pred_vmem_bytes is not None:
-      tag += f" [{cand.tag}, pred {cand.pred_vmem_bytes / vmem:.0%} VMEM]"
-    compile_note = f"  (compile {r.compile_ms/1e3:.0f}s, excluded)" if r.compile_ms else ""
+  results = _run_candidates(bench, cands, iters=iters, warmup=warmup, log=log)
+  fallback = outer_fallback_candidates(q_seq, kv_seq, vmem_bytes=vmem, structure=structure, cands=cands, results=results)
+  if fallback:
+    counts = Counter(r.status for r in results)
     log(
-        f"  [{i}/{len(cands)}] {r.describe()}{tag}: "
-        + (f"{r.mean_ms:.2f}ms{compile_note}" if r.status == "ok" else f"{r.status} {r.detail}".rstrip())
+        f"[tile-search] {bench.label}: no resident-Q candidate ran ({counts['oom']} OOM, "
+        f"{counts['error']} error) -- falling back to {len(fallback)} block_q_outer candidates"
     )
+    total = len(cands) + len(fallback)
+    results += _run_candidates(bench, fallback, iters=iters, warmup=warmup, log=log, first_index=len(cands) + 1, total=total)
+    cands = [*cands, *fallback]
 
   ok = [r for r in results if r.status == "ok" and r.mean_ms is not None]
   best = min(ok, key=lambda r: r.mean_ms) if ok and jax.process_index() == 0 else None
   best = _broadcast_winner(best, results)
   csv_path = _emit(results, best, q_seq, kv_seq, mode, out_dir, log)
-  return SearchResult(best, results, q_seq, kv_seq, mode, structure=structure, candidates=cands, csv_path=csv_path)
+  return SearchResult(
+      best,
+      results,
+      q_seq,
+      kv_seq,
+      mode,
+      structure=structure,
+      candidates=cands,
+      csv_path=csv_path,
+      outer_fallback=len(fallback),
+  )
 
 
 def _emit(results, best, q_seq, kv_seq, mode, out_dir, log) -> Optional[str]:
@@ -1346,6 +1489,74 @@ def format_using_line(cand: Mapping[str, Any]) -> str:
   )
 
 
+class TileSearchError(RuntimeError):
+  """Tile search was requested but found no configuration that runs (see explain_failure)."""
+
+
+def _detail_sentence(r: BenchResult) -> str:
+  detail = (r.detail or "(no detail)").rstrip()
+  return detail if detail.endswith((".", "!", "?")) else detail + "."
+
+
+def explain_failure(result: SearchResult, *, vmem_bytes: int) -> str:
+  """Why `result` has no working candidate, as specifically as its results allow: the
+  structural verdict, a VMEM-model under-prediction (with the compiler's measured usage
+  next to the model's prediction), or failures that are not about memory at all."""
+  mib = 1024 * 1024
+  structure = result.structure
+  where = f"q_seq={result.q_seq} kv_seq={result.kv_seq} at {vmem_bytes / mib:.0f} MiB VMEM"
+  if not result.results:
+    if structure is not None and not structure.fits_outer:
+      return f"Structural: {structure.message}"
+    return f"No candidates were generated for {where}." + (f" {structure.message}" if structure is not None else "")
+  ooms = [r for r in result.results if r.status == "oom"]
+  errors = [r for r in result.results if r.status not in ("ok", "oom")]
+  parts = [f"All {len(result.results)} candidates failed for {where} ({len(ooms)} OOM, {len(errors)} non-memory error)."]
+  if not ooms:
+    first = errors[0]
+    parts.append(
+        "None ran out of memory, so this is a kernel / lowering problem, not a tile-size one. "
+        f"First error ({first.describe()}): {_detail_sentence(first)}"
+    )
+  elif structure is not None:
+    predicted = [r for r in ooms if r.pred_vmem_bytes is not None]
+    if predicted:
+      lightest = min(predicted, key=lambda r: r.pred_vmem_bytes)
+      measured = measured_vmem_bytes(lightest.detail)
+      used = f"the compiler reported {measured[0] / mib:.1f} MiB" if measured else "it still ran out of memory"
+      parts.append(
+          f"The iperm VMEM model predicted each of them fits within {IPERM_VMEM_MARGIN:.0%} of VMEM, so it "
+          f"under-predicts this shape: e.g. {lightest.describe()} was predicted {lightest.pred_vmem_bytes / mib:.1f} MiB "
+          f"but {used}."
+      )
+    if result.outer_fallback:
+      parts.append(f"The block_q_outer fallback ({result.outer_fallback} candidates) failed too.")
+    elif not any(c.block_q_outer is not None for c in result.candidates):
+      parts.append("No block_q_outer candidate is predicted to fit either.")
+    parts.append(
+        "Recalibrate iperm_vmem_bytes from these measurements, or raise tile_search_vmem_limit_bytes "
+        "if the chip has the headroom."
+    )
+  else:
+    smallest = min(ooms, key=lambda r: r.bq * r.bkv)
+    parts.append(
+        "The (block_q, block_kv) ladders' VMEM ceilings (_VMEM_FIT / _MEASURED_BKV_CEILING) are too "
+        f"optimistic for this kernel: even {smallest.describe()} ran out of memory."
+    )
+  if ooms and errors:
+    parts.append(f"First non-memory error ({errors[0].describe()}): {_detail_sentence(errors[0])}")
+  parts.append(
+      f"Per-candidate results: {result.csv_path}." if result.csv_path else "Per-candidate results are logged above."
+  )
+  return " ".join(parts)
+
+
+def _truthy(value) -> bool:
+  if isinstance(value, str):
+    return value.strip().lower() in ("true", "1", "yes")
+  return bool(value)
+
+
 def tune_block_sizes(
     config,
     bench: BlockBenchmark,
@@ -1357,6 +1568,11 @@ def tune_block_sizes(
   tile_search_* settings, apply the best candidate to `config.flash_block_sizes`, print the
   parseable `using` line, and return the proxy-ranked successful candidates, best first
   (dicts as in `BenchResult.as_candidate`).
+
+  If no candidate runs, tuning was asked for and silently running the untuned configuration
+  is not an answer: raises TileSearchError with `explain_failure`'s diagnosis. With
+  `tile_search_fail_open: True` it logs that diagnosis instead, keeps the configured
+  flash_block_sizes, and returns [].
   """
   keys = config.get_keys()
   result = grid_search(
@@ -1368,8 +1584,18 @@ def tune_block_sizes(
   )
   ranked = result.ranked_candidates()
   if not ranked:
-    log("[tile-search] no config succeeded; keeping configured flash_block_sizes")
-    return ranked
+    vmem = vmem_limit_bytes if vmem_limit_bytes is not None else bench.vmem_bytes()
+    reason = explain_failure(result, vmem_bytes=vmem)
+    if _truthy(keys.get("tile_search_fail_open", False)):
+      log(
+          f"[tile-search] FAILED: {reason} tile_search_fail_open is set, so continuing with the "
+          "configured flash_block_sizes."
+      )
+      return []
+    raise TileSearchError(
+        f"[tile-search] no candidate ran. {reason} To run the configured flash_block_sizes anyway, "
+        "set tile_search_fail_open: True."
+    )
   apply_candidate_to_config(config, ranked[0], vmem_limit_bytes=vmem_limit_bytes)
   log(format_using_line(ranked[0]))
   return ranked

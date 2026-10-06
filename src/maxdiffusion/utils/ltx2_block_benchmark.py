@@ -53,6 +53,7 @@ from maxdiffusion.utils.tile_size_grid_search import (
     BenchResult,
     BlockBenchmark,
     candidate_flash_block_sizes,
+    failure_result,
     grid_search,
     local_tiled_seq_len,
     resolve_block_sizes,
@@ -209,13 +210,11 @@ class LTX2BlockBenchmark(BlockBenchmark):
           times_ms=times,
           compile_ms=compile_ms,
       )
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
       import traceback
 
       traceback.print_exc()
-      msg = str(e)
-      oom = any(t in msg for t in ("RESOURCE_EXHAUSTED", "out of memory", "Mosaic", "VMEM"))
-      return BenchResult(bq, bkv, cmp, "oom" if oom else "error", detail=msg[:200])
+      return failure_result(bq, bkv, cmp, e)
 
   def _flash_block_sizes(self, bq, bkv, cmp, *, block_q_sub=None, block_q_outer=None):
     cand = {

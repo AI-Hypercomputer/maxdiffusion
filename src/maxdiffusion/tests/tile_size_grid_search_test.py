@@ -21,22 +21,30 @@ import numpy as np
 from maxdiffusion.utils.tile_size_grid_search import (
     MXU_TILE,
     VPU_LANE,
+    FAILURE_DETAIL_CHARS,
+    IPERM_FALLBACK_MAX_CANDIDATES,
     IPERM_VMEM_MARGIN,
     _aggregate_process_measurements,
     BenchResult,
     BlockBenchmark,
+    TileSearchError,
     auto_block_q_sub,
     bkv_candidates,
     bq_candidates,
+    classify_failure,
+    failure_result,
     grid_search,
     iperm_candidates,
     iperm_outer_vmem_bytes,
     iperm_structural_check,
     iperm_vmem_bytes,
     local_tiled_seq_len,
+    measured_vmem_bytes,
+    outer_fallback_candidates,
     padding_of,
     smart_grid,
     time_callable,
+    tune_block_sizes,
     vmem_bkv_ceiling,
 )
 
@@ -539,7 +547,6 @@ class BlockSizePropagationTest(unittest.TestCase):
 
   def test_tune_block_sizes_applies_winner_and_logs_one_using_line(self):
     import re
-    from maxdiffusion.utils.tile_size_grid_search import tune_block_sizes
 
     cfg = _FakeConfig(
         attention=IPERM_HYBRID,
@@ -574,6 +581,213 @@ class BlockSizePropagationTest(unittest.TestCase):
     self.assertEqual(tile_search_vmem_limit_bytes(_FakeConfig(flash_block_sizes={"vmem_limit_bytes": 5})), 5)
     cfg = _FakeConfig(flash_block_sizes={"vmem_limit_bytes": 5}, tile_search_vmem_limit_bytes=7)
     self.assertEqual(tile_search_vmem_limit_bytes(cfg), 7)
+
+
+# The message every over-budget candidate in the iperm sweeps failed with.
+_XLA_VMEM_OOM = (
+    "RESOURCE_EXHAUSTED: XLA:TPU compile permanent error. Ran out of memory in memory space vmem. "
+    "Used 98.04M of 64.00M vmem. Exceeded vmem capacity by 34.04M."
+)
+_MOSAIC_ERROR = "Mosaic failed to compile TPU kernel: unsupported VMEM layout for tpu.matmul"
+
+
+class _XlaRuntimeError(RuntimeError):
+  """Stands in for jax.errors.JaxRuntimeError."""
+
+
+class _FailingIpermBench(_MockIpermBench):
+  """_MockIpermBench whose resident-Q candidates raise `resident_exc` and whose block_q_outer
+  candidates raise `outer_exc` (None: they run)."""
+
+  def __init__(self, resident_exc, outer_exc=None, **kwargs):
+    super().__init__(**kwargs)
+    self.resident_exc, self.outer_exc = resident_exc, outer_exc
+
+  def run(self, bq, bkv, *, block_q_outer=None, **kwargs):
+    result = super().run(bq, bkv, block_q_outer=block_q_outer, **kwargs)  # records the call
+    exc = self.resident_exc if block_q_outer is None else self.outer_exc
+    if exc is not None:
+      raise exc
+    return result
+
+
+class _RaisingRingBench(_MockRingBench):
+
+  def run(self, bq, bkv, **kwargs):
+    raise ValueError("block_kv must divide the padded kv length")
+
+
+class FailureHandlingTest(unittest.TestCase):
+  """OOM vs error classification, the runtime block_q_outer fallback, and failing loudly."""
+
+  def _cfg(self, **keys):
+    base = {"attention": IPERM_HYBRID, "flash_block_sizes": {"heads_per_tile": 1}, "tile_search_iters": 1}
+    return _FakeConfig(**{**base, **keys})
+
+  def test_only_memory_exhaustion_is_oom(self):
+    self.assertEqual(classify_failure("JaxRuntimeError: " + _XLA_VMEM_OOM), "oom")
+    self.assertEqual(classify_failure("Scoped allocation of 70.1M exceeded scoped vmem limit by 6.1M"), "oom")
+    self.assertEqual(classify_failure("out of memory allocating 2.0G"), "oom")
+    # Mosaic lowering / verification errors mention Mosaic and VMEM but are not about size:
+    # the old benches filed them under OOM, which would send the search after smaller tiles.
+    for msg in (_MOSAIC_ERROR, "INTERNAL: Mosaic: failed to legalize 'tpu.memref_slice' (vmem)", "ValueError: bad"):
+      with self.subTest(msg=msg):
+        self.assertEqual(classify_failure(msg), "error")
+
+  def test_failure_result_is_one_line_and_keeps_measured_vmem(self):
+    exc = _XlaRuntimeError(_XLA_VMEM_OOM + "\n\nLargest program allocations in vmem:\n" + "  alloc\n" * 200)
+    r = failure_result(7040, 1024, 1024, exc)
+    self.assertEqual(r.status, "oom")
+    self.assertNotIn("\n", r.detail)
+    self.assertTrue(r.detail.startswith("_XlaRuntimeError: RESOURCE_EXHAUSTED"))
+    self.assertLessEqual(len(r.detail), FAILURE_DETAIL_CHARS)
+    used, capacity = measured_vmem_bytes(r.detail)
+    self.assertAlmostEqual(used / MIB, 98.04)
+    self.assertAlmostEqual(capacity / MIB, 64.0)
+    late = failure_result(1, 1, 1, RuntimeError("RESOURCE_EXHAUSTED: " + "x" * 400 + " Used 70.50M of 64.00M vmem."))
+    self.assertAlmostEqual(measured_vmem_bytes(late.detail)[0] / MIB, 70.5)
+    self.assertIsNone(measured_vmem_bytes(_MOSAIC_ERROR))
+
+  def test_model_benches_use_the_shared_classifier(self):
+    import contextlib
+    from unittest import mock
+    from maxdiffusion.utils.ltx2_block_benchmark import LTX2BlockBenchmark
+    from maxdiffusion.utils.wan_block_benchmark import WanBlockBenchmark
+
+    for bench_cls in (WanBlockBenchmark, LTX2BlockBenchmark):
+      for message, status in ((_MOSAIC_ERROR, "error"), (_XLA_VMEM_OOM, "oom")):
+        with self.subTest(bench=bench_cls.__name__, status=status):
+          bench = object.__new__(bench_cls)
+          bench._mesh = contextlib.nullcontext()
+          bench._build_model = mock.Mock(side_effect=_XlaRuntimeError(message))
+          with mock.patch("traceback.print_exc"):
+            r = bench.run(7040, 1024, block_q_sub=3520)
+          self.assertEqual((r.bq, r.bkv, r.status), (7040, 1024, status))
+          self.assertIn(message[:40], r.detail)
+
+  def test_a_raising_bench_does_not_abort_the_search(self):
+    res = grid_search(_RaisingRingBench(), mode="smart", iters=1, log=_quiet)
+    self.assertIsNone(res.best)
+    self.assertTrue(res.results)
+    self.assertTrue(all(r.status == "error" and "ValueError" in r.detail for r in res.results))
+    self.assertEqual(res.outer_fallback, 0)
+
+  def test_resident_oom_falls_back_to_block_q_outer(self):
+    # Requirement 2 at run time: the model said the resident block fits, the compiler disagreed.
+    bench = _FailingIpermBench(_XlaRuntimeError(_XLA_VMEM_OOM))
+    lines = []
+    res = grid_search(bench, mode="smart", iters=1, log=lines.append)
+    self.assertTrue(res.structure.fits_resident)
+    first = res.candidates[: len(res.candidates) - res.outer_fallback]
+    fallback = res.candidates[len(first) :]
+    self.assertTrue(first and all(c.block_q_outer is None for c in first))
+    self.assertTrue(0 < len(fallback) <= IPERM_FALLBACK_MAX_CANDIDATES)
+    budget = IPERM_VMEM_MARGIN * VMEM_64MB
+    for c in fallback:
+      self.assertEqual(c.tag, "outer-fallback")
+      self.assertLessEqual(iperm_outer_vmem_bytes(c.block_q_outer, c.block_q_sub, c.bkv), budget)
+    self.assertTrue({(c.bq, c.bkv, c.bkv_compute, c.block_q_sub, c.block_q_outer) for c in fallback} <= set(bench.calls))
+    self.assertEqual([r.status for r in res.results[: len(first)]], ["oom"] * len(first))
+    self.assertIsNotNone(res.best)
+    self.assertIsNotNone(res.best.block_q_outer)
+    self.assertEqual(res.best.tag, "outer-fallback")
+    self.assertIsNotNone(res.ranked_candidates()[0]["block_q_outer"])
+    self.assertEqual(sum("falling back to" in line for line in lines), 1)
+    total = len(res.candidates)
+    self.assertTrue(any(line.startswith(f"  [{total}/{total}] ") for line in lines))
+
+  def test_fallback_winner_reaches_production(self):
+    cfg = self._cfg()
+    ranked = tune_block_sizes(
+        cfg, _FailingIpermBench(_XlaRuntimeError(_XLA_VMEM_OOM)), vmem_limit_bytes=VMEM_64MB, log=_quiet
+    )
+    self.assertIsNotNone(ranked[0]["block_q_outer"])
+    self.assertEqual(cfg.flash_block_sizes["block_q_outer"], ranked[0]["block_q_outer"])
+    self.assertEqual(cfg.flash_block_sizes["block_q_sub"], ranked[0]["block_q_sub"])
+
+  def test_no_fallback_for_non_memory_errors(self):
+    bench = _FailingIpermBench(_XlaRuntimeError(_MOSAIC_ERROR))
+    res = grid_search(bench, mode="smart", iters=1, log=_quiet)
+    self.assertEqual(res.outer_fallback, 0)
+    self.assertTrue(all(r.status == "error" for r in res.results))
+    self.assertTrue(all(call[4] is None for call in bench.calls))
+
+  def test_fallback_only_when_nothing_ran_and_something_ooms(self):
+    from dataclasses import replace
+
+    q_seq = 27900
+    structure = iperm_structural_check(q_seq, vmem_bytes=VMEM_64MB)
+    cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+    oom = [BenchResult(c.bq, c.bkv, c.bkv_compute, "oom") for c in cands]
+
+    def fallback(results, structure=structure, cands=cands, q=q_seq):
+      return outer_fallback_candidates(q, q, vmem_bytes=VMEM_64MB, structure=structure, cands=cands, results=results)
+
+    self.assertTrue(fallback(oom))
+    self.assertEqual(fallback([replace(oom[0], status="ok", mean_ms=1.0)] + oom[1:]), [])
+    self.assertEqual(fallback([replace(r, status="error") for r in oom]), [])
+    self.assertEqual(fallback(oom, structure=None), [])  # not a resident-Q iperm search
+    # The first round already measured block_q_outer (no resident fit): nothing left to try.
+    big = 70000
+    outer_round = iperm_candidates(big, big, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(big))
+    big_oom = [BenchResult(c.bq, c.bkv, c.bkv_compute, "oom") for c in outer_round]
+    big_structure = iperm_structural_check(big, vmem_bytes=VMEM_64MB)
+    self.assertEqual(fallback(big_oom, structure=big_structure, cands=outer_round, q=big), [])
+
+  def test_all_oom_raises_with_model_underprediction(self):
+    cfg = self._cfg()
+    oom = _XlaRuntimeError(_XLA_VMEM_OOM)
+    with self.assertRaises(TileSearchError) as ctx:
+      tune_block_sizes(cfg, _FailingIpermBench(oom, outer_exc=oom), vmem_limit_bytes=VMEM_64MB, log=_quiet)
+    msg = str(ctx.exception)
+    self.assertIsInstance(ctx.exception, RuntimeError)
+    self.assertIn("under-predicts", msg)
+    self.assertIn("the compiler reported 98.0 MiB", msg)  # measured, next to the prediction
+    self.assertIn("block_q_outer fallback", msg)
+    self.assertIn("tile_search_fail_open", msg)
+    self.assertEqual(cfg.flash_block_sizes, {"heads_per_tile": 1})  # nothing applied
+
+  def test_all_errors_raise_as_a_kernel_problem(self):
+    cfg = self._cfg()
+    with self.assertRaises(TileSearchError) as ctx:
+      tune_block_sizes(cfg, _FailingIpermBench(_XlaRuntimeError(_MOSAIC_ERROR)), vmem_limit_bytes=VMEM_64MB, log=_quiet)
+    msg = str(ctx.exception)
+    self.assertIn("not a tile-size one", msg)
+    self.assertIn("unsupported VMEM layout", msg)
+    self.assertNotIn("under-predicts", msg)
+
+  def test_structural_failure_is_reported_without_compiling(self):
+    bench = _MockIpermBench(seq=600000)
+    with self.assertRaises(TileSearchError) as ctx:
+      tune_block_sizes(self._cfg(), bench, vmem_limit_bytes=VMEM_64MB, log=_quiet)
+    self.assertIn("Structural", str(ctx.exception))
+    self.assertIn("ring shards", str(ctx.exception))
+    self.assertEqual(bench.calls, [])
+
+  def test_ladder_oom_blames_the_ladder_ceilings(self):
+    with self.assertRaises(TileSearchError) as ctx:
+      tune_block_sizes(self._cfg(attention="flash"), _MockRingBench(vmem=8 * MIB), log=_quiet)
+    self.assertIn("_MEASURED_BKV_CEILING", str(ctx.exception))
+
+  def test_fail_open_logs_the_diagnosis_and_keeps_the_config(self):
+    for flag in (True, "true", "1"):
+      with self.subTest(flag=flag):
+        cfg = self._cfg(tile_search_fail_open=flag)
+        lines = []
+        bench = _FailingIpermBench(_XlaRuntimeError(_MOSAIC_ERROR))
+        self.assertEqual(tune_block_sizes(cfg, bench, vmem_limit_bytes=VMEM_64MB, log=lines.append), [])
+        failed = [line for line in lines if line.startswith("[tile-search] FAILED: ")]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("not a tile-size one", failed[0])
+        self.assertFalse(any(line.startswith("[tile-search] using ") for line in lines))
+        self.assertEqual(cfg.flash_block_sizes, {"heads_per_tile": 1})
+    with self.assertRaises(TileSearchError):
+      tune_block_sizes(
+          self._cfg(tile_search_fail_open="false"),
+          _FailingIpermBench(_XlaRuntimeError(_MOSAIC_ERROR)),
+          vmem_limit_bytes=VMEM_64MB,
+          log=_quiet,
+      )
 
 
 if __name__ == "__main__":

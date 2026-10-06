@@ -93,63 +93,22 @@ def call_pipeline(config, pipeline, prompt, negative_prompt):
 
 
 def maybe_tune_block_sizes(config):
-  """Tunes and applies the exact block-size fields consumed by production inference."""
+  """Tunes and applies the exact block-size fields consumed by production inference.
+
+  Shares `tune_block_sizes` with WAN: the winner is written into flash_block_sizes and checked
+  against what production resolves; no working candidate raises TileSearchError with a
+  diagnosis unless tile_search_fail_open is set. Returns the proxy-ranked candidates.
+  """
   if not _tile_search_enabled(config):
-    return
-  keys = config.get_keys()
-  from maxdiffusion.utils.tile_size_grid_search import grid_search
+    return []
+  from maxdiffusion.utils.tile_size_grid_search import tile_search_vmem_limit_bytes, tune_block_sizes
   from maxdiffusion.utils.ltx2_block_benchmark import LTX2BlockBenchmark
 
   mesh = jax.sharding.Mesh(max_utils.create_device_mesh(config), config.mesh_axes)
-  vmem_limit_bytes = int(
-      keys.get("tile_search_vmem_limit_bytes") or config.flash_block_sizes.get("vmem_limit_bytes") or 64 * 1024 * 1024
-  )
+  vmem_limit_bytes = tile_search_vmem_limit_bytes(config)
   bench = LTX2BlockBenchmark.from_config(config, mesh, vmem_limit_bytes=vmem_limit_bytes)
   max_logging.log(f"[tile-search] tuning block sizes for {bench.label} before inference...")
-  result = grid_search(
-      bench,
-      mode=keys.get("tile_search_mode", "smart"),
-      iters=keys.get("tile_search_iters", 10),
-      out_dir=(keys.get("tile_search_out", "") or None),
-      log=max_logging.log,
-  )
-  if result.best is None:
-    raise RuntimeError(
-        "[tile-search] tuning was explicitly enabled, but no candidate succeeded. "
-        "Inspect the per-candidate errors instead of running with an untuned configuration."
-    )
-  best = result.best
-  block_q_sub = getattr(best, "block_q_sub", None)
-  block_q_outer = getattr(best, "block_q_outer", None)
-  fbs = max_utils.flash_block_sizes_for_candidate(
-      config.flash_block_sizes,
-      config.attention,
-      best.bq,
-      best.bkv,
-      best.bkv_compute,
-      vmem_limit_bytes=vmem_limit_bytes,
-      block_q_sub=block_q_sub,
-      block_q_outer=block_q_outer,
-  )
-  config.get_keys()["flash_block_sizes"] = fbs
-  effective_block_sizes = max_utils.get_flash_block_sizes(config)
-  if effective_block_sizes is None or effective_block_sizes.block_q != best.bq:
-    effective_bq = None if effective_block_sizes is None else effective_block_sizes.block_q
-    raise RuntimeError(f"[tile-search] selected block_q={best.bq}, but production resolved block_q={effective_bq}.")
-  if "custom" in config.attention and (
-      getattr(effective_block_sizes, "block_q_sub", None),
-      getattr(effective_block_sizes, "block_q_outer", None),
-  ) != (block_q_sub, block_q_outer):
-    raise RuntimeError(
-        f"[tile-search] selected block_q_sub={block_q_sub} block_q_outer={block_q_outer}, but production "
-        "block sizes did not carry them."
-    )
-  max_logging.log(
-      f"[tile-search] using block_q={best.bq} block_kv={best.bkv} block_kv_compute={best.bkv_compute} "
-      f"block_q_sub={'auto' if block_q_sub is None else block_q_sub} "
-      f"block_q_outer={'none' if block_q_outer is None else block_q_outer} "
-      f"(block-bench {best.mean_ms:.2f} ms)"
-  )
+  return tune_block_sizes(config, bench, vmem_limit_bytes=vmem_limit_bytes, log=max_logging.log)
 
 
 def _tile_search_enabled(config) -> bool:

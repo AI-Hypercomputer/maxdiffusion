@@ -229,12 +229,18 @@ flash_block_sizes: {
 # }
 # GroupNorm groups
 # Tile-size auto-tuning. When enable_tile_search: True, generate_wan runs a fast one-DiT-block
-# grid search (maxdiffusion/utils/tile_size_grid_search.py) before inference and overwrites
-# flash_block_sizes' block_q/block_kv/block_kv_compute with the winner. Default off (no-op).
+# grid search (maxdiffusion/utils/tile_size_grid_search.py) before inference and writes the
+# winner into flash_block_sizes: block_q/block_kv/block_kv_compute, block_q_sub/block_q_outer
+# for the internal-permutation kernels, and the VMEM limit it was tuned under. Default off (no-op).
+# If no candidate runs, inference stops with a diagnosis unless tile_search_fail_open: True.
 enable_tile_search: False
 tile_search_mode: 'smart'   # 'smart' (VMEM-capped candidate ladders) | 'full' (2D sweep)
 tile_search_iters: 10
 tile_search_out: ''         # dir for the results CSV; '' -> print only
+tile_search_vmem_limit_bytes: 0  # 0 -> flash_block_sizes.vmem_limit_bytes, else 64 MiB; search + production
+tile_search_fail_open: False     # True: if no candidate runs, log why and keep flash_block_sizes
+tile_search_e2e_top_k: 3         # >=2: e2e-verify the proxy's top-K candidates on the loaded pipeline
+tile_search_e2e_steps: 3         # timed denoise steps per e2e-verified candidate
 
 norm_num_groups: 32
 

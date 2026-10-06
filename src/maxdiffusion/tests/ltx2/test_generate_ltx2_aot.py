@@ -94,6 +94,8 @@ class LTX2AotMetadataTest(unittest.TestCase):
       generate_ltx2.run(config, pipeline=object())
 
   def test_tile_search_forwards_config_and_applies_winner(self):
+    from maxdiffusion.utils import tile_size_grid_search as tsg  # pylint: disable=g-import-not-at-top
+
     keys = {
         "enable_tile_search": True,
         "tile_search_mode": "full",
@@ -107,7 +109,7 @@ class LTX2AotMetadataTest(unittest.TestCase):
         flash_block_sizes={"block_q": 64},
         attention="flash",
     )
-    best = SimpleNamespace(bq=128, bkv=256, bkv_compute=256, mean_ms=1.5)
+    best = tsg.BenchResult(128, 256, 256, "ok", mean_ms=1.5)
     benchmark = SimpleNamespace(label="test-benchmark")
 
     with (
@@ -119,7 +121,7 @@ class LTX2AotMetadataTest(unittest.TestCase):
         ) as benchmark_from_config,
         mock.patch(
             "maxdiffusion.utils.tile_size_grid_search.grid_search",
-            return_value=SimpleNamespace(best=best),
+            return_value=tsg.SearchResult(best, [best], 4096, 4096, "full"),
         ) as grid_search,
         mock.patch.object(
             generate_ltx2.max_utils,
@@ -129,10 +131,10 @@ class LTX2AotMetadataTest(unittest.TestCase):
         mock.patch.object(
             generate_ltx2.max_utils,
             "get_flash_block_sizes",
-            return_value=SimpleNamespace(block_q=128),
+            return_value=SimpleNamespace(block_q=128, block_kv=256),
         ),
     ):
-      generate_ltx2.maybe_tune_block_sizes(config)
+      ranked = generate_ltx2.maybe_tune_block_sizes(config)
 
     grid_search.assert_called_once_with(
         benchmark,
@@ -143,7 +145,7 @@ class LTX2AotMetadataTest(unittest.TestCase):
     )
     benchmark_from_config.assert_called_once_with(config, "mesh", vmem_limit_bytes=123456)
     apply_candidate.assert_called_once_with(
-        config.flash_block_sizes,
+        {"block_q": 64},
         "flash",
         128,
         256,
@@ -153,6 +155,7 @@ class LTX2AotMetadataTest(unittest.TestCase):
         block_q_outer=None,
     )
     self.assertEqual(keys["flash_block_sizes"], {"block_q": 128})
+    self.assertEqual([(c["block_q"], c["block_kv"]) for c in ranked], [(128, 256)])
 
   @mock.patch.object(generate_ltx2.max_logging, "log")
   @mock.patch.object(

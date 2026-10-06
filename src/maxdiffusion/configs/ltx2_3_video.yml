@@ -201,9 +201,11 @@ aot_build_revision: ''
 # Tile-size auto-tuning. When enable_tile_search: True, generate_ltx2 runs a fast one-DiT-block
 # grid search (maxdiffusion/utils/tile_size_grid_search.py) before inference and updates every
 # effective flash_block_sizes field with the winner. Default off (no-op).
+# If no candidate runs, inference stops with a diagnosis unless tile_search_fail_open: True.
 enable_tile_search: False
 tile_search_mode: 'smart'   # 'smart' (VMEM-capped candidate ladders) | 'full' (2D sweep)
 tile_search_iters: 10
 tile_search_out: ''         # dir for the results CSV; '' -> print only
 tile_search_vmem_limit_bytes: 67108864  # 64 MiB; shared by benchmark and production custom kernels
+tile_search_fail_open: False  # True: if no candidate runs, log why and keep flash_block_sizes
 use_kv_cache: False

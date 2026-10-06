@@ -2262,6 +2262,7 @@ def _ulysses_ring_custom_attention(
     #     with zero post-kernel `jnp.moveaxis` relayout copy.
     use_shard_major = (
         eff_out_a2a_mode in ("chunked", "shard_major")
+        and not internal_perm
         and num_ring_shards > 1
         and num_ulysses_shards > 1
         and (query.shape[2] % bq == 0)
@@ -2303,8 +2304,8 @@ def _ulysses_ring_custom_attention(
     # sequence padding. The kernel slices the ragged KV tail using slice lengths
     # derived from actual_kv_seq_len, avoiding sequence pad HBM copies and
     # redundant ppermute/MXU compute on padded keys.
-    kv_pad_size = 1 if actual_kv_seq_len % 8 == 0 else bkv
-    key, _, _ = _pad_data_for_flash(raw_key, kv_heads, kv_pad_size)
+    kv_pad_size = bkv if internal_perm else (1 if actual_kv_seq_len % 8 == 0 else bkv)
+    key, _, key_seq_len = _pad_data_for_flash(raw_key, kv_heads, kv_pad_size)
     value, _, _ = _pad_data_for_flash(raw_value, kv_heads, kv_pad_size)
     ring_kv_seq_len = actual_kv_seq_len
 
@@ -2409,7 +2410,7 @@ def _ulysses_ring_custom_attention(
           # kernel takes. Max over batch and over Q blocks: a single m is pinned
           # for the whole grid, so it must dominate every row it will shift.
           qn_head_sq = qn_dev.max(axis=0) if qn_dev.ndim == 2 else qn_dev.max(axis=(0, 2))
-          mk_head_sq = mk_all_sq.max(axis=(0, 1))
+          mk_head_sq = mk_global_sq_dev.max(axis=0) if mk_global_sq_dev.ndim == 2 else mk_global_sq_dev.max(axis=(0, 1))
           qn_head = jnp.sqrt(qn_head_sq)
           mk_head = jnp.sqrt(mk_head_sq)
           iperm_fixed = jnp.all(qn_head * mk_head <= iperm_bound) & v_ok

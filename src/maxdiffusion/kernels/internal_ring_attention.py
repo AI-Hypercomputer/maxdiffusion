@@ -651,7 +651,7 @@ def make_internal_ring_attention(
   # the FP32 overflow ceiling must be derived from the WHOLE ring's KV length --
   # the same N the caller's eligibility gate uses.
   if use_fixed_m and fixed_m_recenter is None:
-    recenter, _ = custom_splash.get_fixed_m_constants(orig_kv_seq_len * ring_size, is_ring=True)
+    recenter, _ = custom_splash.get_fixed_m_constants(orig_kv_seq_len * ring_size)
   else:
     recenter = fixed_m_recenter
 

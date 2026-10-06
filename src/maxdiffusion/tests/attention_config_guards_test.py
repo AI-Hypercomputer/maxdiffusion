@@ -183,12 +183,11 @@ class KernelClassificationDriftTest(unittest.TestCase):
         f"these ulysses_ring kernels are missing from ULYSSES_RING_ATTENTION_KERNELS and would "
         f"get a mesh-independent tile length: {sorted(missing)}",
     )
-    missing_wbb = registered - wbb._RING_VARIANTS
-    self.assertEqual(
-        missing_wbb,
-        set(),
-        f"these ulysses_ring kernels are missing from wan_block_benchmark._RING_VARIANTS: {sorted(missing_wbb)}",
-    )
+    # wan_block_benchmark used to keep its own copy of this set (_RING_VARIANTS), which
+    # drifted; it now delegates to the shared local_tiled_seq_len and must agree with it.
+    for name in sorted(registered):
+      with self.subTest(attention=name):
+        self.assertEqual(wbb.tiled_seq_len(75600, name, 8, 2), tsgs.local_tiled_seq_len(75600, name, 8, 2))
 
   def test_classified_kernels_scale_with_topology(self):
     from maxdiffusion.utils.tile_size_grid_search import local_tiled_seq_len

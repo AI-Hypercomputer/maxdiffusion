@@ -419,6 +419,10 @@ def maybe_tune_block_sizes(config):
   Returns the proxy-ranked successful candidates, best first (dicts with block_q, block_kv,
   block_kv_compute, block_q_sub, block_q_outer, proxy_ms); [] when tuning is off.
 
+  If no candidate runs this raises TileSearchError explaining why (structural verdict, VMEM
+  model under-prediction, or non-memory errors) instead of silently running the untuned
+  configuration; tile_search_fail_open: True logs that and keeps flash_block_sizes (returns []).
+
   Flags are read defensively so this is a safe no-op (grid search OFF) for any config that
   doesn't declare them -- not every WAN yaml carries the tile_search_* keys."""
   keys = config.get_keys()
