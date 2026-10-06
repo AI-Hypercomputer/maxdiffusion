@@ -313,27 +313,27 @@ class IpermPlannerTest(unittest.TestCase):
           self.assertLessEqual(c.block_q_sub, rows // 2)
 
   def test_anchors_always_present(self):
-    # Requirement 7: the single-tile block_q and block_kv 1024 / 1280, at every shape.
-    for q_seq in (9450, 22950, 27900, 36900, 45900, 48600):
+    # Requirement 7: the single-tile block_q and block_kv 1024 / 1280, at every resident-fitting shape.
+    for q_seq in (9450, 22950, 27900, 36900):
       with self.subTest(q_seq=q_seq):
         cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
         single_tile = -(-q_seq // VPU_LANE) * VPU_LANE
         self.assertIn(single_tile, {c.bq for c in cands})
         self.assertTrue({1024, 1280} <= {c.bkv for c in cands})
 
-  def test_production_oom_shape_gets_fitting_q_sub(self):
-    # The U=2 production shape: every old candidate and the unset default OOMed. The
-    # resident block itself fits; it is block_q_sub that has to shrink.
-    q_seq = 48600
+  def test_resident_q_sub_wall_shape_gets_fitting_q_sub(self):
+    # At R=36992..37888 (dp2cp4 10.0s, q_seq=36900), resident Q fits (epilogue ~58 MiB < 62.7 MiB),
+    # while oversized q_sub * bkv tiles are pruned and fitting q_sub values are offered.
+    q_seq = 36900
     self.assertTrue(iperm_structural_check(q_seq, vmem_bytes=VMEM_64MB).fits_resident)
     cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
     self.assertTrue(cands)
-    self.assertNotIn((48640, 12160), {(c.resident, c.block_q_sub) for c in cands})
+    self.assertNotIn((37888, 9472, 1024), {(c.resident, c.block_q_sub, c.bkv) for c in cands})
     self.assertTrue(all(c.block_q_outer is None for c in cands))
 
   def test_structural_check_separates_failure_classes(self):
-    fits = iperm_structural_check(48600, vmem_bytes=VMEM_64MB)
-    needs_outer = iperm_structural_check(70000, vmem_bytes=VMEM_64MB)
+    fits = iperm_structural_check(36900, vmem_bytes=VMEM_64MB)
+    needs_outer = iperm_structural_check(45900, vmem_bytes=VMEM_64MB)
     hopeless = iperm_structural_check(600000, vmem_bytes=VMEM_64MB)
     self.assertEqual((fits.fits_resident, fits.fits_outer), (True, True))
     self.assertEqual((needs_outer.fits_resident, needs_outer.fits_outer), (False, True))
@@ -342,11 +342,12 @@ class IpermPlannerTest(unittest.TestCase):
     self.assertIn("ring shards", hopeless.message)
 
   def test_no_resident_fit_switches_to_block_q_outer(self):
-    # Requirement 2/3: decided before compiling, and it yields block_q_outer candidates.
-    q_seq = 70000
-    cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
-    self.assertTrue(cands)
-    self.assertTrue(all(c.block_q_outer is not None and c.block_q_outer < c.bq * -(-q_seq // c.bq) for c in cands))
+    # Requirement 2/3: at dp2cp4 12.5s (q_seq=45900, R>=45952 -> 70.3 MiB epilogue VMEM),
+    # decided before compiling, and yields block_q_outer candidates including the measured winner.
+    for q_seq in (45900, 70000):
+      cands = iperm_candidates(q_seq, q_seq, vmem_bytes=VMEM_64MB, ladder_bqs=_internal_ladder(q_seq))
+      self.assertTrue(cands)
+      self.assertTrue(all(c.block_q_outer is not None and c.block_q_outer < c.bq * -(-q_seq // c.bq) for c in cands))
 
   def test_nothing_fits_returns_no_candidates(self):
     self.assertEqual(iperm_candidates(600000, 600000, vmem_bytes=VMEM_64MB, ladder_bqs=()), [])

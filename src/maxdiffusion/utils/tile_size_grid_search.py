@@ -380,6 +380,14 @@ IPERM_VMEM_MARGIN = 0.98
 _IPERM_ROW_BYTES = 1024
 _IPERM_SCORE_BYTES = 4.02
 _IPERM_KV_BYTES = 1024
+# Epilogue (_write_out) register-allocator peak: `(o_scratch_ref[...] * l_inv)`
+# materializes a full (128, R) f32 intermediate (512*R B) alongside q_ref
+# (256*R B), o_ref (256*R B), o_scratch_ref (512*R B), m/l_scratch_ref (64*R B),
+# and 3 double-buffered KV slots (1536*bkv B). Measured across 24 configs on
+# DP2-CP4 12.5 s (R=45952..47104, bkv=512..2048, q_sub=128..7680): matches XLA's
+# reported VMEM (`70.95M`..`74.76M`) to within 0.12 MiB.
+_IPERM_EPILOGUE_ROW_BYTES = 1600
+_IPERM_EPILOGUE_KV_BYTES = 1536
 # block_q_outer < R switches the kernel from the single-buffered resident Q to
 # double-buffered Q/output blocks (RESIDENT_SINGLE_BUFFER gate in
 # internal_ring_attention.py). No sweep has exercised it yet, so this is an
@@ -427,7 +435,9 @@ def iperm_vmem_bytes(
 ) -> float:
   """Predicted VMEM bytes of a whole-shard-resident iperm launch (see above)."""
   cmp = block_kv if block_kv_compute is None else block_kv_compute
-  return _IPERM_ROW_BYTES * resident + _IPERM_SCORE_BYTES * block_q_sub * cmp + _IPERM_KV_BYTES * block_kv
+  loop_bytes = _IPERM_ROW_BYTES * resident + _IPERM_SCORE_BYTES * block_q_sub * cmp + _IPERM_KV_BYTES * block_kv
+  epilogue_bytes = float(_IPERM_EPILOGUE_ROW_BYTES * resident + _IPERM_EPILOGUE_KV_BYTES * block_kv)
+  return max(loop_bytes, epilogue_bytes)
 
 
 def iperm_outer_vmem_bytes(
