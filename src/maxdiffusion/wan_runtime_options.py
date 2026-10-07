@@ -53,6 +53,11 @@ _OPTIONS: dict[str, tuple[str, Any, str]] = {
     "wan_cfg_before_unpatchify": ("WAN_CFG_BEFORE_UNPATCHIFY", True, "bool"),
     "wan_cross_attn_prescale_kv": ("WAN_CROSS_ATTN_PRESCALE_KV", False, "bool"),
     "wan_rope_accum": ("WAN_ROPE_ACCUM", "auto", "str"),
+    "wan_cross_attn_kernel": ("WAN_CROSS_ATTN_KERNEL", "xla", "str"),
+    "wan_patch_embed_mode": ("WAN_PATCH_EMBED_MODE", "conv", "str"),
+    "wan_ulysses_out_a2a": ("WAN_ULYSSES_OUT_A2A", "flat", "str"),
+    "wan_seq_pad": ("WAN_SEQ_PAD", "off", "str"),
+    "wan_cross_attn_cpu_interpret": ("WAN_CROSS_ATTN_CPU_INTERPRET", False, "bool"),
 }
 
 
@@ -72,6 +77,14 @@ def _coerce(name: str, value: Any) -> Any:
     raise ValueError(f"wan_rope_norm_mode must be 'exact' or 'fused', got {value!r}.")
   if name == "wan_rope_accum" and val not in ("auto", "dtype", "f32"):
     raise ValueError(f"wan_rope_accum must be 'auto', 'dtype', or 'f32', got {value!r}.")
+  if name == "wan_cross_attn_kernel" and val not in ("xla", "pallas"):
+    raise ValueError(f"wan_cross_attn_kernel must be 'xla' or 'pallas', got {value!r}.")
+  if name == "wan_patch_embed_mode" and val not in ("conv", "tokens"):
+    raise ValueError(f"wan_patch_embed_mode must be 'conv' or 'tokens', got {value!r}.")
+  if name == "wan_ulysses_out_a2a" and val not in ("flat", "chunked", "shard_major"):
+    raise ValueError(f"wan_ulysses_out_a2a must be 'flat', 'chunked', or 'shard_major', got {value!r}.")
+  if name == "wan_seq_pad" and val not in ("off", "lane"):
+    raise ValueError(f"wan_seq_pad must be 'off' or 'lane', got {value!r}.")
   return val
 
 
@@ -132,6 +145,11 @@ ATTENTION_OPTIONS = (
     "wan_splash_transpose_out",
     "wan_cross_attn_prescale_kv",
     "wan_rope_accum",
+    "wan_cross_attn_kernel",
+    "wan_patch_embed_mode",
+    "wan_ulysses_out_a2a",
+    "wan_seq_pad",
+    "wan_cross_attn_cpu_interpret",
 )
 
 

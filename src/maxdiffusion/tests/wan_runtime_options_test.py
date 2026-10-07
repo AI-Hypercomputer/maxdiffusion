@@ -129,7 +129,9 @@ class WanModuleOptionsTest(unittest.TestCase):
     env.update({"WAN_ROPE_NORM_MODE": "fused", "WAN_ROPE_ACCUM": "f32"})
     with mock.patch.dict(os.environ, env):
       attn = self._attn()
-    for name in opts.ATTENTION_OPTIONS:
+    # wan_patch_embed_mode / wan_seq_pad ride in attention_config too, but are
+    # consumed by WanModel (covered in wan_patch_embed_test / wan_seq_pad_test).
+    for name in sorted(set(opts.ATTENTION_OPTIONS) - {"wan_patch_embed_mode", "wan_seq_pad"}):
       with self.subTest(option=name):
         self.assertEqual(getattr(attn, name), opts.default(name))
 
@@ -160,6 +162,21 @@ class WanModuleOptionsTest(unittest.TestCase):
     self.assertIs(model.wan_cfg_before_unpatchify, opts.default("wan_cfg_before_unpatchify"))
     model = nnx.eval_shape(lambda: WanModel(rngs=nnx.Rngs(0), **kwargs, wan_cfg_before_unpatchify="false"))
     self.assertIs(model.wan_cfg_before_unpatchify, False)
+
+  def test_enum_options_validation(self):
+    valid_cases = {
+        "wan_cross_attn_kernel": ("xla", "pallas"),
+        "wan_patch_embed_mode": ("conv", "tokens"),
+        "wan_ulysses_out_a2a": ("flat", "chunked", "shard_major"),
+        "wan_seq_pad": ("off", "lane"),
+    }
+    for name, valid_values in valid_cases.items():
+      for val in valid_values:
+        with self.subTest(option=name, valid=val):
+          self.assertEqual(opts.resolve_from_config(types.SimpleNamespace(**{name: val}), name), val)
+      with self.subTest(option=name, invalid="bogus"):
+        with self.assertRaisesRegex(ValueError, name):
+          opts.resolve_from_config(types.SimpleNamespace(**{name: "bogus"}), name)
 
 
 if __name__ == "__main__":

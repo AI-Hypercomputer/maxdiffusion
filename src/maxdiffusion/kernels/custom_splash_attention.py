@@ -748,16 +748,38 @@ def _splash_attention_forward(
     k_mean: jax.Array | None = None,
     interpret: bool | None = None,
     transpose_out: bool | None = None,
+    out_num_shards: int = 1,
 ):
   if interpret is None:
     interpret = jax.default_backend() == "cpu"
   if transpose_out is None:
     transpose_out = False
-  num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
-  head_dim_v = v.shape[-1]
+  if transpose_out and out_num_shards > 1:
+    raise ValueError("out_num_shards > 1 is not supported with transpose_out=True.")
+
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
   bkv_compute = block_sizes.block_kv_compute
   bkv_compute_in = block_sizes.block_kv_compute_in
+  if q.ndim == 4:
+    num_q_shards, num_q_heads, shard_q_seq_len, head_dim_qk = q.shape
+    padded_q_seq_len = num_q_shards * shard_q_seq_len
+    if shard_q_seq_len % bq != 0:
+      raise ValueError(f"4D shard-major q requires shard_q_seq_len ({shard_q_seq_len}) divisible by bq ({bq}).")
+    q_blocks_per_shard_in = shard_q_seq_len // bq
+
+    def q_index_map(h, i, j, *_):
+      return (i // q_blocks_per_shard_in, h, i % q_blocks_per_shard_in, 0)
+
+    q_block_spec = pl.BlockSpec((None, None, bq, head_dim_qk), q_index_map)
+  else:
+    num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
+
+    def q_index_map(h, i, j, *_):
+      return (h, i, 0)
+
+    q_block_spec = pl.BlockSpec((None, bq, head_dim_qk), q_index_map)
+
+  head_dim_v = v.shape[-1]
   num_kv_heads = k.shape[0]
   padded_kv_seq_len = k.shape[1]
 
@@ -786,9 +808,6 @@ def _splash_attention_forward(
   if mk.shape[0] != 2 or mk.shape[1] != num_q_heads or mk.shape[2] != grid_height:
     raise ValueError(f"mk must have shape (2, {num_q_heads}, {grid_height}), got {mk.shape}")
 
-  def q_index_map(h, i, j, *_):
-    return (h, i, 0)
-
   def out_index_map(h, i, j, *_):
     return h, 0, i
 
@@ -811,6 +830,30 @@ def _splash_attention_forward(
         pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
         pl.BlockSpec((None, bq, head_dim_v), lambda h, i, j, *_: (h, i, 0)),
     ]
+  elif out_num_shards > 1:
+    if actual_q_seq_len % (out_num_shards * bq) != 0:
+      raise ValueError(
+          f"out_num_shards={out_num_shards} requires actual_q_seq_len ({actual_q_seq_len}) divisible by "
+          f"out_num_shards * bq ({out_num_shards * bq})."
+      )
+    q_blocks_per_shard_out = grid_height // out_num_shards
+    shard_q_seq_len_out = actual_q_seq_len // out_num_shards
+
+    def out_shard_major_index_map(h, i, j, *_):
+      return (i // q_blocks_per_shard_out, h, 0, i % q_blocks_per_shard_out)
+
+    out_shapes = [
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((out_num_shards, num_q_heads, head_dim_v, shard_q_seq_len_out), q.dtype),
+    ]
+    out_specs = [
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((None, None, head_dim_v, bq), out_shard_major_index_map),
+    ]
   else:
     out_shapes = [
         jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
@@ -827,7 +870,7 @@ def _splash_attention_forward(
 
   if k_mean is None:
     in_specs = [
-        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        q_block_spec,
         pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
         pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
     ]
@@ -852,7 +895,7 @@ def _splash_attention_forward(
     k_mean_tiled = jnp.repeat(k_mean[:, None, :], NUM_SUBLANES, axis=1)
 
     in_specs = [
-        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        q_block_spec,
         pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
         pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
         pl.BlockSpec((None, NUM_SUBLANES, head_dim_qk), lambda h, i, j, *_: (h // q_heads_per_kv_head, 0, 0)),
@@ -910,6 +953,7 @@ def _splash_attention_forward_ring(
     uniform_fixed_m: bool = False,
     k_mean: jax.Array | None = None,
     interpret: bool | None = None,
+    out_num_shards: int = 1,
 ):
   """Ring-specific forward path that returns pre-reciprocal fp32 accumulators.
 
@@ -920,19 +964,47 @@ def _splash_attention_forward_ring(
   normalizes only once at the very end (see
   `ring_attention_kernel._custom_ring_attention_forward`).
 
+  Supports both 3D `q` `(num_q_heads, q_seq_len, head_dim_qk)` and 4D
+  shard-major `q` `(num_q_shards, num_q_heads, shard_q_seq_len, head_dim_qk)`.
+  When `out_num_shards > 1`, Pallas writes the output tiles directly into a 4D
+  shard-major buffer so the ring accumulator produces
+  `(out_num_shards, num_q_heads, q_seq_len // out_num_shards, head_dim_v)` with
+  no post-kernel `moveaxis` relayout before the inverse Ulysses `all_to_all`.
+
   Returns:
     A tuple `(out, m, l)` where
-      - `out` has shape `(num_q_heads, q_seq_len, head_dim_v)` (fp32, un-normalized),
-      - `m` and `l` have shape `(num_q_heads, q_seq_len)` (fp32).
+      - `out` has shape `(num_q_heads, q_seq_len, head_dim_v)` or
+        `(out_num_shards, num_q_heads, q_seq_len // out_num_shards, head_dim_v)`
+        (fp32, un-normalized),
+      - `m` and `l` have shape `(num_q_heads, q_seq_len)` or
+        `(out_num_shards, num_q_heads, q_seq_len // out_num_shards)` (fp32).
   """
   if interpret is None:
     interpret = jax.default_backend() == "cpu"
 
-  num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
-  head_dim_v = v.shape[-1]
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
   bkv_compute = block_sizes.block_kv_compute
   bkv_compute_in = block_sizes.block_kv_compute_in
+  if q.ndim == 4:
+    num_q_shards, num_q_heads, shard_q_seq_len, head_dim_qk = q.shape
+    padded_q_seq_len = num_q_shards * shard_q_seq_len
+    if shard_q_seq_len % bq != 0:
+      raise ValueError(f"4D shard-major q requires shard_q_seq_len ({shard_q_seq_len}) divisible by bq ({bq}).")
+    q_blocks_per_shard_in = shard_q_seq_len // bq
+
+    def q_index_map(h, i, j, *_):
+      return (i // q_blocks_per_shard_in, h, i % q_blocks_per_shard_in, 0)
+
+    q_block_spec = pl.BlockSpec((None, None, bq, head_dim_qk), q_index_map)
+  else:
+    num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
+
+    def q_index_map(h, i, j, *_):
+      return (h, i, 0)
+
+    q_block_spec = pl.BlockSpec((None, bq, head_dim_qk), q_index_map)
+
+  head_dim_v = v.shape[-1]
   num_kv_heads = k.shape[0]
   padded_kv_seq_len = k.shape[1]
 
@@ -941,9 +1013,6 @@ def _splash_attention_forward_ring(
   if num_q_heads % num_kv_heads != 0:
     raise ValueError(f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA.")
   q_heads_per_kv_head = num_q_heads // num_kv_heads
-
-  def q_index_map(h, i, j, *_):
-    return (h, i, 0)
 
   def out_index_map(h, i, j, *_):
     return h, 0, i
@@ -954,22 +1023,51 @@ def _splash_attention_forward_ring(
   def v_index_map(h, i, j, *_):
     return (h // q_heads_per_kv_head, j, 0)
 
-  out_shapes = [
-      jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
-      jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
-      jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
-  ]
-  out_specs = [
-      pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((None, head_dim_v, bq), out_index_map),
-      pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
-      pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
-  ]
+  if out_num_shards > 1:
+    if actual_q_seq_len % (out_num_shards * bq) != 0:
+      raise ValueError(
+          f"out_num_shards={out_num_shards} requires actual_q_seq_len ({actual_q_seq_len}) divisible by "
+          f"out_num_shards * bq ({out_num_shards * bq})."
+      )
+    shard_q_out_len = actual_q_seq_len // out_num_shards
+    q_blocks_per_shard_out = shard_q_out_len // bq
+
+    def out_shard_index_map(h, i, j, *_):
+      return (i // q_blocks_per_shard_out, h, 0, i % q_blocks_per_shard_out)
+
+    out_shapes = [
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((out_num_shards, num_q_heads, head_dim_v, shard_q_out_len), jnp.float32),
+        jax.ShapeDtypeStruct((out_num_shards, num_q_heads, NUM_SUBLANES, shard_q_out_len), jnp.float32),
+        jax.ShapeDtypeStruct((out_num_shards, num_q_heads, NUM_SUBLANES, shard_q_out_len), jnp.float32),
+    ]
+    out_specs = [
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((None, None, head_dim_v, bq), out_shard_index_map),
+        pl.BlockSpec((None, None, NUM_SUBLANES, bq), out_shard_index_map),
+        pl.BlockSpec((None, None, NUM_SUBLANES, bq), out_shard_index_map),
+    ]
+  else:
+    out_shapes = [
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
+    ]
+    out_specs = [
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((None, head_dim_v, bq), out_index_map),
+        pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
+        pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
+    ]
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
   grid_height = (actual_q_seq_len + bq - 1) // bq
   grid = (num_q_heads, grid_height, grid_width)
@@ -995,7 +1093,7 @@ def _splash_attention_forward_ring(
 
   if k_mean is None:
     in_specs = [
-        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        q_block_spec,
         pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
         pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
     ]
@@ -1020,7 +1118,7 @@ def _splash_attention_forward_ring(
     k_mean_tiled = jnp.repeat(k_mean[:, None, :], NUM_SUBLANES, axis=1)
 
     in_specs = [
-        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        q_block_spec,
         pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
         pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
         pl.BlockSpec((None, NUM_SUBLANES, head_dim_qk), lambda h, i, j, *_: (h // q_heads_per_kv_head, 0, 0)),
@@ -1060,9 +1158,14 @@ def _splash_attention_forward_ring(
       out_shape=out_shapes,
       interpret=interpret,
   )(*kernel_args)
-  out = jnp.swapaxes(all_out[3], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
-  l = all_out[4][:, 0, :]  # (h, s)
-  m = all_out[5][:, 0, :]  # (h, s)
+  if out_num_shards > 1:
+    out = jnp.swapaxes(all_out[3], 2, 3)  # (u, h, head_dim_v, s_loc) -> (u, h, s_loc, head_dim_v)
+    l = all_out[4][:, :, 0, :]  # (u, h, s_loc)
+    m = all_out[5][:, :, 0, :]  # (u, h, s_loc)
+  else:
+    out = jnp.swapaxes(all_out[3], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
+    l = all_out[4][:, 0, :]  # (h, s)
+    m = all_out[5][:, 0, :]  # (h, s)
   return out, m, l
 
 
@@ -1188,6 +1291,7 @@ def make_splash_mha(
     uniform_fixed_m: bool = False,
     interpret: bool | None = None,
     transpose_out: bool | None = None,
+    out_num_shards: int = 1,
 ):
   if transpose_out is None:
     transpose_out = False
@@ -1202,6 +1306,8 @@ def make_splash_mha(
     if heads_per_tile > 1:
       if use_fixed_m:
         raise NotImplementedError("fixed-m is not supported with heads_per_tile > 1")
+      if out_num_shards > 1:
+        raise NotImplementedError("out_num_shards > 1 is not supported with heads_per_tile > 1")
       return _splash_attention_forward_mhpt(
           q,
           k,
@@ -1231,6 +1337,7 @@ def make_splash_mha(
         k_mean=k_mean,
         interpret=interpret,
         transpose_out=transpose_out,
+        out_num_shards=out_num_shards,
     )
 
   return _splash_attention
