@@ -39,5 +39,8 @@ TESTS=(
   "$T/converted_weights_cache_test.py"
   "$T/wan/wan_transformer_test.py"
   "$T/wan/wan_warmup_coverage_test.py"
+  # Fused RMSNorm+RoPE producer, Wan switches in config (feat/wan-custom-kernels)
+  "$T/fused_rmsnorm_rope_pallas_test.py"
+  "$T/wan_runtime_options_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
