@@ -25,7 +25,7 @@ from ...models.wan.transformers.transformer_wan import WanModel
 from typing import List, Union, Optional
 from ...pyconfig import HyperParameters
 from ... import aot_cache
-import os
+from .wan_denoise_utils import InflightWindow, compile_experts
 import concurrent.futures
 from functools import partial
 import time
@@ -866,51 +866,26 @@ def run_inference_2_2(
     final_latents, _ = final_carry
     return final_latents
 
-  # Warmup only runs a couple of steps and the scheduler puts both on the
-  # high-noise transformer, so the low-noise weights are never executed; their
-  # first real call then lands mid-generation and costs 26.4s against a 2.6s
-  # step. Touch every weight set here instead, so the first generation already
-  # runs at steady-state latency.
-  if aot_cache.in_warmup() and do_classifier_free_guidance:
-    with aot_cache.real_execution():
-      priming_latents = jnp.concatenate([latents] * 2)
-      priming_timestep = jnp.broadcast_to(timesteps[0], bsz * 2)
-      for _gd, _st, _rest, _gs, _kv, _mask in (
-          (
-              high_noise_graphdef,
-              high_noise_state,
-              high_noise_rest,
-              guidance_scale_high,
-              kv_cache_high,
-              encoder_attention_mask_high,
-          ),
-          (
-              low_noise_graphdef,
-              low_noise_state,
-              low_noise_rest,
-              guidance_scale_low,
-              kv_cache_low,
-              encoder_attention_mask_low,
-          ),
-      ):
-        jax.block_until_ready(
-            transformer_forward_pass_full_cfg(
-                _gd,
-                _st,
-                _rest,
-                priming_latents,
-                priming_timestep,
-                prompt_embeds_combined,
-                guidance_scale=_gs,
-                kv_cache=_kv,
-                rotary_emb=rotary_emb,
-                encoder_attention_mask=_mask,
-                svg_step_index=jnp.asarray(0, dtype=jnp.int32),
-            )
-        )
+  # Warmup can miss the low-noise phase entirely, so compile both experts here
+  # (compile only, no execution); see compile_experts.
+  if aot_cache.in_warmup():
+    compile_experts(
+        (high_noise_branch, low_noise_branch),
+        (
+            latents,
+            jnp.broadcast_to(timesteps[0], bsz * 2 if do_classifier_free_guidance else bsz),
+            prompt_embeds_combined,
+            kv_cache_high,
+            kv_cache_low,
+            rotary_emb,
+            encoder_attention_mask_high,
+            encoder_attention_mask_low,
+            jnp.asarray(0, dtype=jnp.int32),
+        ),
+    )
 
   profiler = None
-  _inflight_latents = []
+  inflight = InflightWindow()
   for step in range(num_inference_steps):
     if config and max_utils.profiler_enabled(config) and step == first_profiling_step:
       profiler = max_utils.Profiler(config)
@@ -967,22 +942,7 @@ def run_inference_2_2(
       )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
-
-    # Bound the async dispatch queue. The python loop otherwise queues every
-    # remaining step on the device; past ~30 in-flight steps the runtime
-    # degrades ~20% (measured: 40-step fixed-m 3.30 s/step unbounded vs 2.69
-    # with a mid-run drain; 4/12/24-step runs unaffected). A periodic drain
-    # keeps the queue shallow and costs nothing (the device stays busy).
-    # Sliding-window bound on in-flight dispatched steps: block on the
-    # output of step (N - depth) so the device queue holds at most `depth`
-    # steps while the pipeline stays full (a periodic FULL drain would
-    # empty the pipe and cost a bubble per drain). The safe depth shrinks
-    # as the per-step executable's footprint grows (bkv2048 tiles need
-    # ~2-4; bkv1024 tolerates 8+); past it the TPU runtime degrades ~20%.
-    _inflight_latents.append(latents)
-    depth = int(os.environ.get("MAXD_QUEUE_MAX_INFLIGHT", "4"))
-    if depth > 0 and len(_inflight_latents) > depth:
-      _inflight_latents.pop(0).block_until_ready()
+    inflight.push(latents)  # Bounds the async dispatch queue; see InflightWindow.
 
     if config and max_utils.profiler_enabled(config) and step == last_profiling_step:
       if profiler:
