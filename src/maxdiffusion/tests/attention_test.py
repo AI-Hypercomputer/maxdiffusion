@@ -16,6 +16,7 @@ limitations under the License.
 
 import os
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from absl.testing import absltest
@@ -277,6 +278,25 @@ class AttentionTest(unittest.TestCase):
 
     ranges_array = jnp.array(ranges)
     self.assertTrue(jnp.all((ranges_array[:, 1] - ranges_array[:, 0]) % 8 == 0))
+  def test_ring_heads_per_tile_accepts_forward_only_block_sizes(self):
+    for attention in ("tokamax_ring", "ulysses_ring"):
+      with self.subTest(attention=attention):
+        config = SimpleNamespace(
+            attention=attention,
+            flash_block_sizes={
+                "block_q": 1024,
+                "block_kv": 1024,
+                "block_kv_compute": 256,
+                "heads_per_tile": 2,
+            },
+        )
+        block_sizes = max_utils.get_flash_block_sizes(config)
+        self.assertEqual(block_sizes.block_q, 1024)
+        self.assertEqual(block_sizes.block_q_dkv, 1024)
+        self.assertEqual(block_sizes.block_kv_dkv, 1024)
+        self.assertEqual(block_sizes.block_kv_dkv_compute, 256)
+        self.assertEqual(block_sizes.heads_per_tile, 2)
+        self.assertEqual(attention_flax.convert_to_tokamax_splash_config(block_sizes).heads_per_tile, 2)
 
   def test_ulysses_attention_round_trips_query_when_heads_are_divisible(self):
     """Ulysses attention should preserve the query layout after its collectives."""
