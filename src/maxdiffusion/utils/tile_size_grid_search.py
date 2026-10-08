@@ -377,9 +377,9 @@ def bkv_candidates(seq_len: int, *, k: int = 3, align: int = VPU_LANE, max_block
 # 98-98.9%, all slow (e.g. R=28160, q_sub=7040, bkv=1280: 233.9 ms vs 146.6 ms
 # at bkv=1024); 0.97 would exclude the measured 10 s winner (97.5%).
 IPERM_VMEM_MARGIN = 0.98
-_IPERM_ROW_BYTES = 1024
-_IPERM_SCORE_BYTES = 4.02
-_IPERM_KV_BYTES = 1024
+_IPERM_ROW_BYTES = 992
+_IPERM_SCORE_BYTES = 4.12
+_IPERM_KV_BYTES = 512
 # Epilogue (_write_out) register-allocator peak: `(o_scratch_ref[...] * l_inv)`
 # materializes a full (128, R) f32 intermediate (512*R B) alongside q_ref
 # (256*R B), o_ref (256*R B), o_scratch_ref (512*R B), m/l_scratch_ref (64*R B),
@@ -390,11 +390,10 @@ _IPERM_EPILOGUE_ROW_BYTES = 1600
 _IPERM_EPILOGUE_KV_BYTES = 1536
 # block_q_outer < R switches the kernel from the single-buffered resident Q to
 # double-buffered Q/output blocks (RESIDENT_SINGLE_BUFFER gate in
-# internal_ring_attention.py). No sweep has exercised it yet, so this is an
-# UNCALIBRATED upper estimate (1.5x the per-row cost plus 3 MiB of slack); the
-# run-time OOM classification is the backstop.
-_IPERM_OUTER_ROW_BYTES = 1536
-_IPERM_OUTER_SLACK_BYTES = 3 * 1024 * 1024
+# internal_ring_attention.py). Calibrated against DP2-CP4 12.5 s outer=23040
+# sweeps (bkv=1280..3072, q_sub=4608..7680).
+_IPERM_OUTER_ROW_BYTES = 1472
+_IPERM_OUTER_SLACK_BYTES = 1 * 1024 * 1024
 
 # Planner knobs (see `iperm_candidates`).
 IPERM_MAX_CANDIDATES = 30
@@ -404,9 +403,9 @@ IPERM_MAX_PAD_FRACTION = 0.04  # resident lengths considered: up to 4% over q_se
 IPERM_RESIDENT_TOP_K = 3  # best-scoring resident lengths kept from that sweep
 IPERM_MAX_OUTER_BLOCKS = 8  # block_q_outer: at most 8 ring re-walks
 IPERM_BKV_ANCHORS = (1024, 1280)
-IPERM_BKV_EXTRAS = (512, 768, 1536, 2048)
+IPERM_BKV_EXTRAS = (512, 768, 1536, 1664, 1792, 2048, 2560)
 # block_q_sub values that won (or tied for best) across the measured sweeps.
-IPERM_KNOWN_GOOD_Q_SUB = (7040, 6272, 5760, 4736, 3840, 3584, 2816, 2688, 1920, 1664)
+IPERM_KNOWN_GOOD_Q_SUB = (7040, 6272, 5760, 4736, 3840, 3712, 3584, 3328, 3072, 2816, 2688, 2560, 1920, 1664)
 # block_q_sub admissibility (see `_q_sub_admissible`). Every candidate walks R
 # in at least two chunks: a single whole-block chunk is the instruction-memory
 # cliff (the static program grows with R; ~2.1x slower). Formula-driven
@@ -769,7 +768,7 @@ def iperm_outer_candidates(
       budget=margin * vmem_bytes,
       max_candidates=max_candidates,
       ladder_bqs=[bq for bq in ladder_bqs if bq >= VPU_LANE and bq % VPU_LANE == 0],
-      bkvs=(*anchor_bkvs, min(512, kv_cap)),
+      bkvs=(*anchor_bkvs, min(1536, kv_cap), min(512, kv_cap)),
   )
 
 

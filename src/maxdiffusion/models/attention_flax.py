@@ -2414,7 +2414,12 @@ def _ulysses_ring_custom_attention(
           qn_head = jnp.sqrt(qn_head_sq)
           mk_head = jnp.sqrt(mk_head_sq)
           iperm_fixed = jnp.all(qn_head * mk_head <= iperm_bound) & v_ok
-          iperm_mk = jnp.stack([mk_head, jnp.ones_like(mk_head)])
+          mk_slot0 = (
+              jnp.ceil(qn_head * mk_head) - iperm_recenter
+              if internal_ring_kernel_mod.PRECOMPUTE_FIXED_M
+              else mk_head
+          )
+          iperm_mk = jnp.stack([mk_slot0, jnp.ones_like(mk_head)])
 
         # Whole-head q block: the ring streams each K/V block across the ICI ONCE
         # per head, and the kernel loops over q_sub-sized sub-chunks against it.
@@ -2489,6 +2494,7 @@ def _ulysses_ring_custom_attention(
               use_fixed_m=fixed,
               uniform_fixed_m=uniform,
               fixed_m_recenter=recenter,
+              precomputed_m=internal_ring_kernel_mod.PRECOMPUTE_FIXED_M,
           )
 
         if not use_fixed_m:
@@ -2504,7 +2510,7 @@ def _ulysses_ring_custom_attention(
           # `m` is still per query ROW (computed in-kernel from ||q_i||), which
           # is tighter than the external ring's per-Q-block m_B.
           fixed_ok_head = (qn_head * mk_head <= iperm_bound).astype(jnp.float32) * v_ok.astype(jnp.float32)
-          mk_hybrid = jnp.stack([mk_head, fixed_ok_head])
+          mk_hybrid = jnp.stack([mk_slot0, fixed_ok_head])
           attention_output = _mk_internal(True, iperm_recenter, uniform=False)(query, key, value, mk_hybrid)
         elif fixed_m_uncond:
           # MEASUREMENT VARIANT. Skips the lax.cond and always takes the fixed

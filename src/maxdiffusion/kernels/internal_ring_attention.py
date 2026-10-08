@@ -109,6 +109,7 @@ def _internal_ring_kernel(
     use_fixed_m: bool,
     uniform_fixed_m: bool,
     fixed_m_recenter: float,
+    precomputed_m: bool,
     q_sub: int,
     axis_names: tuple[str, ...],
     ring_axis: str,
@@ -268,40 +269,69 @@ def _internal_ring_kernel(
   else:
     is_fixed = None
 
-  def _write_fixed_m():
-    qf = q_ref[...].astype(float32)
+  n_q = q_ref.shape[0] // q_sub
+  two_body_last = HYBRID_TWO_BODY_LAST or (n_q > 1)
+
+  def _for_each_q_chunk(fn):
+    if n_q > 1:
+      def _qbody(t, carry):
+        fn(pl.multiple_of(t * q_sub, 128))
+        return carry
+      lax.fori_loop(0, n_q, _qbody, None)
+    else:
+      for qs in range(0, q_ref.shape[0], q_sub):
+        fn(qs)
+
+  def _write_fixed_m_chunk(qs):
+    qsl = pl.ds(qs, q_sub)
+    qf = q_ref[qsl, :].astype(float32)
     qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]
     # C(N) comes from the caller (`custom_splash.get_fixed_m_constants`) rather
     # than the legacy pinned 88.0: N here is the WHOLE ring's KV length, since
     # one launch accumulates every shard into the same VMEM accumulator.
     m_fixed = jnp.ceil(qn * mk_ref[0, h]) - fixed_m_recenter
-    m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
+    m_scratch_ref[:, qsl] = jnp.broadcast_to(m_fixed, (m_scratch_ref.shape[0], q_sub))
+
+  def _init_fixed_chunk(qs):
+    qsl = pl.ds(qs, q_sub)
+    o_scratch_ref[:, qsl] = jnp.zeros((o_scratch_ref.shape[0], q_sub), o_scratch_ref.dtype)
+    l_scratch_ref[:, qsl] = jnp.zeros((l_scratch_ref.shape[0], q_sub), l_scratch_ref.dtype)
+    if precomputed_m:
+      if not (fixed_only or two_body_last):
+        m_scratch_ref[:, qsl] = jnp.full((m_scratch_ref.shape[0], q_sub), mk_ref[0, h], m_scratch_ref.dtype)
+    else:
+      _write_fixed_m_chunk(qs)
+
+  def _init_online_chunk(qs):
+    qsl = pl.ds(qs, q_sub)
+    o_scratch_ref[:, qsl] = jnp.zeros((o_scratch_ref.shape[0], q_sub), o_scratch_ref.dtype)
+    l_scratch_ref[:, qsl] = jnp.zeros((l_scratch_ref.shape[0], q_sub), l_scratch_ref.dtype)
+    m_scratch_ref[:, qsl] = jnp.full((m_scratch_ref.shape[0], q_sub), mask_value, m_scratch_ref.dtype)
 
   # ------------------------------------------------------------- accumulate --
   @pl.when(is_first_hop)
   def _init():
-    o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
-    l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
     # Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C, pinned for the
     # WHOLE ring. Unlike the external ring this needs no per-hop gating and no
     # LSE merge: one kernel sees every shard and the accumulator never leaves
     # VMEM, so every hop is already subtracting the identical m. `mk_ref[0, h]`
-    # is max||k|| reduced over the ring AND ulysses axes by the caller, so the
+    # is max||k|| reduced over the ring AND ulysses axes by the caller (or, when
+    # `precomputed_m=True`, the precomputed per-head shift m_h itself), so the
     # bound covers keys this rank never holds.
     if fixed_only:
-      _write_fixed_m()
+      _for_each_q_chunk(_init_fixed_chunk)
     elif use_fixed_m:
 
       @pl.when(is_fixed)
       def _init_fixed():
-        _write_fixed_m()
+        _for_each_q_chunk(_init_fixed_chunk)
 
       @pl.when(jnp.logical_not(is_fixed))
       def _init_online():
-        m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+        _for_each_q_chunk(_init_online_chunk)
 
     else:
-      m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+      _for_each_q_chunk(_init_online_chunk)
 
   def _online_inner(qk, v_chunk, m_prev, l_prev, o_prev):
     step = bkv_compute_in
@@ -327,7 +357,7 @@ def _internal_ring_kernel(
     # m is constant: no reduce-max over the block and no alpha rescale of o.
     step = bkv_compute_in
     for c in range(0, qk.shape[0], step):
-      s_curr = exp(qk[c : c + step] - m_fix[0:1])
+      s_curr = exp(qk[c : c + step] - m_fix)
       l_prev = l_prev + s_curr.sum(axis=0, keepdims=True)
       o_prev = o_prev + lax.dot_general(
           v_chunk[c : c + step],
@@ -354,7 +384,8 @@ def _internal_ring_kernel(
       qsl = pl.ds(qs, q_sub)
       qk = lax.dot_general(k_blk, q_ref[qsl, :], NT_DIM_NUMBERS, preferred_element_type=float32)
       if fixed:
-        l_prev, o_prev = _fixed_inner(qk, v_chunk, m_scratch_ref[:, qsl], l_scratch_ref[:, qsl], o_scratch_ref[:, qsl])
+        m_fix = mk_ref[0, h] if precomputed_m else m_scratch_ref[:, qsl][0:1]
+        l_prev, o_prev = _fixed_inner(qk, v_chunk, m_fix, l_scratch_ref[:, qsl], o_scratch_ref[:, qsl])
         l_scratch_ref[:, qsl] = l_prev
       else:
         m_prev, l_prev, o_prev = _online_inner(
@@ -369,15 +400,7 @@ def _internal_ring_kernel(
     # step stalls on instruction fetch -- measured 2.1x slower on pure compute
     # (91.2 -> 43.4 ms/layer), invisible in the static schedule, whose bundle
     # count and opcode mix stay exactly proportional to the work.
-    n_q = q_ref.shape[0] // q_sub
-    if n_q > 1:
-      def _qbody(t, carry):
-        _one_q_chunk(pl.multiple_of(t * q_sub, 128))
-        return carry
-      lax.fori_loop(0, n_q, _qbody, None)
-    else:
-      for qs in range(0, q_ref.shape[0], q_sub):
-        _one_q_chunk(qs)
+    _for_each_q_chunk(_one_q_chunk)
 
   def compute_body_fixed(kv_compute_index, _):
     _step(kv_compute_index * bkv_compute, bkv_compute, True)
@@ -444,7 +467,6 @@ def _internal_ring_kernel(
     #    head -- one body. Exact, since online continues from a fixed-m state:
     #    m_next = max(m_prev, m_curr) and (o, l) rescale by exp2(m_prev - m_next).
     #    Costs ~0.95 ms/layer vs two bodies, but avoids the ~3x cliff.
-    two_body_last = HYBRID_TWO_BODY_LAST or (q_ref.shape[0] // q_sub > 1)
     if two_body_last:
 
       @pl.when((j == grid_width - 1) & is_fixed)
@@ -467,9 +489,13 @@ def _internal_ring_kernel(
   # ordered after this hop's compute.
   @pl.when(is_last_hop)
   def _write_out():
-    l = l_scratch_ref[...]
-    l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
-    o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
+    def _write_out_chunk(qs):
+      qsl = pl.ds(qs, q_sub)
+      l = l_scratch_ref[:, qsl]
+      l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
+      o_ref[:, qsl] = (o_scratch_ref[:, qsl] * l_inv).astype(o_ref.dtype)
+
+    _for_each_q_chunk(_write_out_chunk)
 
 
 # Whether to single-buffer the q/out blocks when the q block spans the whole head.
@@ -486,6 +512,10 @@ ROLL_KV_LOOP = True
 # instead of online for every head. Two bodies in the last block used to trigger the
 # code-size cliff; with the q loop rolled the program may now fit.
 HYBRID_TWO_BODY_LAST = False
+# Whether `mk[0, h]` carries the precomputed per-head fixed-m shift
+# `m_h = ceil(max_i ||q_i|| * max_j ||k_j||) - C` (Fix 2) instead of `max_j ||k_j||`.
+import os as _os
+PRECOMPUTE_FIXED_M = _os.environ.get("IPERM_PRECOMPUTE_FIXED_M", "1") == "1"
 
 def internal_ring_attention_forward(
     q: jax.Array,
@@ -503,6 +533,7 @@ def internal_ring_attention_forward(
     uniform_fixed_m: bool = False,
     mk: jax.Array | None = None,
     fixed_m_recenter: float | None = None,
+    precomputed_m: bool | None = None,
     q_sub_block: int | None = None,
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
@@ -579,6 +610,9 @@ def internal_ring_attention_forward(
       pltpu.SemaphoreType.REGULAR,
   ]
 
+  if precomputed_m is None:
+    precomputed_m = PRECOMPUTE_FIXED_M
+
   out = pl.pallas_call(
       functools.partial(
           _internal_ring_kernel,
@@ -596,6 +630,7 @@ def internal_ring_attention_forward(
           use_fixed_m=use_fixed_m,
           uniform_fixed_m=uniform_fixed_m,
           fixed_m_recenter=fixed_m_recenter,
+          precomputed_m=bool(precomputed_m),
           q_sub=q_sub,
           axis_names=tuple(axis_names),
           ring_axis=ring_axis,
@@ -640,6 +675,7 @@ def make_internal_ring_attention(
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
     fixed_m_recenter: float | None = None,
+    precomputed_m: bool | None = None,
     q_sub_block: int | None = None,
 ):
   """Batched `(b, h, s, d) -> (b, h, s, d)` callable. Deliberately NOT vmapped:
@@ -671,6 +707,7 @@ def make_internal_ring_attention(
         uniform_fixed_m=uniform_fixed_m,
         mk=mk,
         fixed_m_recenter=recenter,
+        precomputed_m=precomputed_m,
         q_sub_block=q_sub_block,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
