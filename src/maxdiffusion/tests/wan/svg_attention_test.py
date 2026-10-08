@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from maxdiffusion.models.wan.transformers import svg_attention
+from maxdiffusion.models import svg_attention
 from maxdiffusion.kernels import custom_svg_static_range_attention as static_kernel
 
 
