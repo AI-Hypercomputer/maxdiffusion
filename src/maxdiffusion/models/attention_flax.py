@@ -1330,6 +1330,7 @@ def _ulysses_ring_custom_attention(
     bidirectional: bool = False,
     use_fixed_m: bool = False,
     ulysses_attention_chunks: int = 1,
+    token_padding=None,
 ) -> jax.Array:
   """Hybrid Ulysses + Ring (USP) with the CUSTOM splash kernel on main's mesh.
 
@@ -1370,6 +1371,28 @@ def _ulysses_ring_custom_attention(
   num_heads = query.shape[1]
   if num_heads % num_ulysses_shards != 0:
     raise ValueError(f"Ulysses+Ring requires heads divisible by U={num_ulysses_shards}, got heads={num_heads}.")
+
+  # Static padding mask (physical token order) and per-ring-chunk valid prefix.
+  pad_valid_mask = None
+  chunk_valid_lens = None
+  if token_padding is not None:
+    token_padding.validate()
+    if orig_q_seq_len != token_padding.num_total or query.shape[2] != token_padding.num_total:
+      raise ValueError(
+          f"token_padding.num_total={token_padding.num_total} must equal the self-attention length "
+          f"{orig_q_seq_len} and divide over {num_context_shards} context shards."
+      )
+    if token_padding.num_chunks != num_ring_shards:
+      raise ValueError(f"token_padding was built for {token_padding.num_chunks} ring chunks, the ring has {num_ring_shards}.")
+    if token_padding.mask:
+      if num_ring_shards == 1 or bidirectional:
+        raise NotImplementedError("token_padding masking is implemented for the unidirectional ring path (R > 1).")
+      pad_valid_mask = token_padding.physical_valid_mask()
+      chunk_valid_lens = token_padding.chunk_valid_lengths()
+      keep = jnp.asarray(pad_valid_mask)[None, None, :, None]
+      query = jnp.where(keep, query, 0)
+      key = jnp.where(keep, key, 0)
+      value = jnp.where(keep, value, 0)
 
   (
       bq,
@@ -1457,6 +1480,14 @@ def _ulysses_ring_custom_attention(
     key, _, key_seq_len = _pad_data_for_flash(key, heads, bkv)
     value, _, _ = _pad_data_for_flash(value, heads, bkv)
 
+    out_seq_len = query_seq_len
+    kv_valid_lens = None
+    if chunk_valid_lens is not None:
+      if len(set(chunk_valid_lens)) == 1:
+        query_seq_len = key_seq_len = chunk_valid_lens[0]
+      else:
+        kv_valid_lens = chunk_valid_lens
+
     mk_arr = None
     if use_fixed_m and num_ring_shards == 1:
       qf = query.astype(jnp.float32)
@@ -1511,9 +1542,12 @@ def _ulysses_ring_custom_attention(
           bidirectional=bidirectional,
           use_fixed_m=use_fixed_m,
           fixed_m_norms=fixed_m_norms,
+          kv_valid_lens=kv_valid_lens,
       )
       attention_output = jax.vmap(ring_kernel, in_axes=(0, 0, 0))(query, key, value)
     attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
+    if query_seq_len < out_seq_len:
+      attention_output = jnp.pad(attention_output, ((0, 0), (0, 0), (0, out_seq_len - query_seq_len), (0, 0)))
 
     # (3) Ulysses all-to-all back: sequence -> heads, restoring the layout.
     attention_output = a2a(attention_output, split_axis=2, concat_axis=1)
@@ -1529,6 +1563,8 @@ def _ulysses_ring_custom_attention(
       wrap_ulysses_ring_attention,
   )
   x = jax.lax.with_sharding_constraint(x, q_axis_names)
+  if pad_valid_mask is not None:
+    x = jnp.where(jnp.asarray(pad_valid_mask)[None, None, :, None], x, 0)
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
   return x
@@ -1708,6 +1744,7 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       use_base2_exp=context.get("use_base2_exp", True),
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -1736,6 +1773,7 @@ def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       use_fixed_m=True,
       ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -1956,6 +1994,7 @@ def _apply_attention(
     preserve_asymmetric_block_sizes: bool = False,
     spatiotemporal_config: Optional[dict] = None,
     spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+    token_padding=None,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -2025,7 +2064,17 @@ def _apply_attention(
       "preserve_asymmetric_block_sizes": preserve_asymmetric_block_sizes,
       "spatiotemporal_config": spatiotemporal_config,
       "spatiotemporal_shape": spatiotemporal_shape,
+      "token_padding": token_padding,
   }
+
+  if token_padding is not None and effective_attention_kernel not in (
+      "ulysses_ring_custom",
+      "ulysses_ring_custom_fixed_m",
+  ):
+    raise NotImplementedError(
+        f"token_padding (masked self-attention padding) is only implemented for "
+        f"ulysses_ring_custom[_fixed_m], got {effective_attention_kernel=}."
+    )
 
   if spatiotemporal_config and spatiotemporal_config.get("use_svg_attention"):
     if effective_attention_kernel not in (
@@ -2428,6 +2477,7 @@ class NNXAttentionOp(nnx.Module):
       preserve_asymmetric_block_sizes: bool = False,
       spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
       sparse_config_override: Optional[dict] = None,
+      token_padding=None,
   ):
     return _apply_attention(
         query=query,
@@ -2457,6 +2507,7 @@ class NNXAttentionOp(nnx.Module):
         preserve_asymmetric_block_sizes=preserve_asymmetric_block_sizes,
         spatiotemporal_config=sparse_config_override,
         spatiotemporal_shape=spatiotemporal_shape,
+        token_padding=token_padding,
     )
 
 
@@ -2877,6 +2928,7 @@ class FlaxWanAttention(nnx.Module):
       svg_layer_index: Optional[int | jax.Array] = None,
       svg_timestep: Optional[int | float | jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding=None,
   ) -> jax.Array:
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
     if encoder_hidden_states is not None:
@@ -2887,11 +2939,15 @@ class FlaxWanAttention(nnx.Module):
         "is_self_attention",
         encoder_hidden_states is None or encoder_hidden_states is hidden_states,
     )
+    if token_padding is not None and not is_self_attention:
+      raise ValueError("token_padding masks padded video tokens in self-attention only.")
     if self.use_svg_attention and is_self_attention:
       if not deterministic:
         raise ValueError("SVG attention supports deterministic inference only.")
       if spatiotemporal_shape is None:
         raise ValueError("SVG attention requires spatiotemporal_shape.")
+      if token_padding is not None:
+        raise NotImplementedError("token_padding is not implemented for SVG attention.")
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
@@ -3000,6 +3056,7 @@ class FlaxWanAttention(nnx.Module):
               key_proj,
               value_proj,
               attention_mask=encoder_attention_mask,
+              token_padding=token_padding,
           )
 
     else:

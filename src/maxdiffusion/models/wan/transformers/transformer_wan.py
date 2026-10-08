@@ -452,6 +452,7 @@ class WanTransformerBlock(nnx.Module):
       svg_layer_index: Optional[int | jax.Array] = None,
       svg_timestep: Optional[int | float | jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding=None,
   ):
     with self.conditional_named_scope("transformer_block"):
       # Support both global [B, 6, dim] and per-token [B, seq_len, 6, dim] temb.
@@ -502,6 +503,7 @@ class WanTransformerBlock(nnx.Module):
               svg_layer_index=svg_layer_index,
               svg_timestep=svg_timestep,
               svg_step_index=svg_step_index,
+              token_padding=token_padding,
           )
         with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
@@ -782,6 +784,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding=None,
   ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
@@ -798,6 +801,20 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = self.patch_embedding(hidden_states)
       hidden_states = jax.lax.collapse(hidden_states, 1, -1)
     per_token_t = timestep.ndim == 2  # [B, seq_len] for TI2V
+    to_physical = None
+    if token_padding is not None:
+      token_padding.validate()
+      if hidden_states.shape[1] != token_padding.num_total or rotary_emb.shape[2] != token_padding.num_total:
+        raise ValueError(
+            f"token_padding.num_total={token_padding.num_total} does not match {hidden_states.shape[1]} patch "
+            f"tokens / {rotary_emb.shape[2]} RoPE positions."
+        )
+      if per_token_t or skip_blocks:
+        raise NotImplementedError("token_padding does not support per-token timesteps or skip_blocks.")
+      to_physical = token_padding.natural_to_physical()
+      if to_physical is not None:
+        hidden_states = hidden_states[:, jnp.asarray(to_physical)]
+        rotary_emb = rotary_emb[:, :, jnp.asarray(to_physical)]
     with self.conditional_named_scope("condition_embedder"):
       if per_token_t:
         # Per-token timestep: process time and text embeddings separately.
@@ -875,6 +892,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
               svg_layer_index=layer_index,
               svg_timestep=timestep,
               svg_step_index=svg_step_index,
+              token_padding=token_padding,
           )
           new_carry = (hidden_states, rngs_carry)
           return new_carry, None
@@ -924,6 +942,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
                 svg_layer_index=i,
                 svg_timestep=timestep,
                 svg_step_index=svg_step_index,
+                token_padding=token_padding,
             )
 
           rematted_layer_forward = self.gradient_checkpoint.apply(
@@ -945,6 +964,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = _run_all_blocks(hidden_states)
 
     residual_x = hidden_states - hidden_states_before_blocks
+    if to_physical is not None:
+      to_natural = jnp.asarray(token_padding.physical_to_natural())
+      hidden_states = hidden_states[:, to_natural]
+      residual_x = residual_x[:, to_natural]
 
     if per_token_t:
       # temb: [B, seq_len, dim] — per-token modulation for final head

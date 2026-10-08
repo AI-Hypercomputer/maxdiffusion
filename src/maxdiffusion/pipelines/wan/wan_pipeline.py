@@ -1477,6 +1477,7 @@ def validate_svg_cache_compatibility(
         "do_classifier_free_guidance",
         "return_residual",
         "skip_blocks",
+        "token_padding",
     ),
 )
 def transformer_forward_pass(
@@ -1496,6 +1497,7 @@ def transformer_forward_pass(
     rotary_emb=None,
     encoder_attention_mask=None,
     svg_step_index=None,
+    token_padding=None,
 ):
   if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
     latents = jnp.concatenate([latents, latents], axis=0)
@@ -1512,6 +1514,7 @@ def transformer_forward_pass(
       rotary_emb=rotary_emb,
       encoder_attention_mask=encoder_attention_mask,
       svg_step_index=svg_step_index,
+      token_padding=token_padding,
   )
 
   if return_residual:

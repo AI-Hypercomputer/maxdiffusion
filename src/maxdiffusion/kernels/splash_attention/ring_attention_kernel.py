@@ -859,6 +859,7 @@ def _custom_ring_attention_forward(
     bidirectional: bool = False,
     use_fixed_m: bool = False,
     fixed_m_norms: tuple[jax.Array, jax.Array] | None = None,
+    kv_valid_lens: tuple[int, ...] | None = None,
 ) -> jax.Array:
   """Forward-only ring attention using the custom dense splash kernel.
 
@@ -888,11 +889,19 @@ def _custom_ring_attention_forward(
     perm: Explicit `ppermute` permutation. Defaults to a full-axis +1 rotation.
       For the hybrid split, pass a perm that rotates K/V *within each ring
       sub-group only* (built by the caller from the U x R factorization).
+    kv_valid_lens: Optional per-rank valid key counts; each hop slices its K/V
+      shard at the source rank's valid length.
 
   Returns:
     Normalized attention output, shape `(num_q_heads, q_seq_len, head_dim_v)`.
   """
   axis_size = lax.axis_size(ring_axis)
+  if kv_valid_lens is not None:
+    kv_valid_lens = tuple(int(n) for n in kv_valid_lens)
+    if bidirectional or perm is not None or (ring_size is not None and ring_size != axis_size):
+      raise NotImplementedError("kv_valid_lens requires the default full-axis unidirectional ring.")
+    if len(kv_valid_lens) != axis_size or any(n < 0 or n > k.shape[1] for n in kv_valid_lens):
+      raise ValueError(f"kv_valid_lens={kv_valid_lens} must give 0..{k.shape[1]} keys for each of {axis_size} ring ranks.")
   if bidirectional:
     if perm is not None or (ring_size is not None and ring_size != axis_size):
       raise ValueError(
@@ -925,6 +934,43 @@ def _custom_ring_attention_forward(
 
   num_q_heads = q.shape[0]
   head_dim_v = v.shape[-1]
+  my_ring_index = lax.axis_index(ring_axis)
+
+  def _shard_forward(k_cur, v_cur, hop, **kernel_kwargs):
+    """Runs the per-shard kernel bounded by the source rank's valid KV length."""
+
+    def run(kv_len):
+      def f(k_in, v_in):
+        if kv_len == 0:
+          return (
+              jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32),
+              jnp.full((num_q_heads, orig_q_seq_len), mask_value, jnp.float32),
+              jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32),
+          )
+        o, m, l = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
+            q,
+            k_in,
+            v_in,
+            block_sizes,
+            q_seq_len=orig_q_seq_len,
+            kv_seq_len=kv_len,
+            use_base2_exp=use_base2_exp,
+            use_experimental_scheduler=use_experimental_scheduler,
+            vmem_limit_bytes=vmem_limit_bytes,
+            **kernel_kwargs,
+        )
+        return o.astype(jnp.float32), m.astype(jnp.float32), l.astype(jnp.float32)
+
+      return f
+
+    if kv_valid_lens is None:
+      return run(orig_kv_seq_len)(k_cur, v_cur)
+    distinct = sorted(set(kv_valid_lens))
+    if len(distinct) == 1:
+      return run(distinct[0])(k_cur, v_cur)
+    branch_of_rank = jnp.asarray([distinct.index(n) for n in kv_valid_lens], jnp.int32)
+    src_rank = (my_ring_index - hop) % axis_size
+    return lax.switch(branch_of_rank[src_rank], [run(n) for n in distinct], k_cur, v_cur)
 
   if use_fixed_m:
     # Fixed-m ring: each hop gates PER (head, K-shard) against the halved
@@ -958,7 +1004,6 @@ def _custom_ring_attention_forward(
       mk_all = mk_h_init
     else:
       mk_all = lax.all_gather(mk_h_init, ring_axis)  # (axis_size, heads)
-    my_ring_index = lax.axis_index(ring_axis)
 
     # GLOBAL bound = max over every shard's mk. When ALL local heads pass the
     # gate at this single bound, every hop's pinned m is IDENTICAL (it depends
@@ -993,16 +1038,10 @@ def _custom_ring_attention_forward(
           # transfer overlaps the kernel.
           k_next = shift(k_current)
           v_next = shift(v_current)
-        o_curr, _, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
-            q,
+        o_curr, _, l_curr = _shard_forward(
             k_current,
             v_current,
-            block_sizes,
-            q_seq_len=orig_q_seq_len,
-            kv_seq_len=orig_kv_seq_len,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
-            vmem_limit_bytes=vmem_limit_bytes,
+            hop,
             use_fixed_m=True,
             mk=mk_arr,
             # This branch only runs under `all_fixed_global`, so the kernel is
@@ -1042,16 +1081,10 @@ def _custom_ring_attention_forward(
       )
       mk_arr = jnp.stack([mk_h, fixed_ok])
 
-      o_curr, m_curr, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
-          q,
+      o_curr, m_curr, l_curr = _shard_forward(
           k_current,
           v_current,
-          block_sizes,
-          q_seq_len=orig_q_seq_len,
-          kv_seq_len=orig_kv_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_experimental_scheduler=use_experimental_scheduler,
-          vmem_limit_bytes=vmem_limit_bytes,
+          hop,
           use_fixed_m=True,
           mk=mk_arr,
       )
@@ -1102,17 +1135,7 @@ def _custom_ring_attention_forward(
       k_next = shift(k_current)
       v_next = shift(v_current)
 
-    o_curr, m_curr, l_curr = custom_splash._splash_attention_forward_ring(  # pylint: disable=protected-access
-        q,
-        k_current,
-        v_current,
-        block_sizes,
-        q_seq_len=orig_q_seq_len,
-        kv_seq_len=orig_kv_seq_len,
-        use_base2_exp=use_base2_exp,
-        use_experimental_scheduler=use_experimental_scheduler,
-        vmem_limit_bytes=vmem_limit_bytes,
-    )
+    o_curr, m_curr, l_curr = _shard_forward(k_current, v_current, hop)
     m_curr = m_curr.astype(jnp.float32)
     l_curr = l_curr.astype(jnp.float32)
     o_curr = o_curr.astype(jnp.float32)
@@ -1146,6 +1169,7 @@ def make_custom_ring_attention(
     bidirectional: bool = False,
     use_fixed_m: bool = False,
     fixed_m_norms: tuple[jax.Array, jax.Array] | None = None,
+    kv_valid_lens: tuple[int, ...] | None = None,
 ):
   """Builds a forward-only ring-attention callable around the custom kernel.
 
@@ -1181,6 +1205,7 @@ def make_custom_ring_attention(
         bidirectional=bidirectional,
         use_fixed_m=use_fixed_m,
         fixed_m_norms=fixed_m_norms,
+        kv_valid_lens=kv_valid_lens,
     )
 
   return _ring
