@@ -8,7 +8,7 @@ deps = {
     "aqtp": "aqtp",
     "datasets": "datasets",
     "einops": "einops",
-    "flax": "flax",
+    "flax": "flax>=0.12.10",
     "ftfy": "ftfy",
     "google-cloud-storage": "google-cloud-storage",
     "grain": "grain",
