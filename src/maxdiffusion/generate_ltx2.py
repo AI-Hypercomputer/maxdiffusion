@@ -105,6 +105,9 @@ def maybe_tune_block_sizes(config):
   vmem_limit_bytes = int(
       keys.get("tile_search_vmem_limit_bytes") or config.flash_block_sizes.get("vmem_limit_bytes") or 64 * 1024 * 1024
   )
+  if "v6" in jax.devices()[0].device_kind.lower():
+    vmem_limit_bytes = min(vmem_limit_bytes, 32 * 1024 * 1024)
+
   bench = LTX2BlockBenchmark.from_config(config, mesh, vmem_limit_bytes=vmem_limit_bytes)
   max_logging.log(f"[tile-search] tuning block sizes for {bench.label} before inference...")
   result = grid_search(
@@ -223,6 +226,26 @@ def ltx2_aot_metadata(config, pipeline, source_revision=None):
       "sharding",
       "weights_dtype",
       "activations_dtype",
+      "use_svg_attention",
+      "svg_implementation",
+      "svg_spatial_density",
+      "svg_sample_max_row",
+      "svg_profile_query_count",
+      "svg_profile_seed",
+      "svg_dense_layer_fraction",
+      "svg_dense_timestep_fraction",
+      "svg_active_start_step",
+      "svg_active_end_step",
+      "svg_active_start_layer",
+      "svg_active_end_layer",
+      "svg_num_train_timesteps",
+      "svg_num_layers",
+      "svg_include_first_frame",
+      "svg_global_stride",
+      "svg_global_offset",
+      "svg_high_noise_density",
+      "svg_low_noise_density",
+      "svg_flash_block_sizes",
   ]
   config_dict = {k: getattr(config, k, None) for k in config_keys}
 
