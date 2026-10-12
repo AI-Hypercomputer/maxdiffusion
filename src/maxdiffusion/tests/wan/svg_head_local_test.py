@@ -24,9 +24,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-from maxdiffusion.models.wan.transformers.svg_head_local import exchange_local, inference_only
+from maxdiffusion.models.svg_head_local import exchange_local, inference_only
 
-from maxdiffusion.models.wan.transformers import svg_attention as svg
+from maxdiffusion.models import svg_attention as svg
 
 
 @pytest.mark.parametrize("routing", ["mixed", "spatial", "temporal"])
