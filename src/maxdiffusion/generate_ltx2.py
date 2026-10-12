@@ -27,6 +27,7 @@ import flax
 
 from maxdiffusion.utils.export_utils import export_to_video_with_audio
 from maxdiffusion.loaders.ltx2_lora_nnx_loader import LTX2NNXLoraLoader
+from maxdiffusion.pipelines.ltx2.ltx2_pipeline import svg_attention_enabled
 
 
 def get_git_commit_hash():
@@ -201,6 +202,13 @@ def ltx2_aot_metadata(config, pipeline, source_revision=None):
   ):
     transformer_config.pop(key, None)
 
+  # SVG settings only shape the compiled graph when SVG is active. When it is
+  # off, leave them out so editing an unused svg_* value keeps the cache.
+  svg_enabled = svg_attention_enabled(config)
+  attention_config = transformer_config.get("attention_config")
+  if not svg_enabled and isinstance(attention_config, dict):
+    transformer_config["attention_config"] = {k: v for k, v in attention_config.items() if not str(k).startswith("svg_")}
+
   config_keys = [
       "attention",
       "a2v_attention_kernel",
@@ -224,7 +232,28 @@ def ltx2_aot_metadata(config, pipeline, source_revision=None):
       "weights_dtype",
       "activations_dtype",
   ]
+  if svg_enabled:
+    config_keys += [
+        "svg_implementation",
+        "svg_spatial_density",
+        "svg_sample_max_row",
+        "svg_profile_query_count",
+        "svg_profile_seed",
+        "svg_dense_layer_fraction",
+        "svg_dense_timestep_fraction",
+        "svg_active_start_step",
+        "svg_active_end_step",
+        "svg_active_start_layer",
+        "svg_active_end_layer",
+        "svg_num_train_timesteps",
+        "svg_num_layers",
+        "svg_include_first_frame",
+        "svg_global_stride",
+        "svg_global_offset",
+        "svg_flash_block_sizes",
+    ]
   config_dict = {k: getattr(config, k, None) for k in config_keys}
+  config_dict["use_svg_attention"] = svg_enabled
 
   device = jax.devices()[0]
   return {
