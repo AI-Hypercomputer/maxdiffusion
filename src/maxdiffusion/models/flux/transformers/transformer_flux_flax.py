@@ -545,6 +545,9 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         self.inner_dim,
         elementwise_affine=False,
         eps=self.eps,
+        # FLUX loads adaLN_modulation_1 from the original checkpoint, which emits
+        # shift before scale. The module default follows Flux.2-Klein instead.
+        scale_shift_order="shift_scale",
         dtype=self.dtype,
         weights_dtype=self.weights_dtype,
         precision=self.precision,
