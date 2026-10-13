@@ -17,6 +17,7 @@ limitations under the License.
 """Custom Pallas flash attention kernel for TPU."""
 
 import functools
+import math
 import warnings
 
 import jax
@@ -113,22 +114,16 @@ class _BlockSizes:
 
 
 # Fixed-m softmax-bound constants. Instead of tracking the online-softmax
-# running max per KV block, eligible heads subtract a precomputed per-query
-# upper bound on the logits (Cauchy-Schwarz: max_j q_i.k_j <= ||q_i|| *
-# max_j||k_j||). _FIXED_M_RECENTER (C) shifts the exp2 exponents up so the
-# largest surviving term stays above the f32 subnormal-flush floor 2^-126:
-# with k-smoothing the per-row max is >= 0, so the max term has exponent
-# >= -ceil(bound) + C, which stays > -126 while ceil(bound) <=
-# _FIXED_M_SAFE_BOUND (= C + 126 - 1 of margin). Heads whose worst-case bound
-# exceeds the gate fall back to online softmax (the "sink" heads).
-_FIXED_M_RECENTER = 88.0
-_FIXED_M_SAFE_BOUND = 213.0
-# Ring-path gate: the ring processes UN-smoothed K shards (no ring rank holds
-# the full K to compute a mean, and a per-shard mean would shift each hop's
-# logits differently, breaking the cross-shard merge). Without k-smoothing the
-# per-row max logit has no >=0 guarantee, so the safe bound halves (calibrated
-# for ring_size=2, matching DiffusionServing's ring gate).
-_FIXED_M_RING_SAFE_BOUND = _FIXED_M_SAFE_BOUND / 2.0
+# running max per KV block, eligible (head, Q-block) tiles subtract a
+# precomputed shift built from a Cauchy-Schwarz bound on the logits
+# (max_j q_i.k_j <= U = max_i ||q_i|| * max_j ||k_j||). With m = ceil(U) - C(N),
+# the worst case over both logit signs is z - m >= C(N) - (U + ceil(U)), so the
+# exponent stays >= -125 (above the f32 subnormal-flush floor 2^-126) when
+# U <= floor((C(N) + 125) / 2). Tiles above that gate fall back to online
+# softmax (the "sink" heads). `get_fixed_m_constants` derives C(N) and the gate
+# from the KV length.
+
+DEFAULT_MAX_V_BOUND = 256.0
 
 
 def _attention_cost_estimate(
@@ -152,11 +147,84 @@ def _attention_cost_estimate(
   return pl.CostEstimate(flops=int(flops), transcendentals=int(scores), bytes_accessed=int(bytes_accessed))
 
 
-def _flash_attention_kernel(
+def fixed_m_dtype_is_safe(dtype, recenter: float) -> bool:
+  """Whether `dtype` can hold the fixed-m softmax weights without overflowing.
+
+  Fixed-m deliberately parks the un-normalized weights at up to `2**recenter`,
+  a range derived against FP32's exponent (see `get_fixed_m_constants`). The
+  kernel then narrows them to the activation dtype for the S@V matmul
+  (`s_curr.astype(q_ref.dtype)`), so a dtype with a *smaller exponent range*
+  silently overflows to inf even though the FP32 bound analysis passed.
+
+  bfloat16 and float32 both have 8-bit exponents (maxexp 128) and are safe for
+  every C(N) this module produces. float16 has a 5-bit exponent (maxexp 16) and
+  is not: at N=4096 with |V| <= 256, C(N) = 107 and 2**107 is far beyond
+  float16's 65504 ceiling. The fp8 formats fail for the same reason.
+
+  This is deliberately expressed in terms of the exponent range rather than an
+  allowlist so narrower formats are rejected automatically.
+
+  Args:
+    dtype: Activation dtype the kernel will narrow the weights to.
+    recenter: The fixed-m constant C(N) from `get_fixed_m_constants`.
+
+  Returns:
+    True if `2**recenter` is representable in `dtype`.
+  """
+  return float(jnp.finfo(jnp.dtype(dtype)).maxexp) > float(recenter)
+
+
+def get_fixed_m_constants(
+    kv_seq_len: int,
+    v_max_bound: float = DEFAULT_MAX_V_BOUND,
+) -> tuple[float, float]:
+  """Computes dynamic fixed-m constants C(N) and safe bounds based on KV sequence length.
+
+  Mathematical Derivations:
+    1. Overflow Ceiling:
+       For a given upper bound on value activation magnitude |V| <= V_max:
+       output_headroom_bits = ceil(log2(V_max)).
+       The ceiling constant C(N) = 127.0 - ceil(log2(N)) - output_headroom_bits guarantees that:
+       - Denominator accumulator: l = sum_j 2^{z_j - m} <= N * 2^C(N) <= 2^{127 - headroom} < 2^{128}
+       - Numerator accumulator: |o_d| = |sum_j V_{j,d} 2^{z_j - m}| <= V_max * N * 2^C(N) <= 2^{127} < 2^{128}
+       preventing IEEE-754 FP32 overflow for all activations |V| <= V_max.
+
+    2. Subnormal Underflow Floor (Cauchy-Schwarz Proof):
+       Let U_B = max_{i in B} ||q_i|| * max_j ||k_j|| be the Cauchy-Schwarz bound on query-key inner products
+       for Q-block B (per head). With base shift m_B = ceil(U_B) - C(N), the minimal shifted exponent stays >= -125.0
+       (1 bit of margin above IEEE-754 normal floor -126.0) as long as U_B <= floor((C(N) + 125.0) / 2).
+       This bound is two-sided and guarantees no exponent underflows into subnormal range.
+  """
+
+  if kv_seq_len is None or kv_seq_len <= 0:
+    raise ValueError(f"kv_seq_len must be a positive integer to compute dynamic fixed-m constants, got {kv_seq_len=}")
+  if v_max_bound <= 0.0:
+    raise ValueError(f"v_max_bound must be a positive float, got {v_max_bound=}")
+
+  fp32_max_exp = 128.0
+  fp32_min_normal_exp = -126.0
+  output_headroom_bits = float(max(0, math.ceil(math.log2(float(v_max_bound)))))
+
+  max_accumulation_bits = float(math.ceil(math.log2(float(kv_seq_len))))
+
+  # C(N) = 127.0 - max_accumulation_bits - output_headroom_bits
+  recenter = fp32_max_exp - max_accumulation_bits - output_headroom_bits - 1.0
+
+  # Safe window W(N) = C(N) - (-126.0) - 1.0 = C(N) + 125.0
+  # With base shift m_B = ceil(U) - C(N), any shifted logit (q·k - m_B) stays in
+  # [-125, C(N)] as long as U <= floor((C(N) + 125) / 2), keeping exponents within FP32 normal range.
+  safe_window = recenter - fp32_min_normal_exp - 1.0
+  safe_bound = float(int(safe_window // 2))
+
+  return recenter, safe_bound
+
+
+def _flash_attention_kernel_impl(
     mk_ref,
     q_ref,
     k_ref,
     v_ref,
+    k_mean_ref,
     m_scratch_ref,
     l_scratch_ref,
     o_scratch_ref,
@@ -175,23 +243,57 @@ def _flash_attention_kernel(
     fuse_reciprocal: bool = True,
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
+    use_k_centering: bool = False,
     save_lse: bool = False,
 ):
+  """Pallas Mosaic TPU flash attention kernel with fixed-m support.
+
+  Scalar Prefetch Multiplexing:
+    `mk_ref` is a multiplexed scalar prefetch buffer of shape `(2, num_heads, num_q_blocks)`
+    passing both the precomputed block fixed-m base shift and discrete predicate in a single scalar memory slot:
+      - `mk_ref[0, h, i]`: Precomputed block shift m_B = ceil(max_i ||q_i|| * max_j ||k_j||) - C.
+      - `mk_ref[1, h, i]`: Gating eligibility predicate (1.0 for fixed-m, 0.0 for online).
+
+  Args:
+    mk_ref: Scalar prefetch ref of shape `(2, num_q_heads, num_q_blocks)`.
+    q_ref: VMEM ref of shape `(bq, head_dim_qk)`.
+    k_ref: VMEM ref of shape `(bkv, head_dim_qk)`.
+    v_ref: VMEM ref of shape `(bkv, head_dim_v)`.
+    k_mean_ref: Optional VMEM ref of shape `(NUM_SUBLANES, head_dim_qk)` for virtual K-centering.
+    m_scratch_ref: VMEM scratch ref of shape `(NUM_SUBLANES, bq)` for running max / fixed shift.
+    l_scratch_ref: VMEM scratch ref of shape `(NUM_SUBLANES, bq)` for softmax denominator.
+    o_scratch_ref: VMEM scratch ref of shape `(head_dim_v, bq)` for un-normalized numerator.
+    o_ref: Output VMEM ref of shape `(head_dim_v, bq)`.
+    l_ring_ref: Optional ring output ref of shape `(NUM_SUBLANES, bq)` for linear denominator.
+    m_ring_ref: Optional ring output ref of shape `(NUM_SUBLANES, bq)` for per-row max logit.
+    mask_value: Mask fill value for out-of-bounds KV positions.
+    grid_width: Number of KV blocks in the Pallas grid.
+    bkv: KV block size loaded into VMEM per grid step.
+    bkv_compute: Outer VMEM compute sub-block size.
+    bkv_compute_in: Inner VPU register-tiling step size.
+    head_dim_v: Value head dimension (must be a multiple of `NUM_SUBLANES`).
+    kv_seq_len: Unpadded KV sequence length.
+    use_base2_exp: Whether to use `exp2` instead of `exp`.
+    fuse_reciprocal: Whether to normalize `o_scratch_ref` by `1 / l_scratch_ref` on the final KV block.
+    use_fixed_m: Whether to enable fixed-m softmax shift.
+    uniform_fixed_m: Compile-time promise that every tile in the call is eligible for fixed-m.
+    use_k_centering: Whether to add the virtual K-centering shift `q @ k_mean^T` to `m_base`.
+  """
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
   if rem != 0:
     raise NotImplementedError(f"{head_dim_v=} should be a multiple of {NUM_SUBLANES}")
 
-  h, _, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+  h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
   exp = jnp.exp2 if use_base2_exp else jnp.exp
   sv_dims = (((0,), (0,)), ((), ()))
 
-  # `uniform_fixed_m` is the caller's compile-time promise that EVERY head
-  # passed the gate (the ring's accumulate merge runs under exactly that
-  # predicate). It buys two things at once: the per-head dispatch collapses to
-  # a single body per block, and the fixed bound stays PINNED through the
-  # ragged last KV block, so every hop reports the identical m and the hops
-  # combine by plain accumulation.
+  # `uniform_fixed_m` is the caller's compile-time promise that EVERY
+  # (head, Q-block) tile passed the gate (the ring's accumulate merge runs under
+  # exactly that predicate). It buys two things at once: the per-(head, Q-block)
+  # dispatch collapses to a single body per block, and the fixed bound stays
+  # PINNED through the ragged last KV block, so every hop reports the identical
+  # m and the hops combine by plain accumulation.
   #
   # Both must move together. Pinning without the uniform promise needs a
   # SECOND body in the last block (fixed and online), and a two-body last
@@ -202,16 +304,33 @@ def _flash_attention_kernel(
   if uniform_fixed_m and not use_fixed_m:
     raise ValueError("uniform_fixed_m requires use_fixed_m.")
 
-  # Per-head dispatch: heads inside the no-flush window run fixed-m, the rest
-  # keep online softmax. Branch once per head (body level), never per step.
-  is_fixed = (mk_ref[1, h] > 0.5) if (use_fixed_m and not fixed_only) else False
+  # Per-(head, Q-block) dispatch: heads / Q-blocks inside the no-flush window run
+  # fixed-m, the rest keep online softmax.
+  if use_fixed_m and not fixed_only:
+    is_fixed = mk_ref[1, h, i] > 0.5
+  else:
+    is_fixed = False
 
   def _write_fixed_m():
-    # Per-query Cauchy-Schwarz bound m_i = ceil(||q_i|| * max_j||k_j||) - C.
-    qf = q_ref[...].astype(float32)
-    qn = jnp.sqrt((qf * qf).sum(axis=1))[None, :]  # (1, bq) per-query norm
-    bound = qn * mk_ref[0, h]
-    m_fixed = jnp.ceil(bound) - _FIXED_M_RECENTER
+    # Precomputed block bound m_B = ceil(max_i ||q_i|| * max_j ||k_j||) - C.
+    # Virtual K-centering applies the row-specific projection: m_i = m_B + q_i^T \bar{k}.
+    # k_mean_ref has shape (NUM_SUBLANES, head_dim_qk) and q_ref has shape (bq, head_dim_qk),
+    # so dot_general produces (NUM_SUBLANES, bq) directly on the MXU without 1D loads or lane reductions.
+    # precision=HIGHEST: the gate has no slack at its edge, so q^T k_bar must not
+    # be evaluated as a single bf16 MXU pass. It runs once per (h, i), so the
+    # extra passes are negligible next to the per-KV-block dots.
+    m_base = mk_ref[0, h, i]
+    if use_k_centering and k_mean_ref is not None:
+      mu = lax.dot_general(
+          k_mean_ref[...].astype(float32),
+          q_ref[...].astype(float32),
+          NT_DIM_NUMBERS,
+          precision=lax.Precision.HIGHEST,
+          preferred_element_type=float32,
+      )
+      m_fixed = m_base + mu
+    else:
+      m_fixed = m_base
     m_scratch_ref[...] = jnp.broadcast_to(m_fixed, m_scratch_ref.shape)
 
   @pl.when(j == 0)
@@ -299,27 +418,40 @@ def _flash_attention_kernel(
   def last_compute_body_online(kv_compute_index):
     q = q_ref[...]
     slice_k_len = kv_seq_len % bkv_compute
-    slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
+    aligned_k_len = ((slice_k_len + NUM_SUBLANES - 1) // NUM_SUBLANES) * NUM_SUBLANES
+    slice_k = pl.ds(kv_compute_index * bkv_compute, aligned_k_len)
     qk = lax.dot_general(k_ref[slice_k, :], q, NT_DIM_NUMBERS, preferred_element_type=float32)
     v_chunk = v_ref[slice_k, :]
+    if slice_k_len != aligned_k_len:
+      qk_mask = lax.broadcasted_iota(jnp.int32, qk.shape, 0) < slice_k_len
+      qk = jnp.where(qk_mask, qk, mask_value)
+      v_mask = lax.broadcasted_iota(jnp.int32, v_chunk.shape, 0) < slice_k_len
+      v_chunk = jnp.where(v_mask, v_chunk, 0)
     m_prev, l_prev, o_prev = _online_inner(qk, v_chunk, m_scratch_ref[...], l_scratch_ref[...], o_scratch_ref[:])
     m_scratch_ref[...], l_scratch_ref[...] = m_prev, l_prev
     o_scratch_ref[:] = o_prev
 
   def last_compute_body_fixed(kv_compute_index):
-    # Ragged tail for the pinned fixed-m path: exact slice (padded keys are
-    # never touched -- with a pinned m their exp2(0 - m_fixed) would be huge
-    # garbage, so slicing, not masking, is load-bearing here).
+    # Ragged tail for the pinned fixed-m path: exact slice when aligned to
+    # NUM_SUBLANES (8); when unaligned, round the VMEM slice up to NUM_SUBLANES
+    # and mask padded rows to mask_value / 0 so exp2(mask_value - m_fixed) == 0.
     q = q_ref[...]
     slice_k_len = kv_seq_len % bkv_compute
-    slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
+    aligned_k_len = ((slice_k_len + NUM_SUBLANES - 1) // NUM_SUBLANES) * NUM_SUBLANES
+    slice_k = pl.ds(kv_compute_index * bkv_compute, aligned_k_len)
     qk = lax.dot_general(k_ref[slice_k, :], q, NT_DIM_NUMBERS, preferred_element_type=float32)
     v_chunk = v_ref[slice_k, :]
+    if slice_k_len != aligned_k_len:
+      qk_mask = lax.broadcasted_iota(jnp.int32, qk.shape, 0) < slice_k_len
+      qk = jnp.where(qk_mask, qk, mask_value)
+      v_mask = lax.broadcasted_iota(jnp.int32, v_chunk.shape, 0) < slice_k_len
+      v_chunk = jnp.where(v_mask, v_chunk, 0)
     l_prev, o_prev = _fixed_inner(qk, v_chunk, m_scratch_ref[...], l_scratch_ref[...], o_scratch_ref[:])
     l_scratch_ref[...] = l_prev
     o_scratch_ref[:] = o_prev
 
-  assert bkv % bkv_compute == 0
+  if bkv % bkv_compute != 0:
+    raise ValueError(f"block_kv ({bkv}) must be divisible by block_kv_compute ({bkv_compute})")
 
   if fixed_only:
 
@@ -346,10 +478,16 @@ def _flash_attention_kernel(
   # Exactly ONE of these runs in the final KV block -- never both (see the
   # note on `uniform_fixed_m` above).
   #
-  # `_last_online` is the hybrid default: a fixed-m head arrives with
-  # m_scratch = ceil(bound) - C, and since that is an upper bound on every
-  # logit the online step's max leaves it unchanged and its rescale factor is
-  # exp2(0) = 1, so running the last block online is exact for fixed heads too.
+  # `_last_online` is the hybrid default: a fixed-m head arrives at the final
+  # KV block (`j == grid_width - 1`) with `m_scratch = ceil(bound) - C(N)`,
+  # which sits at most `C(N)` below the realized max `m_curr` (since
+  # `m_curr <= bound`). When
+  # `_online_inner` runs on that final block, `m_next = jnp.maximum(m_prev, m_curr)`
+  # updates the running max and rescales `l_prev` and `o_prev` by
+  # `alpha = exp2(m_prev - m_next) >= 2^-C(N)`. With the default V_max = 256,
+  # `C(N) <= 119`, so alpha stays above the FP32 subnormal floor (`2^-126`),
+  # preserving full precision while exporting the updated `m_next` via
+  # `m_ring_ref`.
   # `_last_fixed` keeps the bound pinned instead, which is what lets the ring's
   # accumulate merge assume every hop reports the identical m.
   def _last_online():
@@ -409,6 +547,112 @@ def _flash_attention_kernel(
         l_ring_ref[...] = l.astype(l_ring_ref.dtype)
     if m_ring_ref is not None:
       m_ring_ref[...] = m_scratch_ref[...].astype(m_ring_ref.dtype)
+
+
+def _flash_attention_kernel(
+    mk_ref,
+    q_ref,
+    k_ref,
+    v_ref,
+    m_scratch_ref,
+    l_scratch_ref,
+    o_scratch_ref,
+    o_ref,
+    l_ring_ref=None,
+    m_ring_ref=None,
+    *,
+    mask_value: float,
+    grid_width: int,
+    bkv: int,
+    bkv_compute: int,
+    bkv_compute_in: int,
+    head_dim_v: int,
+    kv_seq_len: int,
+    use_base2_exp: bool = True,
+    fuse_reciprocal: bool = True,
+    use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
+    save_lse: bool = False,
+):
+  return _flash_attention_kernel_impl(
+      mk_ref,
+      q_ref,
+      k_ref,
+      v_ref,
+      None,
+      m_scratch_ref,
+      l_scratch_ref,
+      o_scratch_ref,
+      o_ref,
+      l_ring_ref=l_ring_ref,
+      m_ring_ref=m_ring_ref,
+      mask_value=mask_value,
+      grid_width=grid_width,
+      bkv=bkv,
+      bkv_compute=bkv_compute,
+      bkv_compute_in=bkv_compute_in,
+      head_dim_v=head_dim_v,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      fuse_reciprocal=fuse_reciprocal,
+      use_fixed_m=use_fixed_m,
+      uniform_fixed_m=uniform_fixed_m,
+      use_k_centering=False,
+      save_lse=save_lse,
+  )
+
+
+def _flash_attention_kernel_kcentered(
+    mk_ref,
+    q_ref,
+    k_ref,
+    v_ref,
+    k_mean_ref,
+    m_scratch_ref,
+    l_scratch_ref,
+    o_scratch_ref,
+    o_ref,
+    l_ring_ref=None,
+    m_ring_ref=None,
+    *,
+    mask_value: float,
+    grid_width: int,
+    bkv: int,
+    bkv_compute: int,
+    bkv_compute_in: int,
+    head_dim_v: int,
+    kv_seq_len: int,
+    use_base2_exp: bool = True,
+    fuse_reciprocal: bool = True,
+    use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
+    use_k_centering: bool = True,
+):
+  return _flash_attention_kernel_impl(
+      mk_ref,
+      q_ref,
+      k_ref,
+      v_ref,
+      k_mean_ref,
+      m_scratch_ref,
+      l_scratch_ref,
+      o_scratch_ref,
+      o_ref,
+      l_ring_ref=l_ring_ref,
+      m_ring_ref=m_ring_ref,
+      mask_value=mask_value,
+      grid_width=grid_width,
+      bkv=bkv,
+      bkv_compute=bkv_compute,
+      bkv_compute_in=bkv_compute_in,
+      head_dim_v=head_dim_v,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      fuse_reciprocal=fuse_reciprocal,
+      use_fixed_m=use_fixed_m,
+      uniform_fixed_m=uniform_fixed_m,
+      use_k_centering=use_k_centering,
+  )
 
 
 def _flash_attention_kernel_mhpt(
@@ -534,7 +778,8 @@ def _flash_attention_kernel_mhpt(
       l_scratch_ref[h_local] = l_prev
       o_scratch_ref[h_local] = o_prev
 
-  assert bkv % bkv_compute == 0
+  if bkv % bkv_compute != 0:
+    raise ValueError(f"block_kv ({bkv}) must be divisible by block_kv_compute ({bkv_compute})")
 
   @pl.when(j != grid_width - 1)
   def body():
@@ -574,15 +819,15 @@ def _splash_attention_forward(
     vmem_limit_bytes: int | None = None,
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
+    uniform_fixed_m: bool = False,
+    k_mean: jax.Array | None = None,
+    interpret: bool | None = None,
     save_residuals: bool = False,
 ):
+  if interpret is None:
+    interpret = jax.default_backend() == "cpu"
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
-  # Scalar-prefetch operand carrying per-head fixed-m data:
-  #   mk[0, h] = max_j||k_j|| (Cauchy-Schwarz factor), mk[1, h] = eligibility.
-  # A dummy is supplied for online callers; the kernel ignores it.
-  if mk is None:
-    mk = jnp.zeros((2, num_q_heads), jnp.float32)
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
   bkv_compute = block_sizes.block_kv_compute
   bkv_compute_in = block_sizes.block_kv_compute_in
@@ -591,7 +836,28 @@ def _splash_attention_forward(
 
   actual_q_seq_len = q_seq_len if q_seq_len is not None else padded_q_seq_len
   actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else padded_kv_seq_len
+  if num_q_heads % num_kv_heads != 0:
+    raise ValueError(f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA.")
   q_heads_per_kv_head = num_q_heads // num_kv_heads
+  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
+  grid_height = (actual_q_seq_len + bq - 1) // bq
+  grid = (num_q_heads, grid_height, grid_width)
+
+  # Scalar-prefetch operand carrying per-head / per-Q-block fixed-m data:
+  #   mk[0, h, i] = m_B (precomputed block fixed-m base shift), mk[1, h, i] = eligibility.
+  # A dummy is supplied for online callers; the kernel ignores it.
+  if use_fixed_m and mk is None:
+    raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
+  if mk is None:
+    mk = jnp.zeros((2, num_q_heads, grid_height), jnp.float32)
+  elif mk.ndim == 2:
+    raise ValueError(
+        "2D `mk` arrays (2, num_q_heads) are not supported: `mk[0]` now stores the precomputed "
+        "base shift m_B rather than legacy max||k||. Pass a 3D (2, num_q_heads, num_q_blocks) array."
+    )
+
+  if mk.shape[0] != 2 or mk.shape[1] != num_q_heads or mk.shape[2] != grid_height:
+    raise ValueError(f"mk must have shape (2, {num_q_heads}, {grid_height}), got {mk.shape}")
 
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
@@ -605,25 +871,14 @@ def _splash_attention_forward(
   def v_index_map(h, i, j, *_):
     return (h // q_heads_per_kv_head, j, 0)
 
-  grid_width = (actual_kv_seq_len + bkv - 1) // bkv
-  grid_height = (actual_q_seq_len + bq - 1) // bq
   active_q_len = grid_height * bq
   active_kv_len = grid_width * bkv
 
-  q_in = jnp.pad(q, ((0, 0), (0, active_q_len - q.shape[1]), (0, 0))) if q.shape[1] < active_q_len else q
-  k_in = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
-  v_in = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
-
-  in_specs = [
-      pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
-      pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
-      pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
-  ]
   out_shapes = [
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, active_q_len), q.dtype),
+      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
   ]
   out_specs = [
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
@@ -632,10 +887,9 @@ def _splash_attention_forward(
       pl.BlockSpec((None, head_dim_v, bq), out_index_map),
   ]
   if save_residuals:
-    out_shapes.append(jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, active_q_len), jnp.float32))
+    out_shapes.append(jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32))
     out_specs.append(pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map))
 
-  grid = (num_q_heads, grid_height, grid_width)
   itemsize = q.dtype.itemsize
   cost_estimate = _attention_cost_estimate(
       num_q_heads,
@@ -652,20 +906,56 @@ def _splash_attention_forward(
       ),
   )
 
+  if k_mean is None:
+    in_specs = [
+        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
+        pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
+    ]
+    kernel_fn = functools.partial(
+        _flash_attention_kernel,
+        mask_value=DEFAULT_MASK_VALUE,
+        grid_width=grid_width,
+        bkv=bkv,
+        bkv_compute=bkv_compute,
+        bkv_compute_in=bkv_compute_in,
+        head_dim_v=head_dim_v,
+        kv_seq_len=actual_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_fixed_m=use_fixed_m,
+        uniform_fixed_m=uniform_fixed_m,
+        save_lse=save_residuals,
+    )
+    kernel_args = (mk, q, k, v)
+  else:
+    if k_mean.shape != (num_kv_heads, head_dim_qk):
+      raise ValueError(f"k_mean must have shape ({num_kv_heads}, {head_dim_qk}) indexed by KV head, got {k_mean.shape}")
+    k_mean_tiled = jnp.repeat(k_mean[:, None, :], NUM_SUBLANES, axis=1)
+
+    in_specs = [
+        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
+        pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
+        pl.BlockSpec((None, NUM_SUBLANES, head_dim_qk), lambda h, i, j, *_: (h // q_heads_per_kv_head, 0, 0)),
+    ]
+    kernel_fn = functools.partial(
+        _flash_attention_kernel_kcentered,
+        mask_value=DEFAULT_MASK_VALUE,
+        grid_width=grid_width,
+        bkv=bkv,
+        bkv_compute=bkv_compute,
+        bkv_compute_in=bkv_compute_in,
+        head_dim_v=head_dim_v,
+        kv_seq_len=actual_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_fixed_m=use_fixed_m,
+        uniform_fixed_m=uniform_fixed_m,
+        use_k_centering=True,
+    )
+    kernel_args = (mk, q, k, v, k_mean_tiled)
+
   all_out = pl.pallas_call(
-      functools.partial(
-          _flash_attention_kernel,
-          mask_value=DEFAULT_MASK_VALUE,
-          grid_width=grid_width,
-          bkv=bkv,
-          bkv_compute=bkv_compute,
-          bkv_compute_in=bkv_compute_in,
-          head_dim_v=head_dim_v,
-          kv_seq_len=actual_kv_seq_len,
-          use_base2_exp=use_base2_exp,
-          use_fixed_m=use_fixed_m,
-          save_lse=save_residuals,
-      ),
+      kernel_fn,
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
           in_specs=in_specs,
@@ -681,10 +971,11 @@ def _splash_attention_forward(
       ),
       out_shape=out_shapes,
       cost_estimate=cost_estimate,
-  )(mk, q_in, k_in, v_in)
-  out = all_out[3][:, :, :actual_q_seq_len]
+      interpret=interpret,
+  )(*kernel_args)
+  out = all_out[3]
   if save_residuals:
-    return out, all_out[4][:, 0, :actual_q_seq_len]
+    return out, all_out[4][:, 0, :]
   return out
 
 
@@ -701,6 +992,8 @@ def _splash_attention_forward_ring(
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
     uniform_fixed_m: bool = False,
+    k_mean: jax.Array | None = None,
+    interpret: bool | None = None,
 ):
   """Ring-specific forward path that returns pre-reciprocal fp32 accumulators.
 
@@ -716,6 +1009,9 @@ def _splash_attention_forward_ring(
       - `out` has shape `(num_q_heads, q_seq_len, head_dim_v)` (fp32, un-normalized),
       - `m` and `l` have shape `(num_q_heads, q_seq_len)` (fp32).
   """
+  if interpret is None:
+    interpret = jax.default_backend() == "cpu"
+
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
@@ -726,6 +1022,8 @@ def _splash_attention_forward_ring(
 
   actual_q_seq_len = q_seq_len if q_seq_len is not None else padded_q_seq_len
   actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else padded_kv_seq_len
+  if num_q_heads % num_kv_heads != 0:
+    raise ValueError(f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads}) for GQA.")
   q_heads_per_kv_head = num_q_heads // num_kv_heads
 
   def q_index_map(h, i, j, *_):
@@ -742,25 +1040,13 @@ def _splash_attention_forward_ring(
 
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
   grid_height = (actual_q_seq_len + bq - 1) // bq
-  active_q_len = grid_height * bq
-  active_kv_len = grid_width * bkv
-
-  q_in = jnp.pad(q, ((0, 0), (0, active_q_len - q.shape[1]), (0, 0))) if q.shape[1] < active_q_len else q
-  k_in = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
-  v_in = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
-
-  in_specs = [
-      pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
-      pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
-      pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
-  ]
   out_shapes = [
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
       jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, active_q_len), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, active_q_len), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, active_q_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32),
   ]
   out_specs = [
       pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
@@ -772,28 +1058,76 @@ def _splash_attention_forward_ring(
   ]
   grid = (num_q_heads, grid_height, grid_width)
 
-  # Scalar-prefetch operand carrying per-head fixed-m data (same convention as
-  # `_splash_attention_forward`): mk[0, h] = max_j||k_j|| over ALL ring shards
-  # (the caller all-reduces this over the ring axis), mk[1, h] = eligibility.
+  # Scalar-prefetch operand carrying per-head / per-Q-block fixed-m data:
+  #   mk[0, h, i] = m_B, the precomputed block fixed-m base shift derived from
+  #   the bound max_i||q_i|| * max_j||k_j|| taken over ALL ring shards (the
+  #   caller all-reduces that norm over the ring axis before forming m_B).
+  #   mk[1, h, i] = eligibility.
   # A dummy is supplied for online callers; the kernel ignores it.
+  if use_fixed_m and mk is None:
+    raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
   if mk is None:
-    mk = jnp.zeros((2, num_q_heads), jnp.float32)
+    mk = jnp.zeros((2, num_q_heads, grid_height), jnp.float32)
+  elif mk.ndim == 2:
+    raise ValueError(
+        "2D `mk` arrays (2, num_q_heads) are not supported: `mk[0]` now stores the precomputed "
+        "base shift m_B rather than legacy max||k||. Pass a 3D (2, num_q_heads, num_q_blocks) array."
+    )
+
+  if mk.shape[0] != 2 or mk.shape[1] != num_q_heads or mk.shape[2] != grid_height:
+    raise ValueError(f"mk must have shape (2, {num_q_heads}, {grid_height}), got {mk.shape}")
+
+  if k_mean is None:
+    in_specs = [
+        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
+        pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
+    ]
+    kernel_fn = functools.partial(
+        _flash_attention_kernel,
+        mask_value=DEFAULT_MASK_VALUE,
+        grid_width=grid_width,
+        bkv=bkv,
+        bkv_compute=bkv_compute,
+        bkv_compute_in=bkv_compute_in,
+        head_dim_v=head_dim_v,
+        kv_seq_len=actual_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        fuse_reciprocal=False,
+        use_fixed_m=use_fixed_m,
+        uniform_fixed_m=uniform_fixed_m,
+    )
+    kernel_args = (mk, q, k, v)
+  else:
+    if k_mean.shape != (num_kv_heads, head_dim_qk):
+      raise ValueError(f"k_mean must have shape ({num_kv_heads}, {head_dim_qk}) indexed by KV head, got {k_mean.shape}")
+    k_mean_tiled = jnp.repeat(k_mean[:, None, :], NUM_SUBLANES, axis=1)
+
+    in_specs = [
+        pl.BlockSpec((None, bq, head_dim_qk), q_index_map),
+        pl.BlockSpec((None, bkv, head_dim_qk), k_index_map),
+        pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
+        pl.BlockSpec((None, NUM_SUBLANES, head_dim_qk), lambda h, i, j, *_: (h // q_heads_per_kv_head, 0, 0)),
+    ]
+    kernel_fn = functools.partial(
+        _flash_attention_kernel_kcentered,
+        mask_value=DEFAULT_MASK_VALUE,
+        grid_width=grid_width,
+        bkv=bkv,
+        bkv_compute=bkv_compute,
+        bkv_compute_in=bkv_compute_in,
+        head_dim_v=head_dim_v,
+        kv_seq_len=actual_kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        fuse_reciprocal=False,
+        use_fixed_m=use_fixed_m,
+        uniform_fixed_m=uniform_fixed_m,
+        use_k_centering=True,
+    )
+    kernel_args = (mk, q, k, v, k_mean_tiled)
 
   all_out = pl.pallas_call(
-      functools.partial(
-          _flash_attention_kernel,
-          mask_value=DEFAULT_MASK_VALUE,
-          grid_width=grid_width,
-          bkv=bkv,
-          bkv_compute=bkv_compute,
-          bkv_compute_in=bkv_compute_in,
-          head_dim_v=head_dim_v,
-          kv_seq_len=actual_kv_seq_len,
-          use_base2_exp=use_base2_exp,
-          fuse_reciprocal=False,
-          use_fixed_m=use_fixed_m,
-          uniform_fixed_m=uniform_fixed_m,
-      ),
+      kernel_fn,
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=1,
           in_specs=in_specs,
@@ -808,10 +1142,11 @@ def _splash_attention_forward_ring(
           vmem_limit_bytes=vmem_limit_bytes,
       ),
       out_shape=out_shapes,
-  )(mk, q_in, k_in, v_in)
-  out = jnp.swapaxes(all_out[3][:, :, :actual_q_seq_len], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
-  l = all_out[4][:, 0, :actual_q_seq_len]  # (h, s)
-  m = all_out[5][:, 0, :actual_q_seq_len]  # (h, s)
+      interpret=interpret,
+  )(*kernel_args)
+  out = jnp.swapaxes(all_out[3], 1, 2)  # (h, head_dim_v, s) -> (h, s, head_dim_v)
+  l = all_out[4][:, 0, :]  # (h, s)
+  m = all_out[5][:, 0, :]  # (h, s)
   return out, m, l
 
 
@@ -837,8 +1172,10 @@ def _splash_attention_forward_mhpt(
   actual_kv_seq_len = kv_seq_len if kv_seq_len is not None else k.shape[1]
   hpt = heads_per_tile
 
-  assert num_q_heads % hpt == 0, f"num_heads {num_q_heads} must be divisible by heads_per_tile {hpt}"
-  assert num_q_heads == num_kv_heads, "MHPT currently requires num_q_heads == num_kv_heads (no GQA)"
+  if num_q_heads % hpt != 0:
+    raise ValueError(f"num_heads {num_q_heads} must be divisible by heads_per_tile {hpt}")
+  if num_q_heads != num_kv_heads:
+    raise ValueError(f"MHPT currently requires num_q_heads == num_kv_heads (no GQA), got {num_q_heads=} vs {num_kv_heads=}")
 
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
@@ -1739,6 +2076,8 @@ def make_splash_mha(
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
     use_fixed_m: bool = False,
+    uniform_fixed_m: bool = False,
+    interpret: bool | None = None,
     residual_checkpoint_name: str | None = None,
 ):
   """Builds a splash multi-head attention callable.
@@ -1746,13 +2085,20 @@ def make_splash_mha(
   Note:
     - Standard dense training uses `_splash_attention_custom` (which defines custom VJP
       forward and backward rules with activation checkpointing).
-    - `heads_per_tile > 1`, `use_fixed_m=True`, and `mk is not None` are inference-only
-      optimizations. They execute forward-only kernels without custom backward passes.
+    - `heads_per_tile > 1`, `use_fixed_m=True`, `mk is not None`, `k_mean is not None`,
+      and `interpret is not None` are inference/testing paths that execute forward-only
+      kernels without custom backward passes.
   """
+  if use_fixed_m and not use_base2_exp:
+    raise NotImplementedError(
+        "fixed-m softmax bounds are derived strictly for base-2 exponents. Please set use_base2_exp=True."
+    )
 
-  def _splash_attention(q, k, v, mk=None):
-    # Note: heads_per_tile > 1 and fixed-m/mk paths are forward-only (inference-only);
+  def _splash_attention(q, k, v, mk=None, k_mean=None):
+    # Note: heads_per_tile > 1 and fixed-m/mk/k_mean paths are forward-only (inference-only);
     # they do not define a custom backward VJP rule.
+    if use_fixed_m and mk is None:
+      raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
     if heads_per_tile > 1:
       if use_fixed_m:
         raise NotImplementedError("fixed-m is not supported with heads_per_tile > 1")
@@ -1768,7 +2114,7 @@ def make_splash_mha(
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
       )
-    if use_fixed_m or mk is not None:
+    if use_fixed_m or mk is not None or k_mean is not None or interpret is not None:
       return _splash_attention_forward(
           q,
           k,
@@ -1781,6 +2127,9 @@ def make_splash_mha(
           vmem_limit_bytes=vmem_limit_bytes,
           use_fixed_m=use_fixed_m,
           mk=mk,
+          uniform_fixed_m=uniform_fixed_m,
+          k_mean=k_mean,
+          interpret=interpret,
       )
     return _splash_attention_custom(
         q,
