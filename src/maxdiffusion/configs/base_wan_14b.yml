@@ -101,6 +101,25 @@ svg_low_noise_density: -1.0
 # compute blocks and the sparse kernel for small ones. Must stay a dict so the
 # command line can override it with JSON.
 svg_flash_block_sizes: {}
+# Sol-Attn (arXiv:2607.24027): training-free sparse self-attention with
+# query-dependent threshold routing and pooled-key approximation of skipped
+# blocks. Mutually exclusive with use_svg_attention. Works with any attention
+# backend whose self-attention shards either heads or (Ulysses) sequence.
+use_sol_attention: False
+# Standardized cutoff: expected exact density ~= 1 - Phi(sol_beta).
+# 1.0 -> ~16% density (~84% sparsity), matching the paper's Wan 2.1 setup.
+sol_beta: 1.0
+# Query routing block / kernel query tile and key/value block, in tokens.
+# Smaller blocks route more precisely but run less efficiently on the MXU.
+sol_block_q: 1024
+sol_block_kv: 256
+# Dense warm-up, [start, end) intervals. The paper keeps the first 20% of
+# denoising steps and the first layer dense: steps [10, 50), layers [1, 40).
+sol_active_start_step: 10
+sol_active_end_step: 50
+sol_active_start_layer: 1
+sol_active_end_layer: 40
+sol_log_density: False
 attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, ulysses, ulysses_custom, ulysses_ring
 
 use_base2_exp: True
