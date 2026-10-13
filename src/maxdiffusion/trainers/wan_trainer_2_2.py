@@ -554,6 +554,7 @@ def train_step_2_2(state_low, state_high, data, rng, scheduler_state, is_high_no
     is_high_noise = jax.random.uniform(cond_rng) >= u_boundary
   else:
     _, new_rng, timestep_rng, dropout_rng, noise_rng = jax.random.split(rng, num=5)
+
   def compute_loss_high(high_params, s_high):
     u = jax.random.uniform(timestep_rng, (bsz,), minval=u_boundary, maxval=1.0)
     t_shifted = (u * shift) / (1.0 + (shift - 1.0) * u)
