@@ -45,6 +45,7 @@ _OPTIONS: dict[str, tuple[Any, str]] = {
     "wan_cross_attn_kernel": ("xla", "str"),
     "wan_patch_embed_mode": ("conv", "str"),
     "wan_ulysses_out_a2a": ("flat", "str"),
+    "wan_seq_pad": ("off", "str"),
 }
 
 
@@ -70,6 +71,8 @@ def _coerce(name: str, value: Any) -> Any:
     raise ValueError(f"wan_patch_embed_mode must be 'conv' or 'tokens', got {value!r}.")
   if name == "wan_ulysses_out_a2a" and val not in ("flat", "chunked", "shard_major"):
     raise ValueError(f"wan_ulysses_out_a2a must be 'flat', 'chunked', or 'shard_major', got {value!r}.")
+  if name == "wan_seq_pad" and val not in ("off", "lane"):
+    raise ValueError(f"wan_seq_pad must be 'off' or 'lane', got {value!r}.")
   return val
 
 
@@ -113,6 +116,7 @@ ATTENTION_OPTIONS = (
     "wan_cross_attn_kernel",
     "wan_patch_embed_mode",
     "wan_ulysses_out_a2a",
+    "wan_seq_pad",
 )
 
 

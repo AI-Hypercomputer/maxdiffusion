@@ -134,9 +134,9 @@ class WanModuleOptionsTest(unittest.TestCase):
     }
     with mock.patch.dict(os.environ, env):
       attn = self._attn()
-    # wan_patch_embed_mode rides in attention_config too, but is consumed by
-    # WanModel (covered in wan_patch_embed_test).
-    for name in sorted(set(opts.ATTENTION_OPTIONS) - {"wan_patch_embed_mode"}):
+    # wan_patch_embed_mode / wan_seq_pad ride in attention_config too, but are
+    # consumed by WanModel (covered in wan_patch_embed_test / wan_seq_pad_test).
+    for name in sorted(set(opts.ATTENTION_OPTIONS) - {"wan_patch_embed_mode", "wan_seq_pad"}):
       with self.subTest(option=name):
         self.assertEqual(getattr(attn, name), opts.default(name))
 
@@ -186,6 +186,7 @@ class WanModuleOptionsTest(unittest.TestCase):
         "wan_cross_attn_kernel": ("xla", "pallas"),
         "wan_patch_embed_mode": ("conv", "tokens"),
         "wan_ulysses_out_a2a": ("flat", "chunked", "shard_major"),
+        "wan_seq_pad": ("off", "lane"),
     }
     for name, valid_values in valid_cases.items():
       for val in valid_values:
