@@ -147,6 +147,12 @@ wan_patch_embed_mode: "conv"
 # (KV shorter than flash_min_seq_length): "xla", or "pallas" for the fused kernel that
 # keeps the KV in VMEM (within bf16 rounding of "xla", not bit-identical).
 wan_cross_attn_kernel: "xla"
+# Self-attention token padding: "off", or "lane" to append pad tokens at the end
+# of the video token sequence (or at the end of each ring segment on the ring
+# path) so every context shard has a multiple of 128 tokens. Aligned shards make
+# the Ulysses all-to-all reshapes free; the custom kernels mask the pad keys.
+# Only the custom Ulysses / Ulysses-ring kernels use it.
+wan_seq_pad: "off"
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
