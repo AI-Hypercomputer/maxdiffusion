@@ -129,6 +129,10 @@ class TimingTest(unittest.TestCase):
     self.assertLess(mean, 30.0)  # ...and NOT in the steady-state mean
     self.assertEqual(len(times), 5)
 
+  def test_rejects_nonpositive_iters(self):
+    with self.assertRaises(ValueError):
+      time_callable(lambda: 1, iters=0)
+
 
 class OrchestratorTest(unittest.TestCase):
 
@@ -166,6 +170,19 @@ class OrchestratorTest(unittest.TestCase):
         log=lambda *a, **k: None,
     )
     self.assertTrue(any(r.status == "oom" for r in res.results))
+
+  def test_broadcast_winner_handles_none_bkv_compute(self):
+    from unittest import mock
+    from maxdiffusion.utils.tile_size_grid_search import _broadcast_winner
+
+    cand = BenchResult(bq=1024, bkv=512, bkv_compute=None, status="ok", mean_ms=10.0)
+    with (
+        mock.patch("jax.process_count", return_value=2),
+        mock.patch("jax.process_index", return_value=0),
+        mock.patch("jax.experimental.multihost_utils.broadcast_one_to_all", side_effect=lambda x, is_source: x),
+    ):
+      out = _broadcast_winner(cand, [cand])
+    self.assertIs(out, cand)
 
 
 if __name__ == "__main__":
