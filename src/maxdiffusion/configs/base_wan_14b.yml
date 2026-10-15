@@ -133,6 +133,12 @@ wan_cfg_before_unpatchify: True
 wan_cross_attn_prescale_kv: False
 # Fused RoPE accumulation: "auto" (measured per-platform default), "dtype", "f32".
 wan_rope_accum: "auto"
+# Text cross-attention backend where it would otherwise fall back to XLA dot-product
+# (KV shorter than flash_min_seq_length): "xla", or "pallas" for the fused kernel that
+# keeps the KV in VMEM (within bf16 rounding of "xla", not bit-identical).
+wan_cross_attn_kernel: "xla"
+# When wan_cross_attn_kernel is "pallas", allow CPU execution via Pallas interpret mode (tests only).
+wan_cross_attn_cpu_interpret: False
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

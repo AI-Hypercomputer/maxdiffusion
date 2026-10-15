@@ -234,10 +234,13 @@ class WanBlockBenchmark(BlockBenchmark):
         scan_layers=False,
         num_layers=1,
         enable_jax_named_scopes=c.enable_jax_named_scopes,
+        split_head_dim=getattr(c, "split_head_dim", True),
         attention_config={
             "use_base2_exp": c.use_base2_exp,
             "use_experimental_scheduler": c.use_experimental_scheduler,
             "ulysses_shards": c.ulysses_shards,
+            "ulysses_attention_chunks": getattr(c, "ulysses_attention_chunks", 1),
+            "use_k_centering": getattr(c, "use_k_centering", "auto"),
             "use_fused_rope_kernel": getattr(c, "use_fused_rope_kernel", False),
             "fused_rope_block_s": getattr(c, "fused_rope_block_s", 1024),
             "fused_rope_head_block": None if fused_rope_head_block in (None, -1) else fused_rope_head_block,

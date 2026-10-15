@@ -63,6 +63,8 @@
 #                    against the XLA-path video, visually clean); on tpu7x the
 #                    output was bit-identical in that measurement.
 #                    USE_FUSED_ROPE_KERNEL=false restores the XLA producer.
+#   WAN_CROSS_ATTN_KERNEL
+#                    override Wan fast-inference kernel/layout switches
 #   DP / CP / PER_DEVICE_BATCH / SEED
 #                    override mesh parallelism, per-device batch, or RNG seed (default 12345)
 set -euo pipefail
@@ -167,6 +169,7 @@ case "$TPU_PROFILE" in
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
     DEFAULT_FUSED_ROPE=true
+    DEFAULT_CROSS_ATTN_KERNEL=pallas
     ;;
   v7)
     PLATFORM_LIBTPU="$V7_LIBTPU"
@@ -183,6 +186,7 @@ case "$TPU_PROFILE" in
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
     DEFAULT_FUSED_ROPE=true
+    DEFAULT_CROSS_ATTN_KERNEL=pallas
     ;;
   *)
     echo "== warning: unrecognised or non-v6e/v7 accelerator '${ACCEL_TYPE:-unknown}';" \
@@ -201,6 +205,7 @@ case "$TPU_PROFILE" in
     DEFAULT_VAE_CHUNK=1
     DEFAULT_VAE_SPATIAL=8
     DEFAULT_FUSED_ROPE=false
+    DEFAULT_CROSS_ATTN_KERNEL=xla
     ;;
 esac
 
@@ -232,6 +237,7 @@ USE_FUSED_ROPE_KERNEL=${USE_FUSED_ROPE_KERNEL:-$DEFAULT_FUSED_ROPE}
 FUSED_ROPE_ARGS=()
 [ -n "${FUSED_ROPE_BLOCK_S:-}" ] && FUSED_ROPE_ARGS+=("fused_rope_block_s=$FUSED_ROPE_BLOCK_S")
 [ -n "${FUSED_ROPE_HEAD_BLOCK:-}" ] && FUSED_ROPE_ARGS+=("fused_rope_head_block=$FUSED_ROPE_HEAD_BLOCK")
+WAN_CROSS_ATTN_KERNEL=${WAN_CROSS_ATTN_KERNEL:-$DEFAULT_CROSS_ATTN_KERNEL}
 
 # Mesh: context parallelism carries the Ulysses shards, data parallelism takes
 # whatever chips remain. Defaults to CP=4 / DP=2 on an 8-chip slice. On a slice
@@ -294,6 +300,7 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   use_kv_cache=true use_base2_exp=true use_experimental_scheduler=true \
   use_fused_rope_kernel="$USE_FUSED_ROPE_KERNEL" \
   ${FUSED_ROPE_ARGS[@]+"${FUSED_ROPE_ARGS[@]}"} \
+  wan_cross_attn_kernel="$WAN_CROSS_ATTN_KERNEL" \
   fps=16 ${GUIDANCE_ARGS[@]+"${GUIDANCE_ARGS[@]}"} \
   seed="${SEED:-12345}" \
   flash_block_sizes="$FLASH_BLOCK_SIZES" \
