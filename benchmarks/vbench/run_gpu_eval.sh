@@ -397,9 +397,6 @@ gcs_cp() {
   if have gcloud && gcloud storage cp "$@"; then
     return 0
   fi
-  if have gsutil && gsutil -m cp "$@"; then
-    return 0
-  fi
   return 1
 }
 
