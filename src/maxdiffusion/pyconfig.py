@@ -331,6 +331,15 @@ class _HyperParameters:
     if "wan_debug_cond_timers" not in raw_keys:
       raw_keys["wan_debug_cond_timers"] = False
 
+    from maxdiffusion import wan_runtime_options  # pylint: disable=import-outside-toplevel
+
+    # Validate/coerce the Wan switches (e.g. "false" from the command line).
+    # They are read from the config by the Wan pipelines at build time; there
+    # is no process-wide store to configure here.
+    for name in wan_runtime_options.names():
+      if name in raw_keys and raw_keys[name] is not None:
+        raw_keys[name] = wan_runtime_options.coerce(name, raw_keys[name])
+
 
 def get_num_slices(raw_keys):
   if int(raw_keys["compile_topology_num_slices"]) > 0:

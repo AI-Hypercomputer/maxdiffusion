@@ -14,6 +14,7 @@
 
 from typing import Sequence
 import jax
+
 import time
 import os
 import shutil
@@ -22,7 +23,8 @@ from maxdiffusion.checkpointing.wan_checkpointer_2_1 import WanCheckpointer2_1
 from maxdiffusion.checkpointing.wan_checkpointer_2_2 import WanCheckpointer2_2
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p1 import WanCheckpointerI2V_2_1
 from maxdiffusion.checkpointing.wan_checkpointer_i2v_2p2 import WanCheckpointerI2V_2_2
-from maxdiffusion import aot_cache, pyconfig, max_logging, max_utils
+from maxdiffusion import aot_cache, pyconfig, max_logging, max_utils, wan_runtime_options
+from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import resolve_rope_accum
 from absl import app
 from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.utils import export_to_video
@@ -194,6 +196,7 @@ def _build_wan_aot_metadata(config, mesh, source_revision) -> dict[str, str]:
       "flash_min_seq_length": str(getattr(config, "flash_min_seq_length", 4096)),
       "mask_padding_tokens": str(getattr(config, "mask_padding_tokens", True)),
       "precision": str(getattr(config, "precision", "default")),
+      "split_head_dim": str(getattr(config, "split_head_dim", False)),
       "logical_axis_rules": str(getattr(config, "logical_axis_rules", ())),
       "attention_sharding_uniform": str(getattr(config, "attention_sharding_uniform", True)),
       "allow_split_physical_axes": str(getattr(config, "allow_split_physical_axes", False)),
@@ -202,8 +205,26 @@ def _build_wan_aot_metadata(config, mesh, source_revision) -> dict[str, str]:
       "process_count": str(jax.process_count()),
       "use_base2_exp": str(getattr(config, "use_base2_exp", True)),
       "use_experimental_scheduler": str(getattr(config, "use_experimental_scheduler", False)),
+      "use_fused_rope_kernel": str(getattr(config, "use_fused_rope_kernel", False)),
+      "fused_rope_block_s": str(getattr(config, "fused_rope_block_s", 1024)),
+      "fused_rope_head_block": str(getattr(config, "fused_rope_head_block", -1)),
       "libtpu_init_args": os.environ.get("LIBTPU_INIT_ARGS", ""),
       "xla_flags": os.environ.get("XLA_FLAGS", ""),
+      # Graph-changing Wan switches (YAML `wan_*` keys, see wan_runtime_options).
+      **{
+          name: value for name, value in wan_runtime_options.snapshot_from_config(config).items() if name != "wan_rope_accum"
+      },
+      # The RoPE accumulation mode changes the lowered graph's rounding, and
+      # its default is platform-dependent, so the RESOLVED mode is recorded
+      # rather than the raw env var. Recording the raw value would both
+      # over-invalidate (an explicit "f32" on v6e is the same executable as
+      # the unset default) and fail to describe what was actually compiled.
+      "wan_rope_accum": str(
+          resolve_rope_accum(
+              mesh,
+              wan_runtime_options.resolve_from_config(config, "wan_rope_accum"),
+          )
+      ),
       "jax": jax.__version__,
       "jaxlib": _get_pkg_version("jaxlib"),
       "libtpu": _get_pkg_version("libtpu"),
