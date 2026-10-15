@@ -45,5 +45,7 @@ TESTS=(
   # Fused RMSNorm+RoPE producer, Wan switches in config (feat/wan-custom-kernels)
   "$T/fused_rmsnorm_rope_pallas_test.py"
   "$T/wan_runtime_options_test.py"
+  # Short-KV cross-attention Pallas kernel (feat/wan-cross-attn-pallas)
+  "$T/cross_attention_pallas_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
