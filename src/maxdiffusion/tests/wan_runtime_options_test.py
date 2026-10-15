@@ -167,6 +167,7 @@ class WanModuleOptionsTest(unittest.TestCase):
     valid_cases = {
         "wan_cross_attn_kernel": ("xla", "pallas"),
         "wan_patch_embed_mode": ("conv", "tokens"),
+        "wan_ulysses_out_a2a": ("flat", "chunked", "shard_major"),
     }
     for name, valid_values in valid_cases.items():
       for val in valid_values:

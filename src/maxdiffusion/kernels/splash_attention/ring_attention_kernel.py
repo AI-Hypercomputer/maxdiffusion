@@ -750,6 +750,7 @@ def _custom_bidirectional_ring_forward(
     vmem_limit_bytes: int | None,
     mask_value: float,
     ring_axis: str,
+    out_num_shards: int = 1,
 ) -> jax.Array:
   """Wrap-free (bidirectional) ring attention for a NON-wrapping ring axis.
 
@@ -783,6 +784,7 @@ def _custom_bidirectional_ring_forward(
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
+        out_num_shards=out_num_shards,
     )
     return o.astype(jnp.float32), m.astype(jnp.float32), l.astype(jnp.float32)
 
@@ -875,13 +877,15 @@ def _custom_ring_attention_forward(
     v_ok: jax.Array | bool | None = None,
     all_fixed_global: jax.Array | bool | None = None,
     save_residuals: bool = False,
+    out_num_shards: int = 1,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
   """Ring attention using the custom dense splash kernel.
 
   Args:
-    q: Query shard, shape `(num_q_heads, q_seq_len, head_dim_qk)`. Stationary
-      across ring steps. Must already be padded (and pre-scaled by LOG2E when
-      `use_base2_exp`) by the caller.
+    q: Query shard, shape `(num_q_heads, q_seq_len, head_dim_qk)` or 4D
+      shard-major `(num_q_shards, num_q_heads, shard_q_seq_len, head_dim_qk)`.
+      Stationary across ring steps. Must already be padded (and pre-scaled by
+      LOG2E when `use_base2_exp`) by the caller.
     k: Key shard, shape `(num_kv_heads, kv_seq_len, head_dim_qk)`. Rotated across
       the ring axis.
     v: Value shard, shape `(num_kv_heads, kv_seq_len, head_dim_v)`. Rotated.
@@ -930,19 +934,33 @@ def _custom_ring_attention_forward(
     all_fixed_global: Optional precomputed mesh-uniform scalar predicate for the
       accumulate-vs-LSE `lax.cond`. When supplied, skips the internal ring `pmin`.
     save_residuals: If True, returns `(out, lse)` where `lse` is the global
-      logsumexp of shape `(num_q_heads, orig_q_seq_len)`.
+      logsumexp of shape `(num_q_heads, orig_q_seq_len)`. Not supported together
+      with `out_num_shards > 1` (raises NotImplementedError).
+    out_num_shards: Number of leading Ulysses output shards (`1` returns 3D
+      `(num_q_heads, q_seq_len, head_dim_v)`; `> 1` returns 4D shard-major
+      `(out_num_shards, num_q_heads, q_seq_len // out_num_shards, head_dim_v)`).
 
   Returns:
-    Normalized attention output of shape `(num_q_heads, q_seq_len, head_dim_v)`,
-    or `(out, lse)` if `save_residuals=True`.
+    Normalized attention output, shape `(num_q_heads, q_seq_len, head_dim_v)` or
+    `(out_num_shards, num_q_heads, q_seq_len // out_num_shards, head_dim_v)`, or
+    `(out, lse)` if `save_residuals=True`.
   """
   axis_size = lax.axis_size(ring_axis)
   effective_ring_size = ring_size if ring_size is not None else axis_size
   effective_kv_seq_len = orig_kv_seq_len * effective_ring_size
 
-  num_q_heads = q.shape[0]
+  num_q_heads = q.shape[1] if q.ndim == 4 else q.shape[0]
   num_kv_heads = k.shape[0]
   head_dim_v = v.shape[-1]
+  out_prefix_shape = (
+      (out_num_shards, num_q_heads, orig_q_seq_len // out_num_shards)
+      if out_num_shards > 1
+      else (num_q_heads, orig_q_seq_len)
+  )
+  if save_residuals and out_num_shards > 1:
+    # The lse would come back in the 4D shard-major layout, which no backward
+    # pass consumes; keep the documented `(num_q_heads, orig_q_seq_len)` contract.
+    raise NotImplementedError("save_residuals is not supported with out_num_shards > 1 (shard-major output).")
 
   if use_fixed_m and not use_base2_exp:
     raise NotImplementedError(
@@ -996,6 +1014,7 @@ def _custom_ring_attention_forward(
         vmem_limit_bytes=vmem_limit_bytes,
         mask_value=mask_value,
         ring_axis=ring_axis,
+        out_num_shards=out_num_shards,
     )
   if use_fixed_m and ring_size is not None and ring_size != axis_size:
     raise NotImplementedError(
@@ -1137,8 +1156,8 @@ def _custom_ring_attention_forward(
         m_base = jnp.ceil(jnp.sqrt(bound_blocks_sq)) - global_recenter
         fixed_ok_expanded = jnp.ones_like(m_base)
         mk_arr = jnp.stack([m_base, fixed_ok_expanded], axis=0)  # (2, heads, num_q_blocks)
-      o_sum = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
-      l_sum = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
+      o_sum = jnp.zeros(out_prefix_shape + (head_dim_v,), jnp.float32)
+      l_sum = jnp.zeros(out_prefix_shape, jnp.float32)
       k_current, v_current = k, v
       # Python loop over the (static) ring size rather than a scan: it lets the
       # LAST hop skip its rotation. A scan body must rotate unconditionally, and
@@ -1174,6 +1193,7 @@ def _custom_ring_attention_forward(
             # KV block instead of two (a two-body last block is what triggers
             # the Mosaic scheduler cliff on the whole grid).
             uniform_fixed_m=True,
+            out_num_shards=out_num_shards,
         )
         o_sum = o_sum + o_curr.astype(jnp.float32)
         l_sum = l_sum + l_curr.astype(jnp.float32)
@@ -1210,6 +1230,7 @@ def _custom_ring_attention_forward(
           use_fixed_m=True,
           mk=mk_arr,
           k_mean=k_mean,
+          out_num_shards=out_num_shards,
       )
       m_curr = m_curr.astype(jnp.float32)
       l_curr = l_curr.astype(jnp.float32)
@@ -1257,8 +1278,8 @@ def _custom_ring_attention_forward(
       mk_arr_uniform = jnp.stack([m_base_hop, fixed_ok], axis=0)
 
       carry = (
-          jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32),
-          jnp.full((num_q_heads, orig_q_seq_len), lse_init, jnp.float32),
+          jnp.zeros(out_prefix_shape + (head_dim_v,), jnp.float32),
+          jnp.full(out_prefix_shape, lse_init, jnp.float32),
           k,
           v,
       )
@@ -1278,9 +1299,9 @@ def _custom_ring_attention_forward(
       cond_pred = jnp.all(all_fixed_global) if getattr(all_fixed_global, "ndim", 0) > 0 else all_fixed_global
       return lax.cond(cond_pred, _accumulate_scan, _lse_scan, None)
 
-  o_init = jnp.zeros((num_q_heads, orig_q_seq_len, head_dim_v), jnp.float32)
-  l_init = jnp.zeros((num_q_heads, orig_q_seq_len), jnp.float32)
-  m_init = jnp.full((num_q_heads, orig_q_seq_len), mask_value, jnp.float32)
+  o_init = jnp.zeros(out_prefix_shape + (head_dim_v,), jnp.float32)
+  l_init = jnp.zeros(out_prefix_shape, jnp.float32)
+  m_init = jnp.full(out_prefix_shape, mask_value, jnp.float32)
 
   m_final, l_final, o_final = m_init, l_init, o_init
   k_current, v_current = k, v
@@ -1303,6 +1324,7 @@ def _custom_ring_attention_forward(
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
+        out_num_shards=out_num_shards,
     )
     m_curr = m_curr.astype(jnp.float32)
     l_curr = l_curr.astype(jnp.float32)
@@ -1551,12 +1573,15 @@ def make_custom_ring_attention(
     v_ok: jax.Array | bool | None = None,
     all_fixed_global: jax.Array | bool | None = None,
     residual_checkpoint_name: str | None = None,
+    out_num_shards: int = 1,
 ):
   """Builds a ring-attention callable around the custom kernel (supports forward & backward).
 
   The returned function takes a single (un-batched) `(q, k, v)` triple of shape
-  `(num_heads, seq, head_dim)` and optional per-batch `fixed_m_norms=(qn_max_sq, mk_h_sq)`
-  and `k_mean` to be `jax.vmap`-ped over the batch axis inside the attention `shard_map`.
+  `(num_heads, seq, head_dim)` (or 4D shard-major `q` of shape
+  `(num_q_shards, num_heads, shard_seq, head_dim)`) and optional per-batch
+  `fixed_m_norms=(qn_max_sq, mk_h_sq)` and `k_mean` to be `jax.vmap`-ped over the
+  batch axis inside the attention `shard_map`.
 
   `fixed_m_norms_squared` declares the representation of `fixed_m_norms` and is
   **required** when `use_fixed_m=True`. The kernel gates in squared-norm space
@@ -1622,7 +1647,7 @@ def make_custom_ring_attention(
   def _ring(q, k, v, fixed_m_norms=None, k_mean=None):
     norms = fixed_m_norms if fixed_m_norms is not None else default_fixed_m_norms
     km = k_mean if k_mean is not None else default_k_mean
-    if use_fixed_m or bidirectional or km is not None or uniform_fixed_m is not None:
+    if use_fixed_m or bidirectional or km is not None or uniform_fixed_m is not None or out_num_shards > 1 or q.ndim == 4:
       return _custom_ring_attention_forward(
           q,
           k,
@@ -1647,6 +1672,7 @@ def make_custom_ring_attention(
           uniform_fixed_m=uniform_fixed_m,
           v_ok=v_ok,
           all_fixed_global=all_fixed_global,
+          out_num_shards=out_num_shards,
       )
     return _custom_ring_attention_custom(
         q,
