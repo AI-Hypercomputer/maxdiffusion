@@ -31,5 +31,8 @@ TESTS=(
   # Dot-product fallback layout and tile-size grid-search fixes (feat/attn-dot-fallback-fixes)
   "$T/dot_fallback_layout_test.py"
   "$T/tile_size_grid_search_test.py"
+  # Ulysses x Ring attention (feat/ring-attention)
+  "$T/attention_config_guards_test.py"
+  "$T/custom_splash_unpadded_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
