@@ -119,6 +119,13 @@ wan_cross_attn_kernel: "xla"
 # token, an all-gather on tpu7x) or "tokens" (token-sharded patches times the
 # replicated kernel, no activation collective; equal up to accumulation order).
 wan_patch_embed_mode: "conv"
+# Inverse Ulysses all-to-all (attention output, head-sharded -> sequence-sharded):
+# "flat" splits the sequence axis directly; "chunked" exchanges over an explicit
+# leading sequence-chunk axis so XLA does not relayout the output around the
+# collective (and opportunistically uses the Pallas 4D-q / out_num_shards path
+# when S_local % block_q == 0); "shard_major" strictly requires the Pallas
+# 4D-q / out_num_shards path and raises if any kernel precondition fails.
+wan_ulysses_out_a2a: "flat"
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

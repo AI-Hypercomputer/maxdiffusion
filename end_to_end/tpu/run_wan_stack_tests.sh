@@ -49,5 +49,7 @@ TESTS=(
   "$T/cross_attention_pallas_test.py"
   # Token-sharded patch embedding (feat/wan-token-patch-embed)
   "$T/wan_patch_embed_test.py"
+  # Shard-major Ulysses output A2A (feat/ulysses-shard-major-a2a)
+  "$T/ulysses_out_a2a_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
