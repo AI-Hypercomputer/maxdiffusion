@@ -1767,17 +1767,52 @@ def _apply_attention_dot(
     float32_qk_product: bool,
     use_memory_efficient_attention: bool,
     attention_mask: Array = None,
+    kv_heads: int | None = None,
 ):
   """Apply Attention."""
+  effective_kv_heads = kv_heads if kv_heads is not None else heads
+  if heads <= 0 or effective_kv_heads <= 0:
+    raise ValueError(f"heads ({heads}) and kv_heads ({effective_kv_heads}) must be positive integers.")
+  if heads % effective_kv_heads:
+    raise ValueError(f"heads ({heads}) must be a multiple of kv_heads ({effective_kv_heads}).")
   if split_head_dim:
-    b = key.shape[0]
-    query_states = jnp.reshape(query, (b, -1, heads, dim_head))
-    key_states = jnp.reshape(key, (b, -1, heads, dim_head))
-    value_states = jnp.reshape(value, (b, -1, heads, dim_head))
+
+    def _to_bshd(x: Array, n_heads: int) -> Array:
+      """Normalise to [B, S, H, D].
+
+      Callers that apply rotary embeddings hand us [B, H, S, D] (see
+      `_unflatten_heads`), while the flat path supplies [B, S, H*D]. Only the
+      latter can be reshaped into [B, S, H, D]; reinterpreting [B, H, S, D]
+      that way keeps the shape legal but interleaves heads with tokens, so it
+      corrupts the output silently. Transpose the 4-D case instead.
+      """
+      if x.ndim == 4:
+        return jnp.swapaxes(x, 1, 2)
+      return jnp.reshape(x, (x.shape[0], -1, n_heads, dim_head))
+
+    query_states = _to_bshd(query, heads)
+    key_states = _to_bshd(key, effective_kv_heads)
+    value_states = _to_bshd(value, effective_kv_heads)
+    if heads != effective_kv_heads:
+      num_repeats = heads // effective_kv_heads
+      key_states = jnp.repeat(key_states, num_repeats, axis=2)
+      value_states = jnp.repeat(value_states, num_repeats, axis=2)
   else:
     query_states = _reshape_heads_to_batch_dim(query, heads)
-    key_states = _reshape_heads_to_batch_dim(key, heads)
-    value_states = _reshape_heads_to_batch_dim(value, heads)
+    key_states = _reshape_heads_to_batch_dim(key, effective_kv_heads)
+    value_states = _reshape_heads_to_batch_dim(value, effective_kv_heads)
+    if heads != effective_kv_heads:
+      num_repeats = heads // effective_kv_heads
+      b = query.shape[0]
+      s_k = key_states.shape[1]
+      key_states = jnp.repeat(key_states.reshape(b, effective_kv_heads, s_k, -1), num_repeats, axis=1).reshape(
+          b * heads, s_k, -1
+      )
+      value_states = jnp.repeat(
+          value_states.reshape(b, effective_kv_heads, s_k, -1),
+          num_repeats,
+          axis=1,
+      ).reshape(b * heads, s_k, -1)
 
   if float32_qk_product:
     query_states = query_states.astype(jnp.float32)
@@ -1883,6 +1918,7 @@ def dot_product_kernel(q, k, v, context):
       context["float32_qk_product"],
       context["use_memory_efficient_attention"],
       context["attention_mask"],
+      kv_heads=context.get("kv_heads", None),
   )
 
 
@@ -2207,6 +2243,7 @@ def _apply_attention(
     preserve_asymmetric_block_sizes: bool = False,
     spatiotemporal_config: Optional[dict] = None,
     spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
+    kv_heads: Optional[int] = None,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -2255,6 +2292,7 @@ def _apply_attention(
 
   context = {
       "heads": heads,
+      "kv_heads": kv_heads,
       "mesh": mesh,
       "axis_names_q": axis_names_q,
       "axis_names_kv": axis_names_kv,
