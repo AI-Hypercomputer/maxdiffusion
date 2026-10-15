@@ -45,5 +45,7 @@ TESTS=(
   # Fused RMSNorm+RoPE producer, Wan switches in config (feat/wan-custom-kernels)
   "$T/fused_rmsnorm_rope_pallas_test.py"
   "$T/wan_runtime_options_test.py"
+  # Lane sequence padding (feat/wan-fast-inference-optimizations)
+  "$T/wan_seq_pad_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
