@@ -134,7 +134,9 @@ class WanModuleOptionsTest(unittest.TestCase):
     }
     with mock.patch.dict(os.environ, env):
       attn = self._attn()
-    for name in opts.ATTENTION_OPTIONS:
+    # wan_patch_embed_mode rides in attention_config too, but is consumed by
+    # WanModel (covered in wan_patch_embed_test).
+    for name in sorted(set(opts.ATTENTION_OPTIONS) - {"wan_patch_embed_mode"}):
       with self.subTest(option=name):
         self.assertEqual(getattr(attn, name), opts.default(name))
 
@@ -182,6 +184,7 @@ class WanModuleOptionsTest(unittest.TestCase):
   def test_enum_options_validation(self):
     valid_cases = {
         "wan_cross_attn_kernel": ("xla", "pallas"),
+        "wan_patch_embed_mode": ("conv", "tokens"),
     }
     for name, valid_values in valid_cases.items():
       for val in valid_values:
