@@ -26,6 +26,7 @@ from .... import common_types
 from ...attention_flax import NNXAttentionOp
 from ...modeling_flax_utils import FlaxModelMixin
 from ....configuration_utils import ConfigMixin, register_to_config
+from ....utils import wan_runtime_options
 from ...normalization_flax import FP32LayerNorm
 from ...gradient_checkpoint import GradientCheckpointType
 from .transformer_wan import (
@@ -820,6 +821,9 @@ class WanAnimateTransformer3DModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         "ulysses_attention_chunks": 1,
         **(attention_config or {}),
     }
+    seq_pad_mode = attention_config.get("wan_seq_pad")
+    if seq_pad_mode is not None and wan_runtime_options.coerce("wan_seq_pad", seq_pad_mode) == "lane":
+      raise ValueError("wan_seq_pad='lane' is not supported by WanAnimateTransformer3DModel.")
 
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
 
