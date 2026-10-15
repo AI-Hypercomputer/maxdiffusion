@@ -220,5 +220,89 @@ class DispatcherLayoutContractTest(unittest.TestCase):
     np.testing.assert_allclose(np.asarray(out), np.asarray(expected), rtol=1e-4, atol=1e-4)
 
 
+class RingKernelFlashMinSeqLengthFallbackTest(unittest.TestCase):
+  """`ulysses_ring_custom*` honour `flash_min_seq_length` like the rest of the flash family -- audibly.
+
+  Below the threshold the dispatcher runs `dot_product`; at or above it the
+  configured ring entry is called. The swap used to be silent; it now logs once
+  per configured kernel. Both registry entries are replaced by spies, so no
+  kernel runs and no mesh is needed.
+  """
+
+  ring_kernels = ("ulysses_ring_custom", "ulysses_ring_custom_fixed_m")
+  batch, heads, dim_head = 1, 4, 8
+
+  def setUp(self):
+    super().setUp()
+    attention_flax._WARNED_ONCE.clear()
+
+  def _dispatch(self, kernel_name, seq, flash_min_seq_length):
+    """Returns (dot_product spy, ring-kernel spy, max_logging.log mock) after one dispatcher call."""
+    x = jnp.zeros((self.batch, self.heads, seq, self.dim_head), jnp.float32)
+    sentinel = jnp.zeros((self.batch, seq, self.heads * self.dim_head), jnp.float32)
+    dot_spy = mock.Mock(return_value=sentinel)
+    ring_spy = mock.Mock(return_value=sentinel)
+    with mock.patch.dict(attention_flax.KERNEL_REGISTRY, {"dot_product": dot_spy, kernel_name: ring_spy}):
+      with mock.patch.object(attention_flax.max_logging, "log") as log:
+        _apply_attention(
+            x,
+            x,
+            x,
+            heads=self.heads,
+            dim_head=self.dim_head,
+            split_head_dim=True,
+            float32_qk_product=True,
+            attention_kernel=kernel_name,
+            flash_min_seq_length=flash_min_seq_length,
+            use_memory_efficient_attention=False,
+            scale=1.0 / math.sqrt(self.dim_head),
+            dtype=jnp.float32,
+            mesh=None,
+            axis_names_q=None,
+            axis_names_kv=None,
+            flash_block_sizes=None,
+            dpa_layer=None,
+            ulysses_shards=2,
+        )
+    return dot_spy, ring_spy, log
+
+  def test_below_threshold_routes_to_dot_product_and_warns_once_per_kernel(self):
+    for kernel_name in self.ring_kernels:
+      with self.subTest(kernel=kernel_name):
+        dot_spy, ring_spy, log = self._dispatch(kernel_name, seq=32, flash_min_seq_length=64)
+        dot_spy.assert_called_once()
+        ring_spy.assert_not_called()
+        log.assert_called_once()
+        msg = log.call_args[0][0]
+        self.assertIn(kernel_name, msg)
+        self.assertIn("32/32/32", msg)  # q/k/v sequence lengths
+        self.assertIn("flash_min_seq_length=64", msg)
+        self.assertIn("dot_product", msg)
+        self.assertIn("flash_min_seq_length=0", msg)  # the override hint
+        # Attention is traced once per layer; the same kernel must not log again.
+        dot_spy, ring_spy, log = self._dispatch(kernel_name, seq=16, flash_min_seq_length=64)
+        dot_spy.assert_called_once()
+        ring_spy.assert_not_called()
+        log.assert_not_called()
+
+  def test_at_or_above_threshold_routes_to_ring_kernel_silently(self):
+    for kernel_name in self.ring_kernels:
+      for seq in (64, 128):
+        with self.subTest(kernel=kernel_name, seq=seq):
+          dot_spy, ring_spy, log = self._dispatch(kernel_name, seq=seq, flash_min_seq_length=64)
+          ring_spy.assert_called_once()
+          dot_spy.assert_not_called()
+          log.assert_not_called()
+
+  def test_threshold_zero_forces_the_ring_kernel(self):
+    """What the warning tells the user to do must work."""
+    for kernel_name in self.ring_kernels:
+      with self.subTest(kernel=kernel_name):
+        dot_spy, ring_spy, log = self._dispatch(kernel_name, seq=32, flash_min_seq_length=0)
+        ring_spy.assert_called_once()
+        dot_spy.assert_not_called()
+        log.assert_not_called()
+
+
 if __name__ == "__main__":
   unittest.main()
