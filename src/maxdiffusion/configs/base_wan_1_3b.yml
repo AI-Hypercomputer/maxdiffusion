@@ -136,6 +136,10 @@ wan_rope_accum: "auto"
 wan_cross_attn_kernel: "xla"
 # When wan_cross_attn_kernel is "pallas", allow CPU execution via Pallas interpret mode (tests only).
 wan_cross_attn_cpu_interpret: False
+# Patch embedding: "conv" (nnx.Conv; its channel-sharded output is resharded by
+# token, an all-gather on tpu7x) or "tokens" (token-sharded patches times the
+# replicated kernel, no activation collective; equal up to accumulation order).
+wan_patch_embed_mode: "conv"
 # For attention=ulysses_ring, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

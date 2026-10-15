@@ -46,5 +46,7 @@ TESTS=(
   "$T/wan_runtime_options_test.py"
   # Short-KV cross-attention Pallas kernel (feat/wan-cross-attn-pallas)
   "$T/cross_attention_pallas_test.py"
+  # Token-sharded patch embedding (feat/wan-token-patch-embed)
+  "$T/wan_patch_embed_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
