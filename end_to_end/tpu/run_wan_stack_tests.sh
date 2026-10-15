@@ -50,5 +50,7 @@ TESTS=(
   "$T/wan_patch_embed_test.py"
   # Shard-major Ulysses output A2A (feat/ulysses-shard-major-a2a)
   "$T/ulysses_out_a2a_test.py"
+  # Lane sequence padding (feat/wan-fast-inference-optimizations)
+  "$T/wan_seq_pad_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
