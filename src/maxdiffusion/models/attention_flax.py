@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import contextlib
+import dataclasses
 import functools
 import math
 from typing import Optional, Callable, Tuple, Any, Dict
@@ -746,6 +747,163 @@ def _ulysses_head_chunk_ranges(num_heads: int, ulysses_shards: int, num_chunks: 
   return ranges
 
 
+@dataclasses.dataclass(frozen=True)
+class TokenPadding:
+  """Pad tokens a model inserted into its self-attention sequence.
+
+  The sequence is `num_segments` equal segments laid end to end: one per ring
+  shard on the Ulysses-ring path, a single segment otherwise. Each segment holds
+  `real_len` real tokens followed by `padded_len - real_len` pad tokens.
+  """
+
+  real_len: int
+  padded_len: int
+  num_segments: int = 1
+
+  def __post_init__(self):
+    if not 0 < self.real_len <= self.padded_len or self.num_segments < 1:
+      raise ValueError(f"Invalid token padding: {self}.")
+
+  @property
+  def total_len(self) -> int:
+    return self.padded_len * self.num_segments
+
+
+# Kernels whose self-attention honours TokenPadding. The pads sit where these
+# kernels already expect a ragged KV tail (the end of the sequence, or of each
+# ring segment), so passing the real length masks the pad keys, and the fixed-m
+# norm reductions skip the pad rows. Any other kernel would attend to the pads.
+TOKEN_PADDING_KERNELS = frozenset({
+    "ulysses_custom",
+    "ulysses_custom_fixed_m",
+    "ulysses_custom_fixed_m_per_q_block",
+    "ulysses_ring_custom",
+    "ulysses_ring_custom_fixed_m",
+    "ulysses_ring_custom_fixed_m_per_q_block",
+})
+
+
+def plan_token_padding(
+    seq_len: Optional[int] = None,
+    *,
+    mode: Optional[str],
+    attention: str,
+    mesh: Optional[jax.sharding.Mesh],
+    ulysses_shards: int = -1,
+    flash_min_seq_length: int = 4096,
+    per_token_t: bool = False,
+    use_svg_attention: bool = False,
+    use_memory_efficient_attention: bool = False,
+) -> Optional[TokenPadding]:
+  """Computes the self-attention `TokenPadding` plan for a `seq_len`-token video sequence.
+
+  Pass `seq_len=None` at model construction time to validate static configuration
+  without running per-call sequence-length checks.
+  """
+  effective_mode = mode if mode is not None else wan_runtime_options.default("wan_seq_pad")
+  if effective_mode in (None, "off"):
+    return None
+  if effective_mode != "lane":
+    raise ValueError(f"wan_seq_pad must be 'off' or 'lane', got {effective_mode!r}.")
+  if use_svg_attention:
+    raise ValueError("wan_seq_pad='lane' is incompatible with use_svg_attention=True.")
+  if use_memory_efficient_attention:
+    raise ValueError("wan_seq_pad='lane' is incompatible with use_memory_efficient_attention=True.")
+  if per_token_t:
+    raise ValueError("wan_seq_pad='lane' is incompatible with per_token_t=True (TI2V).")
+  if attention not in TOKEN_PADDING_KERNELS:
+    raise ValueError(
+        f"wan_seq_pad='lane' requires an attention kernel in {sorted(TOKEN_PADDING_KERNELS)}, got {attention!r}."
+    )
+
+  num_context_shards = 1
+  if mesh is not None and hasattr(mesh, "shape") and "context" in mesh.shape:
+    num_context_shards = mesh.shape["context"]
+  if attention.startswith("ulysses_ring_"):
+    if ulysses_shards is None or ulysses_shards <= 0 or num_context_shards % ulysses_shards != 0:
+      raise ValueError(
+          f"wan_seq_pad='lane' requires ulysses_shards > 0 dividing the {num_context_shards} context shards for "
+          f"attention={attention!r}, got ulysses_shards={ulysses_shards}."
+      )
+    num_ring_shards = num_context_shards // ulysses_shards
+  elif attention.startswith("ulysses_"):
+    if ulysses_shards is not None and ulysses_shards > 0 and ulysses_shards != num_context_shards:
+      raise ValueError(
+          f"wan_seq_pad='lane' requires ulysses_shards to match the {num_context_shards} context shards for "
+          f"attention={attention!r}, got ulysses_shards={ulysses_shards}."
+      )
+    ulysses_shards = num_context_shards
+    num_ring_shards = 1
+  else:
+    ulysses_shards = 1
+    num_ring_shards = 1
+  num_segments = num_ring_shards
+
+  if seq_len is None:
+    return None
+  if seq_len < flash_min_seq_length:
+    _warn_once(
+        "wan_seq_pad_short_seq",
+        f"wan_seq_pad='lane' disabled for seq_len={seq_len} < flash_min_seq_length={flash_min_seq_length}.",
+    )
+    return None
+
+  total_shards = num_segments * ulysses_shards
+  if total_shards <= 0 or seq_len % total_shards != 0:
+    _warn_once(
+        "wan_seq_pad_indivisible_seq",
+        f"wan_seq_pad='lane' requires seq_len={seq_len} to split evenly across {total_shards} attention shards "
+        f"({num_segments} ring x {ulysses_shards} ulysses); disabling token padding.",
+    )
+    return None
+
+  real_len = seq_len // num_segments
+  tokens_per_shard = real_len // ulysses_shards
+  lane_multiple = 128
+  padded_tokens_per_shard = math.ceil(tokens_per_shard / lane_multiple) * lane_multiple
+  padded_len = padded_tokens_per_shard * ulysses_shards
+  if padded_len == real_len:
+    return None
+  return TokenPadding(real_len=real_len, padded_len=padded_len, num_segments=num_segments)
+
+
+def _resolve_token_padding(
+    padding: Optional[TokenPadding],
+    seq_len: int,
+    num_segments: int,
+    q_seq_len: Optional[int] = None,
+) -> Optional[TokenPadding]:
+  """Validates `padding` against `seq_len`, `q_seq_len`, and `num_segments`."""
+  if padding is None:
+    return None
+  eff_q_len = seq_len if q_seq_len is None else q_seq_len
+  if padding.total_len != seq_len or eff_q_len != seq_len:
+    raise ValueError(
+        f"TokenPadding has total_len={padding.total_len}, but attention received "
+        f"q_seq_len={eff_q_len}, kv_seq_len={seq_len}."
+    )
+  if padding.num_segments != num_segments:
+    raise ValueError(
+        f"The tokens were padded as {padding.num_segments} segment(s), but this attention splits the sequence into "
+        f"{num_segments} ring segment(s), so the pads would not sit at the tail of each segment."
+    )
+  return padding
+
+
+def _reject_token_padding(
+    padding: Optional[TokenPadding],
+    q_seq_len: int,
+    kv_seq_len: int,
+    kernel_name: str,
+) -> None:
+  """Raises NotImplementedError if self-attention token padding is passed to an unsupported path."""
+  del q_seq_len, kv_seq_len
+  if padding is not None:
+    raise NotImplementedError(
+        f"{kernel_name} does not support token_padding (only {sorted(TOKEN_PADDING_KERNELS)} mask tail pad tokens)."
+    )
+
+
 ULYSSES_OUT_A2A_MODES = ("flat", "chunked", "shard_major")
 
 
@@ -858,6 +1016,7 @@ def _tpu_flash_attention(
     spatiotemporal_config: Optional[dict] = None,
     spatiotemporal_shape: Optional[Tuple[int, int, int]] = None,
     kv_heads: Optional[int] = None,
+    token_padding: Optional[TokenPadding] = None,
 ) -> jax.Array:
   """TPU Flash Attention"""
   if kv_heads is not None and kv_heads != heads:
@@ -865,8 +1024,9 @@ def _tpu_flash_attention(
 
   num_context_shards = mesh.shape[CONTEXT] if CONTEXT in mesh.shape else 1
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_context_shards)
-  key, _ = _reshape_data_for_flash(key, heads, num_context_shards)
+  key, orig_kv_seq_len = _reshape_data_for_flash(key, heads, num_context_shards)
   value, _ = _reshape_data_for_flash(value, heads, num_context_shards)
+  _reject_token_padding(token_padding, orig_q_seq_len, orig_kv_seq_len, attention_kernel)
   attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
   if attention_mask is not None and attention_kernel == "tokamax_ring_custom":
     raise NotImplementedError("tokamax_ring_custom does not support attention_mask.")
@@ -1130,6 +1290,7 @@ def _ulysses_attention(
     qk_prescaled: bool = False,
     transpose_out: bool = False,
     wan_ulysses_out_a2a: str = "flat",
+    token_padding: Optional[TokenPadding] = None,
 ) -> jax.Array:
   """Ulysses sequence-parallel attention.
 
@@ -1153,6 +1314,13 @@ def _ulysses_attention(
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
   key, orig_kv_seq_len = _reshape_data_for_flash(key, kv_heads, num_shards)
   value, _ = _reshape_data_for_flash(value, kv_heads, num_shards)
+  # Pad tokens inserted by the model (see `TokenPadding`) sit at the tail of the
+  # sequence, like the shard padding above, and are masked the same way: the
+  # custom kernel reads only the first `real_kv_seq_len` keys.
+  token_padding = _resolve_token_padding(token_padding, orig_kv_seq_len, num_segments=1, q_seq_len=orig_q_seq_len)
+  if token_padding is not None and (not use_custom_kernel or spatiotemporal_config is not None):
+    raise NotImplementedError(f"{kernel_name}: token padding needs the dense custom kernel, which masks the pad keys.")
+  real_kv_seq_len = orig_kv_seq_len if token_padding is None else token_padding.real_len
   attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
   if attention_mask is not None and use_custom_kernel:
     raise NotImplementedError(
@@ -1263,7 +1431,9 @@ def _ulysses_attention(
       raw_query = query
       raw_value = value
       context_q_seq_len = raw_query.shape[1] * raw_query.shape[3] if use_shard_major else raw_query.shape[2]
-      actual_kv_seq_len = orig_kv_seq_len
+      # With token padding this excludes the pad keys: everything below (the
+      # kernel's ragged-tail mask, k_mean, the norm bounds) reads this length.
+      actual_kv_seq_len = real_kv_seq_len
 
       real_key = raw_key[:, :, :actual_kv_seq_len, :]
 
@@ -1311,7 +1481,10 @@ def _ulysses_attention(
             # the padded copy chained a 193.5MB (per batch element) pad + reduction behind the V
             # all-to-all and left that collective fully exposed. The padding is
             # zeros and the check is a max of squares, so this is output-invariant.
-            value=raw_value,
+            # Model pad tokens are not zeros, so they are sliced off instead.
+            value=raw_value if token_padding is None else raw_value[:, :, :actual_kv_seq_len, :],
+            # Like the ring's `row_ok`: pad-token Q rows never gate fixed-m.
+            q_valid_len=None if token_padding is None else token_padding.real_len,
         )
 
       bsizes = _build_custom_splash_block_sizes(flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in)
@@ -1558,6 +1731,7 @@ def _ulysses_ring_attention(
     ulysses_attention_chunks: int = 1,
     preserve_asymmetric_block_sizes: bool = False,
     kv_heads: int | None = None,
+    token_padding: Optional[TokenPadding] = None,
 ) -> jax.Array:
   """2D context-parallel attention using a private Ulysses x ring mesh.
 
@@ -1611,10 +1785,10 @@ def _ulysses_ring_attention(
   )
   internal_sequence_axes = (ring_axis, ulysses_axis)
   num_sequence_shards = num_context_shards
-
   query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_sequence_shards)
-  key, _ = _reshape_data_for_flash(key, kv_heads, num_sequence_shards)
+  key, orig_kv_seq_len = _reshape_data_for_flash(key, kv_heads, num_sequence_shards)
   value, _ = _reshape_data_for_flash(value, kv_heads, num_sequence_shards)
+  _reject_token_padding(token_padding, orig_q_seq_len, orig_kv_seq_len, "ulysses_ring")
   attention_mask = _prepare_attention_mask_for_shard_map(attention_mask, query.shape[0], key.shape[2])
   num_heads = query.shape[1]
 
@@ -1788,6 +1962,7 @@ def _ring_fixed_m_norms_pre_a2a(
     block_q: int,
     per_q_block: bool,
     use_k_centering: bool = False,
+    token_padding: Optional[TokenPadding] = None,
 ):
   """Computes all R>1 fixed-m norms and global eligibility predicates *pre* a2a.
 
@@ -1813,6 +1988,11 @@ def _ring_fixed_m_norms_pre_a2a(
   exact same barriered Q/K (V is intentionally left out of the barrier; see the
   caller).
 
+  With `token_padding`, the pad rows at the tail of each ring segment (the tail
+  of the last Ulysses ranks' local rows) are left out of every reduction: the
+  kernel masks those keys and the model drops those queries, so they must not
+  move the bounds. Pad Q/K rows are zero after RoPE anyway; pad V rows are not.
+
   Returns `(qn_dev, mk_global_sq_dev, v_ok, all_fixed_global, k_mean_dev)` sliced
   to the heads this Ulysses rank owns and ready for immediate `jax.lax.cond`
   dispatch post-a2a.
@@ -1820,21 +2000,38 @@ def _ring_fixed_m_norms_pre_a2a(
   reduce_axes = (ulysses_axis, ring_axis)
   key_f32 = key.astype(jnp.float32)
 
+  row_ok = None
+  if token_padding is not None:
+    local_len = key.shape[2]
+    segment_row = jax.lax.axis_index(ulysses_axis) * local_len + jnp.arange(local_len)
+    row_ok = segment_row < token_padding.real_len
+
   q_norm_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1)
+  v_sq = value.astype(jnp.float32) ** 2
+  if row_ok is not None:
+    q_norm_sq = jnp.where(row_ok[None, None, :], q_norm_sq, 0.0)
+    v_sq = jnp.where(row_ok[None, None, :, None], v_sq, 0.0)
   qn_head_local = q_norm_sq.max(axis=-1)
-  vn_local = (value.astype(jnp.float32) ** 2).max()
+  vn_local = v_sq.max()
 
   if use_k_centering:
     # Virtual K-centering: compute global mean and centered key norms without
     # modifying `key`, keeping `all_to_all(key)` independent of `pmean` and
     # passing `k_mean_dev` to the ring kernel for in-kernel projection.
-    k_mean_all = jax.lax.pmean(jnp.mean(key_f32, axis=2), axis_name=reduce_axes)
+    if row_ok is None:
+      k_mean_all = jax.lax.pmean(jnp.mean(key_f32, axis=2), axis_name=reduce_axes)
+    else:
+      k_sum = jnp.where(row_ok[None, None, :, None], key_f32, 0.0).sum(axis=2)
+      k_mean_all = jax.lax.psum(k_sum, axis_name=reduce_axes) / (token_padding.real_len * num_ring_shards)
     centered_f32 = key_f32 - k_mean_all[:, :, None, :]
-    kn_local = jnp.sum(centered_f32**2, axis=-1).max(axis=-1)
+    kn_rows = jnp.sum(centered_f32**2, axis=-1)
     k_mean_dev = _slice_own_ulysses_heads(k_mean_all, ulysses_axis, num_ulysses_shards, axis=1)
   else:
-    kn_local = jnp.sum(key_f32**2, axis=-1).max(axis=-1)
+    kn_rows = jnp.sum(key_f32**2, axis=-1)
     k_mean_dev = None
+  if row_ok is not None:
+    kn_rows = jnp.where(row_ok[None, None, :], kn_rows, 0.0)
+  kn_local = kn_rows.max(axis=-1)
 
   # Global Q/V/K max norms in a SINGLE (ulysses, ring) pmax.
   #
@@ -1891,6 +2088,8 @@ def _ring_fixed_m_norms_pre_a2a(
   # uniform `_accumulate_scan` branch is all-or-nothing. The cost of that
   # fallback in production (how often a layer trips it) has not been measured.
   effective_kv_seq_len = key.shape[2] * num_ulysses_shards * num_ring_shards
+  if token_padding is not None:
+    effective_kv_seq_len = token_padding.real_len * num_ring_shards
   global_recenter, global_bound = custom_splash.get_fixed_m_constants(effective_kv_seq_len)
   global_bound_sq = global_bound**2
   dtype_safe = custom_splash.fixed_m_dtype_is_safe(query.dtype, global_recenter)
@@ -1913,6 +2112,7 @@ def _compute_fixed_m_metadata(
     k_mean: jax.Array | None = None,
     value: jax.Array | None = None,
     v_max_bound: float = 256.0,
+    q_valid_len: int | None = None,
 ) -> tuple[jax.Array, jax.Array]:
   """Computes Cauchy-Schwarz norm bounds and per-Q-block (or per-head) fixed-m metadata.
 
@@ -1933,6 +2133,11 @@ def _compute_fixed_m_metadata(
       verify that |V| <= v_max_bound to guarantee against FP32 overflow. Omitting
       `value` fails closed (`v_ok = 0.0`).
     v_max_bound: Maximum safe value magnitude (default 256.0).
+    q_valid_len: Number of real query tokens in global sequence order, when the
+      sequence carries token padding at its tail. Pad rows are excluded from
+      the Q norms (their outputs are discarded), so pad-token values cannot
+      push a block onto the online-softmax path. For a 5-D shard-major query
+      the global position of row `i` in shard `c` is `c * shard_q_len + i`.
 
   Returns:
     mk_arr: Gating metadata array of shape `(batch, 2, local_q_heads, num_q_blocks)`
@@ -1989,8 +2194,20 @@ def _compute_fixed_m_metadata(
         f"_compute_fixed_m_metadata expects query padded to a multiple of block_q, got q_len={q_len}, block_q={block_q}."
     )
   num_q_blocks = q_len // block_q
-  if per_q_block:
+
+  def _q_norm_sq():
     norm_sq = jnp.square(query.astype(jnp.float32)).sum(axis=-1)
+    if q_valid_len is None:
+      return norm_sq
+    if query.ndim == 5:
+      pos = jnp.arange(num_q_shards)[:, None] * shard_q_len + jnp.arange(shard_q_len)[None, :]
+      pos = pos[None, :, None, :]  # (1, shards, 1, shard_q_len)
+    else:
+      pos = jnp.arange(q_len)[None, None, :]
+    return jnp.where(pos < q_valid_len, norm_sq, 0.0)
+
+  if per_q_block:
+    norm_sq = _q_norm_sq()
     if query.ndim == 5:
       shard_q_blocks = shard_q_len // block_q
       qn_max_sq = norm_sq.reshape(batch_size, num_q_shards, num_q_heads, shard_q_blocks, block_q).max(axis=-1)
@@ -2005,11 +2222,10 @@ def _compute_fixed_m_metadata(
     mk_arr = jnp.stack([m_base, fixed_ok], axis=1)  # (batch, 2, local_q_heads, num_q_blocks)
     all_fixed = jnp.all(fixed_ok > 0.5)
   else:
-    norm_sq = jnp.square(query.astype(jnp.float32)).sum(axis=-1)
     if query.ndim == 5:
-      qn_max_sq = norm_sq.max(axis=(1, 3))
+      qn_max_sq = _q_norm_sq().max(axis=(1, 3))
     else:
-      qn_max_sq = norm_sq.max(axis=-1)  # (batch, num_q_heads)
+      qn_max_sq = _q_norm_sq().max(axis=-1)  # (batch, num_q_heads)
     bound_sq_1d = qn_max_sq * mk_h_sq
     fixed_ok_1d = (bound_sq_1d <= safe_bound_sq).astype(jnp.float32) * v_ok
     m_base_1d = jnp.ceil(jnp.sqrt(bound_sq_1d)) - recenter
@@ -2046,6 +2262,7 @@ def _ulysses_ring_custom_attention(
     qk_prescaled: bool = False,
     transpose_out: bool = False,
     wan_ulysses_out_a2a: str = "flat",
+    token_padding: Optional[TokenPadding] = None,
 ) -> jax.Array:
   """2D USP attention (Ulysses + Ring) using custom splash kernel with exact Fixed-m support."""
   if kv_heads is None:
@@ -2088,6 +2305,11 @@ def _ulysses_ring_custom_attention(
   if kv_heads % num_ulysses_shards != 0:
     raise ValueError(f"Ulysses+Ring requires KV heads divisible by U={num_ulysses_shards}, got kv_heads={kv_heads}.")
   _validate_ring_sequence_divisibility(orig_q_seq_len, orig_kv_seq_len, num_ring_shards, num_context_shards)
+  token_padding = _resolve_token_padding(
+      token_padding, orig_kv_seq_len, num_segments=num_ring_shards, q_seq_len=orig_q_seq_len
+  )
+  if token_padding is not None and bidirectional:
+    raise NotImplementedError("ulysses_ring_custom_bidir does not support token_padding.")
   (
       bq,
       bkv,
@@ -2153,6 +2375,7 @@ def _ulysses_ring_custom_attention(
           block_q=bq,
           per_q_block=per_q_block,
           use_k_centering=use_k_centering,
+          token_padding=token_padding,
       )
 
     eff_out_a2a_mode = wan_ulysses_out_a2a
@@ -2207,7 +2430,11 @@ def _ulysses_ring_custom_attention(
     raw_query = query
     raw_value = value
     context_q_seq_len = raw_query.shape[1] * raw_query.shape[3] if use_shard_major else raw_query.shape[2]
-    actual_kv_seq_len = orig_kv_seq_len if num_ring_shards == 1 else raw_key.shape[2]
+    actual_kv_seq_len = (
+        (token_padding.real_len if token_padding is not None else orig_kv_seq_len)
+        if num_ring_shards == 1
+        else (token_padding.real_len if token_padding is not None else raw_key.shape[2])
+    )
     real_key = raw_key[:, :, :actual_kv_seq_len, :]
 
     if use_shard_major:
@@ -2220,9 +2447,11 @@ def _ulysses_ring_custom_attention(
     # derived from actual_kv_seq_len, avoiding sequence pad HBM copies and
     # redundant ppermute/MXU compute on padded keys.
     kv_pad_size = 1 if actual_kv_seq_len % 8 == 0 else bkv
-    key, _, key_seq_len = _pad_data_for_flash(raw_key, kv_heads, kv_pad_size)
+    key, _, _ = _pad_data_for_flash(raw_key, kv_heads, kv_pad_size)
     value, _, _ = _pad_data_for_flash(raw_value, kv_heads, kv_pad_size)
-    ring_kv_seq_len = actual_kv_seq_len if actual_kv_seq_len % 8 == 0 else key_seq_len
+    # `_pad_data_for_flash`'s 3rd return is the unpadded input length (`raw_key.shape[2]`);
+    # use `actual_kv_seq_len` so `token_padding.real_len` masks the tail pad keys.
+    ring_kv_seq_len = actual_kv_seq_len
 
     k_mean = None
     if use_fixed_m and num_ring_shards == 1 and use_k_centering:
@@ -2242,7 +2471,9 @@ def _ulysses_ring_custom_attention(
           recenter=recenter,
           per_q_block=per_q_block,
           k_mean=k_mean,
-          value=raw_value,
+          value=raw_value if token_padding is None else raw_value[:, :, :actual_kv_seq_len, :],
+          # As on the 1-D Ulysses path: pad-token Q rows never gate fixed-m.
+          q_valid_len=None if token_padding is None else token_padding.real_len,
       )
 
     bsizes = _build_custom_splash_block_sizes(flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in)
@@ -2433,6 +2664,7 @@ def _apply_attention_dot(
     qk_prescaled: bool = False,
     k_prescaled: bool = False,
     use_base2_exp: bool = False,
+    token_padding: Optional[TokenPadding] = None,
 ):
   """Apply Attention."""
   effective_kv_heads = kv_heads if kv_heads is not None else heads
@@ -2458,6 +2690,7 @@ def _apply_attention_dot(
     query_states = _to_bshd(query, heads)
     key_states = _to_bshd(key, effective_kv_heads)
     value_states = _to_bshd(value, effective_kv_heads)
+    _reject_token_padding(token_padding, query_states.shape[1], key_states.shape[1], "dot_product")
     if heads != effective_kv_heads:
       num_repeats = heads // effective_kv_heads
       key_states = jnp.repeat(key_states, num_repeats, axis=2)
@@ -2466,6 +2699,7 @@ def _apply_attention_dot(
     query_states = _reshape_heads_to_batch_dim(query, heads)
     key_states = _reshape_heads_to_batch_dim(key, effective_kv_heads)
     value_states = _reshape_heads_to_batch_dim(value, effective_kv_heads)
+    _reject_token_padding(token_padding, query_states.shape[1], key_states.shape[1], "dot_product")
     if heads != effective_kv_heads:
       num_repeats = heads // effective_kv_heads
       b = query.shape[0]
@@ -2565,7 +2799,15 @@ def _apply_attention_dot(
   return hidden_states
 
 
-def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, mesh: Mesh, dpa_layer: Callable) -> Array:
+def _cudnn_flash_attention(
+    query: Array,
+    key: Array,
+    value: Array,
+    heads: int,
+    mesh: Mesh,
+    dpa_layer: Callable,
+    token_padding: Optional[TokenPadding] = None,
+) -> Array:
   """CUDNN Flash Attention with Transformer Engine.
   1. Stable API, supports GQA
   2. Supports head_dim till 128; head_dim=256 support will be added soon
@@ -2575,6 +2817,7 @@ def _cudnn_flash_attention(query: Array, key: Array, value: Array, heads: int, m
   query = _reshape_data_for_cudnn_flash(query, heads)
   key = _reshape_data_for_cudnn_flash(key, heads)
   value = _reshape_data_for_cudnn_flash(value, heads)
+  _reject_token_padding(token_padding, query.shape[1], key.shape[1], "cudnn_flash_te")
 
   query = nn.with_logical_constraint(query, (BATCH, LENGTH, HEAD, D_KV))
   key = nn.with_logical_constraint(key, (BATCH, LENGTH, HEAD, D_KV))
@@ -2614,6 +2857,7 @@ def dot_product_kernel(q, k, v, context):
       qk_prescaled=context.get("qk_prescaled", False),
       k_prescaled=context.get("k_prescaled", False),
       use_base2_exp=context.get("use_base2_exp", False),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2645,6 +2889,7 @@ def ulysses_custom_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2672,6 +2917,7 @@ def ulysses_ring_custom_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2703,6 +2949,7 @@ def ulysses_ring_custom_fixed_m_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2734,6 +2981,7 @@ def ulysses_ring_custom_fixed_m_per_q_block_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2765,6 +3013,7 @@ def ulysses_ring_custom_bidir_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2797,6 +3046,7 @@ def ulysses_custom_fixed_m_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2829,6 +3079,7 @@ def ulysses_custom_fixed_m_per_q_block_kernel(q, k, v, context):
       qk_prescaled=qk_prescaled,
       transpose_out=bool(context.get("transpose_out")),
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2853,6 +3104,7 @@ def ulysses_kernel(q, k, v, context):
       ulysses_shards=context.get("ulysses_shards", -1),
       kernel_name="ulysses",
       wan_ulysses_out_a2a=context.get("wan_ulysses_out_a2a") or "flat",
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2877,6 +3129,7 @@ def ulysses_ring_kernel(q, k, v, context):
       ulysses_attention_chunks=context["ulysses_attention_chunks"],
       preserve_asymmetric_block_sizes=context.get("preserve_asymmetric_block_sizes", False),
       kv_heads=context.get("kv_heads", None),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2901,6 +3154,7 @@ def flash_kernel(q, k, v, context):
       is_causal=context.get("is_causal", False),
       preserve_asymmetric_block_sizes=context.get("preserve_asymmetric_block_sizes", False),
       kv_heads=context.get("kv_heads", None),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2927,6 +3181,7 @@ def tokamax_flash_kernel(q, k, v, context):
       spatiotemporal_config=context.get("spatiotemporal_config"),
       spatiotemporal_shape=context.get("spatiotemporal_shape"),
       kv_heads=context.get("kv_heads", None),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2951,6 +3206,7 @@ def tokamax_ring_kernel(q, k, v, context):
       is_causal=context.get("is_causal", False),
       preserve_asymmetric_block_sizes=context.get("preserve_asymmetric_block_sizes", False),
       kv_heads=context.get("kv_heads", None),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2974,6 +3230,7 @@ def tokamax_ring_custom_kernel(q, k, v, context):
       use_experimental_scheduler=context.get("use_experimental_scheduler", False),
       preserve_asymmetric_block_sizes=context.get("preserve_asymmetric_block_sizes", False),
       kv_heads=context.get("kv_heads", None),
+      token_padding=context.get("token_padding"),
   )
 
 
@@ -2981,7 +3238,15 @@ def tokamax_ring_custom_kernel(q, k, v, context):
 def cudnn_flash_te_kernel(q, k, v, context):
   if context.get("k_prescaled", False):
     k = k / jnp.asarray(context["scale"], dtype=k.dtype)
-  return _cudnn_flash_attention(q, k, v, context["heads"], context["mesh"], context["dpa_layer"])
+  return _cudnn_flash_attention(
+      q,
+      k,
+      v,
+      context["heads"],
+      context["mesh"],
+      context["dpa_layer"],
+      token_padding=context.get("token_padding"),
+  )
 
 
 _QK_PRESCALE_SUPPORTED_KERNELS = {
@@ -3066,6 +3331,7 @@ def _apply_attention(
     k_prescaled: bool = False,
     transpose_out: bool = False,
     wan_ulysses_out_a2a: str = "flat",
+    token_padding: Optional[TokenPadding] = None,
 ):
   """Routes to different attention kernels using a module-level registry."""
 
@@ -3151,6 +3417,7 @@ def _apply_attention(
       "k_prescaled": k_prescaled,
       "transpose_out": transpose_out,
       "wan_ulysses_out_a2a": wan_ulysses_out_a2a,
+      "token_padding": token_padding,
   }
 
   if spatiotemporal_config and spatiotemporal_config.get("use_svg_attention"):
@@ -3189,6 +3456,7 @@ def _head_local_svg_attention(query, key, value, context):
   if context["ulysses_attention_chunks"] != 1:
     raise ValueError("Head-local SVG does not implement chunked Ulysses attention.")
   q, k, v = (_unflatten_heads(x, context["heads"]) if x.ndim == 3 else x for x in (query, key, value))
+  _reject_token_padding(context.get("token_padding"), q.shape[2], k.shape[2], "head_local_svg")
   if grid is None or q.shape != k.shape or q.shape != v.shape or q.shape[2] != math.prod(grid):
     raise ValueError("Head-local SVG requires matched self-attention QKV and token grid.")
   batch, heads = q.shape[0], q.shape[1]
@@ -3569,6 +3837,7 @@ class NNXAttentionOp(nnx.Module):
       sparse_config_override: Optional[dict] = None,
       qk_prescaled: bool = False,
       k_prescaled: bool = False,
+      token_padding: Optional[TokenPadding] = None,
   ):
     return _apply_attention(
         query=query,
@@ -3604,6 +3873,7 @@ class NNXAttentionOp(nnx.Module):
         k_prescaled=k_prescaled,
         transpose_out=getattr(self, "transpose_out", False),
         wan_ulysses_out_a2a=getattr(self, "wan_ulysses_out_a2a", "flat"),
+        token_padding=token_padding,
     )
 
 
@@ -3667,6 +3937,7 @@ class AttentionOp(nn.Module):
       sparse_config_override: Optional[dict] = None,
       qk_prescaled: bool = False,
       k_prescaled: bool = False,
+      token_padding: Optional[TokenPadding] = None,
   ):
     return _apply_attention(
         query=query,
@@ -3701,6 +3972,7 @@ class AttentionOp(nn.Module):
         k_prescaled=k_prescaled,
         transpose_out=getattr(self, "transpose_out", False),
         wan_ulysses_out_a2a=getattr(self, "wan_ulysses_out_a2a", "flat"),
+        token_padding=token_padding,
     )
 
 
@@ -4469,6 +4741,7 @@ class FlaxWanAttention(nnx.Module):
       svg_layer_index: Optional[int | jax.Array] = None,
       svg_timestep: Optional[int | float | jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding: Optional[TokenPadding] = None,
   ) -> jax.Array:
     same_kv_source = encoder_hidden_states is None or encoder_hidden_states is hidden_states
     hidden_states = nn.with_logical_constraint(hidden_states, (BATCH, LENGTH, HEAD))
@@ -4578,6 +4851,7 @@ class FlaxWanAttention(nnx.Module):
             attention_mask=encoder_attention_mask,
             qk_prescaled=qk_prescaled,
             k_prescaled=k_prescaled,
+            token_padding=token_padding if is_self_attention else None,
             **svg_kwargs,
         )
 
