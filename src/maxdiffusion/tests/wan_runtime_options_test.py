@@ -161,6 +161,18 @@ class WanModuleOptionsTest(unittest.TestCase):
     model = nnx.eval_shape(lambda: WanModel(rngs=nnx.Rngs(0), **kwargs, wan_cfg_before_unpatchify="false"))
     self.assertIs(model.wan_cfg_before_unpatchify, False)
 
+  def test_enum_options_validation(self):
+    valid_cases = {
+        "wan_cross_attn_kernel": ("xla", "pallas"),
+    }
+    for name, valid_values in valid_cases.items():
+      for val in valid_values:
+        with self.subTest(option=name, valid=val):
+          self.assertEqual(opts.resolve_from_config(types.SimpleNamespace(**{name: val}), name), val)
+      with self.subTest(option=name, invalid="bogus"):
+        with self.assertRaisesRegex(ValueError, name):
+          opts.resolve_from_config(types.SimpleNamespace(**{name: "bogus"}), name)
+
 
 if __name__ == "__main__":
   unittest.main()
