@@ -13,7 +13,8 @@
 # limitations under the License.
 
 from maxdiffusion.image_processor import PipelineImageInput
-from maxdiffusion import max_logging
+from maxdiffusion import aot_cache, max_logging
+from .wan_denoise_utils import InflightWindow, compile_experts
 from .wan_pipeline import (
     WanPipeline,
     transformer_forward_pass,
@@ -1010,7 +1011,31 @@ def run_inference_2_2_i2v(
     final_latents, _ = final_carry
     return final_latents
 
+  timesteps_np = np.array(scheduler_state.timesteps, dtype=np.int32)
+  step_uses_high = [bool(timesteps_np[s] >= boundary) for s in range(num_inference_steps)]
+  # Warmup can miss the low-noise phase entirely, so compile both experts here
+  # (compile only, no execution); see compile_experts.
+  if aot_cache.in_warmup():
+    warmup_latents = jnp.concatenate([latents, latents], axis=0) if do_classifier_free_guidance else latents
+    warmup_latents = jnp.transpose(warmup_latents, (0, 4, 1, 2, 3))
+    compile_experts(
+        (high_noise_branch, low_noise_branch),
+        (
+            jnp.concatenate([warmup_latents, condition], axis=1),
+            jnp.broadcast_to(timesteps[0], warmup_latents.shape[0]),
+            prompt_embeds_combined,
+            image_embeds_combined,
+            kv_cache_high,
+            kv_cache_low,
+            rotary_emb,
+            encoder_attention_mask_high,
+            encoder_attention_mask_low,
+            jnp.asarray(0, dtype=jnp.int32),
+        ),
+    )
+
   profiler = None
+  inflight = InflightWindow()
   for step in range(num_inference_steps):
     if config and max_utils.profiler_enabled(config) and step == first_profiling_step:
       profiler = max_utils.Profiler(config)
@@ -1026,7 +1051,7 @@ def run_inference_2_2_i2v(
 
     # Timesteps are host-known: Python dispatch (like the T2V loop) avoids
     # tracing both 14B branches per step and keeps the AOT cache usable.
-    use_high_noise = bool(np.asarray(scheduler_state.timesteps)[step] >= np.asarray(boundary))
+    use_high_noise = step_uses_high[step]
     branch = high_noise_branch if use_high_noise else low_noise_branch
     noise_pred = branch((
         latent_model_input,
@@ -1042,6 +1067,7 @@ def run_inference_2_2_i2v(
     ))
     noise_pred = jnp.transpose(noise_pred, (0, 2, 3, 4, 1))
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+    inflight.push(latents)  # Bounds the async dispatch queue; see InflightWindow.
 
     if config and max_utils.profiler_enabled(config) and step == last_profiling_step:
       if profiler:
