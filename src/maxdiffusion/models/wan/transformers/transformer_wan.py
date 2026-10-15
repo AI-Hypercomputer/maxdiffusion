@@ -35,7 +35,7 @@ from ...embeddings_flax import (
     NNXPixArtAlphaTextProjection,
 )
 from ...normalization_flax import FP32LayerNorm
-from ...attention_flax import FlaxWanAttention
+from ...attention_flax import FlaxWanAttention, _warn_once
 from ...gradient_checkpoint import GradientCheckpointType
 
 BlockSizes = common_types.BlockSizes
@@ -59,6 +59,62 @@ def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
   split_indices = cumulative_sizes[:-1].tolist()
   freqs_split = jnp.split(freqs, split_indices, axis=1)
   return freqs_split
+
+
+PATCH_EMBED_MODES = ("conv", "tokens")
+
+
+def can_embed_patches_as_tokens(conv: nnx.Conv, hidden_shape: Tuple[int, ...], patch_size: Tuple[int, int, int]) -> bool:
+  """Whether `embed_patches_as_tokens` computes exactly what `conv` does."""
+
+  def per_dim(value):
+    value = 1 if value is None else value
+    return tuple(value) if isinstance(value, (tuple, list)) else (value,) * len(patch_size)
+
+  if len(hidden_shape) != 5 or per_dim(conv.kernel_size) != tuple(patch_size):
+    return False
+  if per_dim(conv.strides) != tuple(patch_size) or conv.feature_group_count != 1 or conv.mask is not None:
+    return False
+  if per_dim(conv.input_dilation) != (1,) * 3 or per_dim(conv.kernel_dilation) != (1,) * 3:
+    return False
+  # With every spatial size divisible by its stride, 'SAME' pads nothing.
+  return conv.padding in ("SAME", "VALID") and all(n % p == 0 for n, p in zip(hidden_shape[1:4], patch_size))
+
+
+def embed_patches_as_tokens(conv: nnx.Conv, hidden_states: jax.Array, patch_size: Tuple[int, int, int]) -> jax.Array:
+  """Wan patch embedding as a token-sharded matmul: `[B, F, H, W, C]` -> `[B, N, D]`.
+
+  Same result as `jax.lax.collapse(conv(hidden_states), 1, -1)` up to
+  accumulation order, but produced in the layout the transformer blocks use.
+  When the 3D `nnx.Conv` runs before `collapse`, XLA either shards the conv output
+  differently from `activation_length` or emits an activation all-gather /
+  collective-permute when collapsing `(F, H, W)` into the context-sharded token
+  axis (12.8 ms per step on tpu7x, exposed). Patches do not overlap (stride ==
+  kernel), so each token needs only its own patch: flatten the patches in the
+  kernel's `(p_t, p_h, p_w, C)` order, shard them by token and multiply by the
+  replicated `[p_t*p_h*p_w*C, D]` kernel.
+  """
+  p_t, p_h, p_w = patch_size
+  batch, frames, height, width, channels = hidden_states.shape
+  patches = hidden_states.reshape(batch, frames // p_t, p_t, height // p_h, p_h, width // p_w, p_w, channels)
+  patches = jnp.transpose(patches, (0, 1, 3, 5, 2, 4, 6, 7))
+  patches = patches.reshape(batch, -1, p_t * p_h * p_w * channels)
+  patches = nn.with_logical_constraint(patches, ("activation_batch", "activation_length", None))
+
+  kernel = conv.kernel[...].reshape(p_t * p_h * p_w * channels, -1)
+  kernel = nn.with_logical_constraint(kernel, (None, None))
+  bias = conv.bias[...] if conv.bias is not None else None
+  # Mirror nnx.Conv: promote everything to `conv.dtype`, no preferred type.
+  dtype = conv.dtype or jnp.result_type(patches, kernel)
+  out = jax.lax.dot_general(
+      patches.astype(dtype),
+      kernel.astype(dtype),
+      (((2,), (0,)), ((), ())),
+      precision=conv.precision,
+  )
+  if bias is not None:
+    out = out + bias.astype(dtype)
+  return out
 
 
 class WanRotaryPosEmbed(nnx.Module):
@@ -609,6 +665,13 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         **(attention_config or {}),
     }
 
+    # Resolved at build time so they live on the GraphDef; None -> built-in default.
+    def _wan_opt(name):
+      value = attention_config.get(name)
+      return wan_runtime_options.default(name) if value is None else wan_runtime_options.coerce(name, value)
+
+    self.patch_embed_mode = _wan_opt("wan_patch_embed_mode")
+
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
     self.patch_embedding = nnx.Conv(
@@ -810,8 +873,22 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       if rotary_emb is None:
         rotary_emb = self.rope(hidden_states)
     with self.conditional_named_scope("patch_embedding"):
-      hidden_states = self.patch_embedding(hidden_states)
-      hidden_states = jax.lax.collapse(hidden_states, 1, -1)
+      patch_embed_mode = self.patch_embed_mode
+      if patch_embed_mode not in PATCH_EMBED_MODES:
+        raise ValueError(f"wan_patch_embed_mode must be one of {PATCH_EMBED_MODES}, got {patch_embed_mode!r}.")
+      if patch_embed_mode == "tokens" and can_embed_patches_as_tokens(
+          self.patch_embedding, hidden_states.shape, self.config.patch_size
+      ):
+        hidden_states = embed_patches_as_tokens(self.patch_embedding, hidden_states, self.config.patch_size)
+      else:
+        if patch_embed_mode == "tokens":
+          _warn_once(
+              "wan_patch_embed_tokens_unusable",
+              "wan_patch_embed_mode='tokens' requested, but patch_embedding or hidden_states.shape is ineligible "
+              "for token-sharded patchify; falling back to conv.",
+          )
+        hidden_states = self.patch_embedding(hidden_states)
+        hidden_states = jax.lax.collapse(hidden_states, 1, -1)
     per_token_t = timestep.ndim == 2  # [B, seq_len] for TI2V
     with self.conditional_named_scope("condition_embedder"):
       if per_token_t:
