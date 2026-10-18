@@ -31,8 +31,8 @@ class _Model(nnx.Module):
     self.proj = nnx.Linear(IN_FEATURES, OUT_FEATURES, param_dtype=dtype, rngs=nnx.Rngs(0))
     if num_layers is not None:
       # Stacked weights, as in a scanned transformer.
-      self.proj.kernel.set_value(jnp.zeros((num_layers, IN_FEATURES, OUT_FEATURES), dtype))
-      self.proj.bias.set_value(jnp.zeros((num_layers, OUT_FEATURES), dtype))
+      self.proj.kernel.value = jnp.zeros((num_layers, IN_FEATURES, OUT_FEATURES), dtype)
+      self.proj.bias.value = jnp.zeros((num_layers, OUT_FEATURES), dtype)
 
 
 def _lora(rng, base_std, delta_ratio):
@@ -63,25 +63,25 @@ class LoraNNXMergeTest(unittest.TestCase):
   def test_merge_keeps_small_delta_in_bfloat16(self):
     rng = np.random.default_rng(0)
     model = _Model(jnp.bfloat16)
-    model.proj.kernel.set_value(jnp.asarray(self._base(rng, (IN_FEATURES, OUT_FEATURES)), jnp.bfloat16))
-    model.proj.bias.set_value(jnp.asarray(self._base(rng, (OUT_FEATURES,)), jnp.bfloat16))
-    kernel, bias = np.asarray(model.proj.kernel[...]), np.asarray(model.proj.bias[...])
+    model.proj.kernel.value = jnp.asarray(self._base(rng, (IN_FEATURES, OUT_FEATURES)), jnp.bfloat16)
+    model.proj.bias.value = jnp.asarray(self._base(rng, (OUT_FEATURES,)), jnp.bfloat16)
+    kernel, bias = np.asarray(model.proj.kernel.value), np.asarray(model.proj.bias.value)
     down, up, delta = _lora(rng, self.BASE_STD, self.DELTA_RATIO)
     bias_delta = rng.normal(0, self.BASE_STD * self.DELTA_RATIO, OUT_FEATURES).astype(np.float32)
     state_dict = {"proj.lora_A.weight": down, "proj.lora_B.weight": up, "proj.diff_b": bias_delta}
 
     lora_nnx.merge_lora(model, state_dict, RANK, 1.0, lambda path: "proj" if path == "proj" else None, dtype="bfloat16")
 
-    self.assertEqual(model.proj.kernel[...].dtype, jnp.bfloat16)
-    self.assertAlmostEqual(_retained(model.proj.kernel[...], kernel, delta), 1.0, delta=0.05)
-    self.assertAlmostEqual(_retained(model.proj.bias[...], bias, bias_delta), 1.0, delta=0.1)
+    self.assertEqual(model.proj.kernel.value.dtype, jnp.bfloat16)
+    self.assertAlmostEqual(_retained(model.proj.kernel.value, kernel, delta), 1.0, delta=0.05)
+    self.assertAlmostEqual(_retained(model.proj.bias.value, bias, bias_delta), 1.0, delta=0.1)
 
   def test_scanned_merge_keeps_small_delta_in_bfloat16(self):
     rng = np.random.default_rng(1)
     model = _Model(jnp.bfloat16, num_layers=NUM_LAYERS)
-    model.proj.kernel.set_value(jnp.asarray(self._base(rng, (NUM_LAYERS, IN_FEATURES, OUT_FEATURES)), jnp.bfloat16))
-    model.proj.bias.set_value(jnp.asarray(self._base(rng, (NUM_LAYERS, OUT_FEATURES)), jnp.bfloat16))
-    kernel, bias = np.asarray(model.proj.kernel[...]), np.asarray(model.proj.bias[...])
+    model.proj.kernel.value = jnp.asarray(self._base(rng, (NUM_LAYERS, IN_FEATURES, OUT_FEATURES)), jnp.bfloat16)
+    model.proj.bias.value = jnp.asarray(self._base(rng, (NUM_LAYERS, OUT_FEATURES)), jnp.bfloat16)
+    kernel, bias = np.asarray(model.proj.kernel.value), np.asarray(model.proj.bias.value)
     state_dict, deltas, bias_deltas = {}, [], []
     for i in range(NUM_LAYERS):
       down, up, delta = _lora(rng, self.BASE_STD, self.DELTA_RATIO)
@@ -94,9 +94,9 @@ class LoraNNXMergeTest(unittest.TestCase):
         model, state_dict, RANK, 1.0, lambda path: "proj.{}" if path == "proj" else None, dtype="bfloat16"
     )
 
-    self.assertEqual(model.proj.kernel[...].dtype, jnp.bfloat16)
-    self.assertAlmostEqual(_retained(model.proj.kernel[...], kernel, np.stack(deltas)), 1.0, delta=0.05)
-    self.assertAlmostEqual(_retained(model.proj.bias[...], bias, np.stack(bias_deltas)), 1.0, delta=0.1)
+    self.assertEqual(model.proj.kernel.value.dtype, jnp.bfloat16)
+    self.assertAlmostEqual(_retained(model.proj.kernel.value, kernel, np.stack(deltas)), 1.0, delta=0.05)
+    self.assertAlmostEqual(_retained(model.proj.bias.value, bias, np.stack(bias_deltas)), 1.0, delta=0.1)
 
   def test_merge_is_deterministic(self):
     rng = np.random.default_rng(2)
@@ -106,23 +106,23 @@ class LoraNNXMergeTest(unittest.TestCase):
     merged = []
     for _ in range(2):
       model = _Model(jnp.bfloat16)
-      model.proj.kernel.set_value(base)
+      model.proj.kernel.value = base
       lora_nnx.merge_lora(model, state_dict, RANK, 1.0, lambda path: "proj" if path == "proj" else None)
-      merged.append(np.asarray(model.proj.kernel[...], np.float32))
+      merged.append(np.asarray(model.proj.kernel.value, np.float32))
     np.testing.assert_array_equal(merged[0], merged[1])
 
   def test_merge_float32_is_exact_sum(self):
     rng = np.random.default_rng(3)
     model = _Model(jnp.float32)
     kernel = self._base(rng, (IN_FEATURES, OUT_FEATURES))
-    model.proj.kernel.set_value(jnp.asarray(kernel))
+    model.proj.kernel.value = jnp.asarray(kernel)
     down, up, delta = _lora(rng, self.BASE_STD, self.DELTA_RATIO)
     state_dict = {"proj.lora_A.weight": down, "proj.lora_B.weight": up}
 
     lora_nnx.merge_lora(model, state_dict, RANK, 1.0, lambda path: "proj" if path == "proj" else None)
 
-    self.assertEqual(model.proj.kernel[...].dtype, jnp.float32)
-    np.testing.assert_allclose(np.asarray(model.proj.kernel[...]), kernel + delta, rtol=1e-6, atol=1e-7)
+    self.assertEqual(model.proj.kernel.value.dtype, jnp.float32)
+    np.testing.assert_allclose(np.asarray(model.proj.kernel.value), kernel + delta, rtol=1e-6, atol=1e-7)
 
 
 if __name__ == "__main__":
