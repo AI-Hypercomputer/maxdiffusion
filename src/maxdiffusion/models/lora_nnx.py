@@ -28,51 +28,77 @@ import numpy as np
 # -----------------------------------------------------------------------------
 
 
+def _add_and_round(param, delta, key):
+  """
+  Returns param + delta, summed in float32 and rounded to param.dtype once.
+  A LoRA delta is often smaller than half the bfloat16 spacing of the weight, so
+  round-to-nearest would drop most of it. bfloat16 results are therefore rounded
+  stochastically, which keeps the full delta in expectation.
+  """
+  total = param.astype(jnp.float32) + delta.astype(jnp.float32)
+  if param.dtype != jnp.bfloat16:
+    return total.astype(param.dtype)
+  # Add random bits below the bfloat16 mantissa, then truncate to the upper 16 bits.
+  bits = jax.lax.bitcast_convert_type(total, jnp.uint32)
+  noise = jax.random.bits(key, total.shape, jnp.uint32) & jnp.uint32(0xFFFF)
+  rounded = jax.lax.bitcast_convert_type((bits + noise) & jnp.uint32(0xFFFF0000), jnp.float32)
+  return rounded.astype(jnp.bfloat16)
+
+
 @jax.jit
-def _compute_and_add_single_jit(kernel, bias, down, up, scale, w_diff, b_diff):
+def _compute_and_add_single_jit(kernel, bias, down, up, scale, w_diff, b_diff, key):
   """
   Applies LoRA + Weight Diff + Bias Diff on device.
   """
+  kernel_key, bias_key = jax.random.split(key)
+  kernel_delta = jnp.zeros(kernel.shape, jnp.float32)
+
   # 1. Apply LoRA (if valid)
   if down is not None and up is not None:
     # down: (Rank, In), up: (Out, Rank) -> Result: (In, Out)
     # Note: We reshape to kernel shape to handle 1x1 convs
     delta = (down.T @ up.T).reshape(kernel.shape)
-    kernel = kernel + (delta * scale).astype(kernel.dtype)
+    kernel_delta = kernel_delta + delta * scale
 
   # 2. Apply Full Weight Diff (if valid)
   if w_diff is not None:
-    kernel = kernel + w_diff.astype(kernel.dtype)
+    kernel_delta = kernel_delta + w_diff
+
+  kernel = _add_and_round(kernel, kernel_delta, kernel_key)
 
   # 3. Apply Bias Diff (if valid and bias exists)
   if bias is not None and b_diff is not None:
-    bias = bias + b_diff.astype(bias.dtype)
+    bias = _add_and_round(bias, b_diff, bias_key)
 
   return kernel, bias
 
 
 @jax.jit
-def _compute_and_add_scanned_jit(kernel, downs, ups, alphas, global_scale, w_diffs=None, b_diffs=None, bias=None):
+def _compute_and_add_scanned_jit(kernel, downs, ups, alphas, global_scale, key, w_diffs=None, b_diffs=None, bias=None):
   """
   Applies scanned LoRA + Diffs.
   """
+  kernel_key, bias_key = jax.random.split(key)
+  kernel_delta = jnp.zeros(kernel.shape, jnp.float32)
+
   # 1. Apply LoRA
   if downs is not None and ups is not None:
     rank = downs.shape[1]
     scales = global_scale * alphas / rank
     # Batch Matmul: (L, In, Out)
     delta = jnp.matmul(jnp.swapaxes(downs, 1, 2), jnp.swapaxes(ups, 1, 2))
-    delta = (delta * scales).astype(kernel.dtype)
-    kernel = kernel + delta.reshape(kernel.shape)
+    kernel_delta = kernel_delta + (delta * scales).reshape(kernel.shape)
 
   # 2. Apply Scanned Weight Diffs (L, ...)
   if w_diffs is not None:
-    kernel = kernel + w_diffs.astype(kernel.dtype)
+    kernel_delta = kernel_delta + w_diffs
+
+  kernel = _add_and_round(kernel, kernel_delta, kernel_key)
 
   # 3. Apply Scanned Bias Diffs (L, ...)
   # Note: Scanned bias is usually shape (L, Out)
   if bias is not None and b_diffs is not None:
-    bias = bias + b_diffs.astype(bias.dtype)
+    bias = _add_and_round(bias, b_diffs, bias_key)
 
   return kernel, bias
 
@@ -147,7 +173,7 @@ def parse_lora_dict(state_dict, dtype):
   return lora_params
 
 
-def _merge_lora_layer(module, weights, scale):
+def _merge_lora_layer(module, weights, scale, key):
   """Merges LoRA weights into a single non-scanned layer."""
   is_conv_kxk_locon = False
   if isinstance(module, nnx.Conv) and module.kernel_size != (1, 1) and "down" in weights and "up" in weights:
@@ -232,7 +258,7 @@ def _merge_lora_layer(module, weights, scale):
     # --- EXECUTE JIT UPDATE ---
     if down_w is not None or w_diff is not None or b_diff is not None:
       new_kernel, new_bias = _compute_and_add_single_jit(
-          module.kernel.value, bias_val, down_w, up_w, current_scale, w_diff, b_diff
+          module.kernel.value, bias_val, down_w, up_w, current_scale, w_diff, b_diff, key
       )
 
       module.kernel.value = new_kernel
@@ -253,6 +279,8 @@ def merge_lora(model: nnx.Module, state_dict: dict, rank: int, scale: float, tra
   lora_params = parse_lora_dict(state_dict, dtype=dtype)
   max_logging.log(f"Parsed {len(lora_params)} unique module keys.")
   matched_keys = set()
+  # Fixed key so stochastic rounding of the merged weights is reproducible.
+  key = jax.random.key(0)
 
   assigned_count = 0
   for path, module in nnx.iter_graph(model):
@@ -265,7 +293,8 @@ def merge_lora(model: nnx.Module, state_dict: dict, rank: int, scale: float, tra
     if lora_key and lora_key in lora_params:
       matched_keys.add(lora_key)
       weights = lora_params[lora_key]
-      if _merge_lora_layer(module, weights, scale):
+      key, layer_key = jax.random.split(key)
+      if _merge_lora_layer(module, weights, scale, layer_key):
         assigned_count += 1
 
   max_logging.log(f"Merged weights into {assigned_count} layers.")
@@ -286,6 +315,8 @@ def merge_lora_for_scanned(
   lora_params = parse_lora_dict(state_dict, dtype=dtype)
   max_logging.log(f"Parsed {len(lora_params)} keys for scanned merge.")
   matched_keys = set()
+  # Fixed key so stochastic rounding of the merged weights is reproducible.
+  key = jax.random.key(0)
 
   assigned_count = 0
   for path, module in nnx.iter_graph(model):
@@ -317,7 +348,8 @@ def merge_lora_for_scanned(
       if lora_key in lora_params:
         matched_keys.add(lora_key)
         weights = lora_params[lora_key]
-        if _merge_lora_layer(module, weights, scale):
+        key, layer_key = jax.random.split(key)
+        if _merge_lora_layer(module, weights, scale, layer_key):
           assigned_count += 1
       continue
 
@@ -476,12 +508,14 @@ def merge_lora_for_scanned(
         bias_val = module.bias.value if module.bias is not None else None
 
         # Call JIT
+        key, layer_key = jax.random.split(key)
         new_k, new_b = _compute_and_add_scanned_jit(
             module.kernel.value,
             stack_down if has_lora else None,
             stack_up if has_lora else None,
             stack_alpha if has_lora else None,
             scale,
+            layer_key,
             stack_w_diff,
             stack_b_diff,
             bias_val,
