@@ -443,7 +443,9 @@ class WanVaeTest(unittest.TestCase):
         wan_attention.proj.kernel[...] = to_jax(torch_attention.proj.weight, (2, 3, 1, 0))
         wan_attention.proj.bias[...] = to_jax(torch_attention.proj.bias)
 
-        output, _, _ = wan_attention(to_jax(torch_input, (0, 2, 3, 4, 1)))
+        # TPUs run float32 matmuls in reduced precision by default; compare at full precision.
+        with jax.default_matmul_precision("highest"):
+          output, _, _ = wan_attention(to_jax(torch_input, (0, 2, 3, 4, 1)))
         output = np.asarray(output).transpose(0, 4, 1, 2, 3)
         np.testing.assert_allclose(output, torch_output, atol=1e-5, rtol=1e-5)
 
