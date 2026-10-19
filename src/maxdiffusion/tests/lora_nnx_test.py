@@ -16,6 +16,7 @@ limitations under the License.
 
 import unittest
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
@@ -119,7 +120,9 @@ class LoraNNXMergeTest(unittest.TestCase):
     down, up, delta = _lora(rng, self.BASE_STD, self.DELTA_RATIO)
     state_dict = {"proj.lora_A.weight": down, "proj.lora_B.weight": up}
 
-    lora_nnx.merge_lora(model, state_dict, RANK, 1.0, lambda path: "proj" if path == "proj" else None)
+    # TPUs run float32 matmuls in reduced precision by default; check the sum at full precision.
+    with jax.default_matmul_precision("highest"):
+      lora_nnx.merge_lora(model, state_dict, RANK, 1.0, lambda path: "proj" if path == "proj" else None)
 
     self.assertEqual(model.proj.kernel.value.dtype, jnp.float32)
     np.testing.assert_allclose(np.asarray(model.proj.kernel.value), kernel + delta, rtol=1e-6, atol=1e-7)
