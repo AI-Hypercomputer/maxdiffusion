@@ -17,6 +17,7 @@ Tests for Sol-Attn (arXiv:2607.24027): routing math, the dense reference, the
 Pallas TPU kernel, sharded execution, and model/pipeline config plumbing.
 """
 
+import dataclasses
 from types import SimpleNamespace
 
 import flax.linen as nn
@@ -29,6 +30,7 @@ from scipy.stats import norm
 
 from maxdiffusion import aot_cache
 from maxdiffusion import common_types as ct
+from maxdiffusion.kernels.sol_attention import pooling
 from maxdiffusion.kernels.sol_attention import reference
 from maxdiffusion.kernels.sol_attention import routing
 from maxdiffusion.kernels.sol_attention import sol_attention_kernel
@@ -195,7 +197,7 @@ def test_kernel_pipelining_variants(group_size, num_buffers):
   route = routing.compute_routing(qp, kp, vp, seq_len=2500, scale=0.09, beta=0.3, block_sizes=bs)
   # Force the ragged tail block into every row so the epilogue always runs.
   sel = route.selected.at[:, :, 2500 // 128].set(True)
-  route = routing.SolRouting(sel, route.tau, route.kv_counts, route.k_pooled, route.v_pooled)
+  route = dataclasses.replace(route, selected=sel)
   out = sol_attention_kernel.sol_attention_from_routing(
       qp, kp, vp, route, seq_len=2500, scale=0.09, block_sizes=bs, group_size=group_size, num_buffers=num_buffers
   )
@@ -218,14 +220,59 @@ def test_kernel_handles_empty_and_full_selection():
   route = routing.compute_routing(qp, kp, vp, seq_len=700, scale=0.1, beta=1.0, block_sizes=bs)
   for fill in (False, True):
     sel = jnp.full_like(route.selected, fill)
-    forced = routing.SolRouting(sel, route.tau, route.kv_counts, route.k_pooled, route.v_pooled)
+    forced = dataclasses.replace(route, selected=sel)
     out = sol_attention_kernel.sol_attention_from_routing(qp, kp, vp, forced, seq_len=700, scale=0.1, block_sizes=bs)
     want = reference.sol_attention_reference(q, k, v, scale=0.1, beta=1.0, block_sizes=bs, selected=sel)
     assert _rel_l2(out[:, :700], want) < 1e-2
 
 
 @requires_tpu
-def test_sharded_ulysses_matches_single_device():
+@pytest.mark.parametrize("seq_len,block_q,block_kv", [(9000, 256, 128), (20000, 1024, 256)])
+def test_unpadded_path_matches_reference(seq_len, block_q, block_kv):
+  """Fused pooling + unpadded kernel (ragged tail read as a shifted window)."""
+  q, k, v = _video_like_qkv(2, seq_len, 128, seed=11, dtype=jnp.bfloat16)
+  bs = routing.SolBlockSizes(block_q, block_kv)
+  route = sol_attention_kernel.compute_routing_unpadded(q, k, v, scale=128**-0.5, beta=1.0, block_sizes=bs)
+  out = sol_attention_kernel.sol_attention_from_routing(q, k, v, route, seq_len=seq_len, scale=128**-0.5, block_sizes=bs)
+  padded = routing.padded_length(seq_len, bs)
+  nq, nk = route.selected.shape[1:]
+  sel = jnp.pad(route.selected, ((0, 0), (0, padded // block_q - nq), (0, padded // block_kv - nk)))
+  want = reference.sol_attention_reference(q, k, v, scale=128**-0.5, beta=1.0, block_sizes=bs, selected=sel)
+  assert _rel_l2(out, want) < 1e-2
+
+
+@requires_tpu
+def test_fused_pooling_matches_reference_pooling():
+  q, k, v = _video_like_qkv(2, 9000, 128, seed=2, dtype=jnp.bfloat16)
+  q_pooled, k_pooled, v_pooled, k_radius = pooling.pool_qkv(q, k, v, block_q=256, block_kv=128)
+  padded = routing.padded_length(9000, routing.SolBlockSizes(256, 128))
+  qp, kp, vp = (routing.pad_sequence(x, padded) for x in (q, k, v))
+  want_k = routing.pool_blocks(kp, 9000, 128)[:, : k_pooled.shape[1]]
+  np.testing.assert_allclose(q_pooled, routing.pool_blocks(qp, 9000, 256)[:, : q_pooled.shape[1]], rtol=1e-5, atol=1e-5)
+  np.testing.assert_allclose(k_pooled, want_k, rtol=1e-5, atol=1e-5)
+  np.testing.assert_allclose(v_pooled, routing.pool_blocks(vp, 9000, 128)[:, : v_pooled.shape[1]], rtol=1e-5, atol=1e-5)
+  want_r = routing.block_radius(kp, routing.pool_blocks(kp, 9000, 128), 9000, 128)[:, : k_radius.shape[1]]
+  np.testing.assert_allclose(k_radius, want_r, rtol=1e-4, atol=1e-4)
+
+
+@requires_tpu
+def test_fixed_offset_survives_outlier_keys():
+  """A few keys far above their block mean must neither overflow nor be lost."""
+  q, k, v = _video_like_qkv(1, 2048, 128, seed=4, dtype=jnp.float32)
+  direction = q[0, 100] / jnp.linalg.norm(q[0, 100])
+  k = k.at[0, 77].set(60.0 * direction).at[0, 1500].set(-60.0 * direction)
+  q, k, v = (x.astype(jnp.bfloat16) for x in (q, k, v))
+  bs = routing.SolBlockSizes(256, 128)
+  route = routing.compute_routing(q, k, v, seq_len=2048, scale=0.3, beta=1.0, block_sizes=bs)
+  out = sol_attention_kernel.sol_attention_from_routing(q, k, v, route, seq_len=2048, scale=0.3, block_sizes=bs)
+  want = reference.sol_attention_reference(q, k, v, scale=0.3, beta=1.0, block_sizes=bs, selected=route.selected)
+  assert np.all(np.isfinite(np.asarray(out, np.float32)))
+  assert _rel_l2(out, want) < 1e-2
+
+
+@requires_tpu
+@pytest.mark.parametrize("head_chunks", [1, 2])
+def test_sharded_ulysses_matches_single_device(head_chunks):
   devices = jax.devices()
   if len(devices) < 2:
     pytest.skip("Requires multiple TPU devices.")
@@ -249,6 +296,7 @@ def test_sharded_ulysses_matches_single_device():
       "mesh": mesh,
       "scale": head_dim**-0.5,
       "attention_mask": None,
+      "ulysses_attention_chunks": head_chunks,
       "axis_names_q": (ct.BATCH, ct.SELF_ATTN_HEAD, ct.SELF_ATTN_Q_LENGTH, ct.D_KV),
       "axis_names_kv": (ct.BATCH, ct.SELF_ATTN_HEAD, ct.SELF_ATTN_KV_LENGTH, ct.D_KV),
   }

@@ -106,6 +106,18 @@ def pool_blocks(x: jax.Array, seq_len: int, block: int) -> jax.Array:
   return sums / jnp.maximum(counts, 1.0)[:, None]
 
 
+def block_radius(x: jax.Array, pooled: jax.Array, seq_len: int, block: int) -> jax.Array:
+  """Max L2 distance of a block's real tokens from the block mean, [..., Nk].
+
+  Bounds how far any token score can exceed its block's proxy score:
+  q . k_t <= q . mean(K_j) + ||q|| * radius_j.
+  """
+  *lead, padded_len, d = x.shape
+  dev = x.astype(jnp.float32).reshape(*lead, padded_len // block, block, d) - pooled[..., None, :]
+  valid = (jnp.arange(padded_len) < seq_len).reshape(padded_len // block, block)
+  return jnp.sqrt(jnp.max(jnp.where(valid, jnp.sum(dev * dev, axis=-1), 0.0), axis=-1))
+
+
 def block_proxy_scores(q_pooled: jax.Array, k_pooled: jax.Array, scale: float) -> jax.Array:
   """Pre-softmax block-proxy logits s_ij (Eq. 3), shape [..., Nq, Nk]."""
   return (
@@ -186,11 +198,48 @@ class SolRouting:
   kv_counts: jax.Array  # int32 [Nk]
   k_pooled: jax.Array  # f32 [H, Nk, d]   mean key per block
   v_pooled: jax.Array  # f32 [H, Nk, d]   mean value per block
+  # f32 [H, Nk] max ||k_t - mean(K_j)|| per block; lets the kernel use a fixed
+  # softmax offset with an overflow guarantee. None -> 0 (weaker guard).
+  k_radius: Optional[jax.Array] = None
 
   def density(self) -> jax.Array:
     """Fraction of (query block, real key block) pairs computed exactly."""
     valid = (self.kv_counts > 0).astype(jnp.float32)
     return jnp.sum(self.selected * valid) / (jnp.sum(valid) * self.selected.shape[0] * self.selected.shape[1])
+
+
+def route_pooled(
+    q_pooled: jax.Array,
+    k_pooled: jax.Array,
+    v_pooled: jax.Array,
+    kv_counts: jax.Array,
+    *,
+    scale: float,
+    beta: float,
+    always_exact: Optional[jax.Array] = None,
+    k_radius: Optional[jax.Array] = None,
+) -> SolRouting:
+  """Routes key blocks per query block from already pooled Q/K/V.
+
+  Args:
+    q_pooled: Mean query per query block [H, Nq, d].
+    k_pooled, v_pooled: Mean key/value per key block [H, Nk, d].
+    kv_counts: Real tokens per key block [Nk].
+    scale: Attention logit scale.
+    beta: Standardized cutoff (see `threshold_route`).
+    always_exact: Optional bool [Nk] of key blocks forced into the exact branch.
+    k_radius: Optional per-block key radius [H, Nk] (see `block_radius`).
+  """
+  scores = block_proxy_scores(q_pooled, k_pooled, scale)
+  selected, tau = threshold_route(scores, kv_counts, beta, always_exact)
+  return SolRouting(
+      selected=selected,
+      tau=tau,
+      kv_counts=kv_counts,
+      k_pooled=k_pooled.astype(jnp.float32),
+      v_pooled=v_pooled.astype(jnp.float32),
+      k_radius=k_radius,
+  )
 
 
 def compute_routing(
@@ -204,7 +253,7 @@ def compute_routing(
     block_sizes: SolBlockSizes,
     always_exact: Optional[jax.Array] = None,
 ) -> SolRouting:
-  """Pools Q/K/V into blocks and routes key blocks per query block.
+  """Pools Q/K/V into blocks (pure JAX) and routes key blocks per query block.
 
   Args:
     q, k, v: Zero-padded [H, padded_len, d] tensors.
@@ -214,18 +263,16 @@ def compute_routing(
     block_sizes: Block granularity.
     always_exact: Optional bool [Nk] of key blocks forced into the exact branch.
   """
-  q_pooled = pool_blocks(q, seq_len, block_sizes.block_q)
   k_pooled = pool_blocks(k, seq_len, block_sizes.block_kv)
-  v_pooled = pool_blocks(v, seq_len, block_sizes.block_kv)
-  kv_counts = block_counts(seq_len, k.shape[-2], block_sizes.block_kv)
-  scores = block_proxy_scores(q_pooled, k_pooled, scale)
-  selected, tau = threshold_route(scores, kv_counts, beta, always_exact)
-  return SolRouting(
-      selected=selected,
-      tau=tau,
-      kv_counts=kv_counts,
-      k_pooled=k_pooled,
-      v_pooled=v_pooled,
+  return route_pooled(
+      pool_blocks(q, seq_len, block_sizes.block_q),
+      k_pooled,
+      pool_blocks(v, seq_len, block_sizes.block_kv),
+      block_counts(seq_len, k.shape[-2], block_sizes.block_kv),
+      scale=scale,
+      beta=beta,
+      always_exact=always_exact,
+      k_radius=block_radius(k, k_pooled, seq_len, block_sizes.block_kv),
   )
 
 

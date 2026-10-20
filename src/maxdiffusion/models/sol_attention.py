@@ -41,6 +41,7 @@ from typing import Any, Callable, Mapping, Optional
 
 import flax.linen as nn
 import jax
+import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
 
 from maxdiffusion.common_types import BATCH, HEAD, LENGTH
@@ -207,6 +208,16 @@ def _sequence_axis(spec_entry) -> Optional[str]:
   raise ValueError(f"Sol-Attn supports sequence sharding over a single mesh axis, got {spec_entry!r}.")
 
 
+def _head_chunk_ranges(num_heads: int, shards: int, num_chunks: int) -> list[tuple[int, int]]:
+  """Splits heads into <= num_chunks ranges whose sizes are multiples of `shards`."""
+  if num_heads % shards:
+    raise ValueError(f"Sol-Attn needs heads ({num_heads}) divisible by the sequence shards ({shards}).")
+  groups = num_heads // shards
+  num_chunks = max(1, min(num_chunks, groups))
+  bounds = [round(c * groups / num_chunks) * shards for c in range(num_chunks + 1)]
+  return [(a, b) for a, b in zip(bounds[:-1], bounds[1:]) if b > a]
+
+
 def sol_sharded_attention(query: jax.Array, key: jax.Array, value: jax.Array, context: Mapping[str, Any]) -> jax.Array:
   """Sol-Attn entry point for `attention_flax._apply_attention`.
 
@@ -227,6 +238,7 @@ def sol_sharded_attention(query: jax.Array, key: jax.Array, value: jax.Array, co
   if q.shape != k.shape or q.shape != v.shape:
     raise ValueError(f"Sol-Attn requires matched self-attention q/k/v, got {q.shape}, {k.shape}, {v.shape}.")
 
+  log_density = bool(cfg.get("log_density", False))
   kernel = functools.partial(
       sol_attention_kernel.sol_attention,
       scale=context["scale"],
@@ -235,6 +247,7 @@ def sol_sharded_attention(query: jax.Array, key: jax.Array, value: jax.Array, co
       vmem_limit_bytes=cfg.get("vmem_limit_bytes"),
       return_density=True,
   )
+  density = None
 
   if mesh is None:
     out, density = kernel(q, k, v)
@@ -247,26 +260,42 @@ def sol_sharded_attention(query: jax.Array, key: jax.Array, value: jax.Array, co
       raise ValueError("Sol-Attn does not support sharding the head dimension.")
     seq_axis = _sequence_axis(qspec[2])
     mesh_axes = tuple(mesh.axis_names)
+    shards = mesh.shape[seq_axis] if seq_axis is not None else 1
+    chunks = _head_chunk_ranges(q.shape[1], shards, int(context.get("ulysses_attention_chunks") or 1) if seq_axis else 1)
 
     @functools.partial(
         jax.shard_map,
         mesh=mesh,
         in_specs=(qspec, kvspec, kvspec),
-        out_specs=(qspec, P()),
+        out_specs=(qspec, P()) if log_density else qspec,
         check_vma=False,
     )
     def local(q, k, v):
-      if seq_axis is not None:
-        a2a = functools.partial(jax.lax.all_to_all, axis_name=seq_axis, tiled=True)
-        q, k, v = (a2a(x, split_axis=1, concat_axis=2) for x in (q, k, v))
-      out, density = kernel(q, k, v)
-      if seq_axis is not None:
-        out = a2a(out, split_axis=2, concat_axis=1)
-      return out, jax.lax.pmean(density, mesh_axes)
+      # Head chunks are independent: with async all-to-all enabled, XLA
+      # overlaps the exchange of chunk c+1 with the kernels of chunk c.
+      a2a = functools.partial(jax.lax.all_to_all, axis_name=seq_axis, tiled=True) if seq_axis else None
+      outs, densities = [], []
+      for start, stop in chunks:
+        qc, kc, vc = (x[:, start:stop] for x in (q, k, v))
+        if a2a is not None:
+          qc, kc, vc = (a2a(x, split_axis=1, concat_axis=2) for x in (qc, kc, vc))
+        out_c, density_c = kernel(qc, kc, vc)
+        if a2a is not None:
+          out_c = a2a(out_c, split_axis=2, concat_axis=1)
+        outs.append(out_c)
+        densities.append(density_c)
+      out = outs[0] if len(outs) == 1 else jnp.concatenate(outs, axis=1)
+      if not log_density:
+        return out
+      # Only pay for the extra collective when the density is requested.
+      return out, jax.lax.pmean(sum(densities) / len(densities), mesh_axes)
 
-    out, density = local(q, k, v)
+    if log_density:
+      out, density = local(q, k, v)
+    else:
+      out = local(q, k, v)
 
-  if cfg.get("log_density", False):
+  if log_density:
     jax.debug.print(
         "sol_attention density={d:.4f} layer={l} step={s}",
         d=density,

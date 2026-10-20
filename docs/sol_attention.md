@@ -38,32 +38,41 @@ case an all-to-all gives each device full sequences for a subset of heads.
 ## Results on TPU v6e-8
 
 Wan 2.1 14B T2V, 720p, 81 frames, 50 steps, `attention=ulysses_custom`,
-`ici_data_parallelism=2 ici_context_parallelism=4`, one prompt, seed 12345.
-The dense warm-up follows the paper (steps `[0, 10)` and layer 0 dense). PSNR
-and SSIM compare each video with the dense video, as in Table 1 of the paper
-(the paper reports PSNR 20.59 / SSIM 0.68 at 85% sparsity on H100).
+`ici_data_parallelism=2 ici_context_parallelism=4`, one prompt, seed 12345,
+with the async all-to-all flags below. The dense warm-up follows the paper
+(steps `[0, 10)` and layer 0 dense). PSNR and SSIM compare each video with the
+dense video, as in Table 1 of the paper (the paper reports PSNR 20.59 / SSIM
+0.68 at 85% sparsity on H100).
 
-| Config | Exact density | Generation time | Speedup | PSNR | SSIM |
-|---|---|---|---|---|---|
-| dense | 100% | 231.3 s | 1.00x | – | – |
-| `sol_block_q=1024 sol_block_kv=256 sol_beta=1.0` (default) | ~17% | 160.6 s | 1.44x | 20.20 dB | 0.702 |
-| `sol_block_q=1024 sol_block_kv=256 sol_beta=0.8` | – | 170.5 s | 1.36x | 20.60 dB | 0.735 |
-| `sol_block_q=512 sol_block_kv=256 sol_beta=1.0` | – | 175.0 s | 1.32x | 20.99 dB | 0.755 |
-| `sol_block_q=2048 sol_block_kv=512 sol_beta=1.0` | ~16% | 150.4 s* | 1.54x | 18.55 dB | 0.633 |
+```bash
+export LIBTPU_INIT_ARGS="--xla_tpu_enable_async_all_to_all=true --xla_tpu_overlap_compute_collective_tc=true \
+  --xla_tpu_enable_async_collective_fusion=true --xla_tpu_enable_async_collective_fusion_multiple_steps=true"
+```
 
-\* measured with `sol_log_density=True`, which adds a host callback per layer.
+| Config | Generation time | Speedup | PSNR | SSIM |
+|---|---|---|---|---|
+| dense | 229.6 s | 1.00x | – | – |
+| `sol_block_q=1024 sol_block_kv=256` (default) | 147.1 s | 1.56x | 20.18 dB | 0.704 |
+| `sol_block_q=2048 sol_block_kv=256` | 138.4 s | 1.66x | 18.49 dB | 0.633 |
+| default + `ulysses_attention_chunks=2` | 146.9 s | 1.56x | 20.28 dB | 0.708 |
+| default + `sol_active_start_step=5` (10% dense warm-up) | 136.6 s | 1.68x | 17.01 dB | 0.587 |
 
-Per self-attention layer (all 8 chips, synthetic video-like inputs at the
-same shapes), dense `ulysses_custom` takes 83.7 ms and Sol-Attn 36.6 ms at
-`1024x256` (2.3x) and 23.4 ms at `2048x512` (3.6x). About 13 ms of each
-layer is shared overhead (Ulysses all-to-alls and layout copies), so
-end-to-end gains are bounded by Amdahl's law and the 20% dense warm-up.
+Shortening the dense warm-up below the paper's 20% buys speed at a clear
+fidelity cost.
+
+The measured exact-block density on Wan at `sol_beta=1.0` is about 16-17%.
+
+Per self-attention layer (all 8 chips, synthetic video-like inputs at the same
+shapes), dense `ulysses_custom` takes 82.5 ms and Sol-Attn 22.8 ms at
+`1024x256` (3.6x). Of the 22.8 ms, the kernel is ~14 ms and the Ulysses
+exchange (all-to-alls plus XLA layout copies, the same as for dense) ~8 ms.
 
 ## Code layout
 
 ```
 kernels/sol_attention/
   routing.py               pooling, thresholds (Eq. 3-5), index compaction (pure JAX)
+  pooling.py               fused single-pass Pallas pooling of Q/K/V (+ key block radii)
   sol_attention_kernel.py  Pallas TPU kernel + `sol_attention(q, k, v, ...)` entry point
   reference.py             dense O(L^2) oracle of Eqs. (9)-(10), for tests
 models/
@@ -97,9 +106,27 @@ places, each driven by measurements on v6e:
 * **Larger blocks than the paper's 64 x 64.** MXU efficiency and per-block
   overheads favor 512-2048 query tokens and 256-512 key tokens.
 * **Grouped hot loop.** Selected blocks land in contiguous ring slots, so the
-  loop fuses several of them into one ~1024-key score tile (one softmax
-  rescale per tile), keeping routing at `sol_block_kv` granularity. This
-  alone is 10-25% faster for 128-256 token blocks.
+  loop fuses several of them into one ~1024-key score tile, keeping routing
+  at `sol_block_kv` granularity. This alone is 10-25% faster for 128-256
+  token blocks.
+* **Fixed softmax offset.** Instead of a running max, each query uses
+  `m = max(m_est, ub - 80)` (log2 units): `m_est` (the largest pooled score,
+  a lower bound of the true max) rules out underflow, and
+  `ub = max_j (q . mean(K_j) + ||q|| * radius_j)` (an upper bound of every
+  token score, with per-block key radii from the pooling kernel) rules out
+  f32 overflow. The hot loop then has no max reduction and no accumulator
+  rescale (~20% faster). Query tiles whose bounds are too far apart (e.g. an
+  outlier key inflating a block radius) fall back to the online softmax.
+* **Fused pooling, no padding.** One Pallas pass computes the Q/K/V block
+  means and key radii straight from the unpadded `[H, L, d]` layout (XLA's
+  reshape-and-mean cost ~0.4 ms per tensor). The attention kernel reads
+  unpadded tensors too: the ragged tail key block is fetched as the last
+  `block_kv` rows and masked, and the output is transposed on chip, so no
+  pad/slice/transpose copies remain around the kernel.
+* **Head-chunked exchange.** `ulysses_attention_chunks` splits heads into
+  chunks so XLA can overlap one chunk's all-to-all with another's kernel.
+  On v6e-8 this is neutral (the exchange is dominated by layout copies), but
+  it may help on slower interconnects.
 
 ## Extending to other models
 
