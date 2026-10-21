@@ -578,6 +578,7 @@ def _splash_attention_forward_ring(
     use_fixed_m: bool = False,
     mk: jax.Array | None = None,
     uniform_fixed_m: bool = False,
+    q_grid_len: int | None = None,
 ):
   """Ring-specific forward path that returns pre-reciprocal fp32 accumulators.
 
@@ -587,6 +588,12 @@ def _splash_attention_forward_ring(
   denominator (`l`). The outer ring loop merges these shard contributions and
   normalizes only once at the very end (see
   `ring_attention_kernel._custom_ring_attention_forward`).
+
+  `q_grid_len` (optional) bounds the query grid separately from the output
+  length: only the first ceil(q_grid_len / block_q) query tiles are computed,
+  while the outputs keep `q_seq_len` rows. Rows past the last computed tile are
+  left unwritten (arbitrary values), so the caller must mask them. Used for
+  padded sequences whose real queries form a prefix of each ring chunk.
 
   Returns:
     A tuple `(out, m, l)` where
@@ -639,7 +646,8 @@ def _splash_attention_forward_ring(
       pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map),
   ]
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
-  grid_height = (actual_q_seq_len + bq - 1) // bq
+  grid_q_len = actual_q_seq_len if q_grid_len is None else min(q_grid_len, actual_q_seq_len)
+  grid_height = (grid_q_len + bq - 1) // bq
   grid = (num_q_heads, grid_height, grid_width)
 
   # Scalar-prefetch operand carrying per-head fixed-m data (same convention as

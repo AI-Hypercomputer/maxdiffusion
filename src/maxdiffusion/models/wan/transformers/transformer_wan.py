@@ -452,6 +452,7 @@ class WanTransformerBlock(nnx.Module):
       svg_layer_index: Optional[int | jax.Array] = None,
       svg_timestep: Optional[int | float | jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding=None,
   ):
     with self.conditional_named_scope("transformer_block"):
       # Support both global [B, 6, dim] and per-token [B, seq_len, 6, dim] temb.
@@ -502,6 +503,7 @@ class WanTransformerBlock(nnx.Module):
               svg_layer_index=svg_layer_index,
               svg_timestep=svg_timestep,
               svg_step_index=svg_step_index,
+              token_padding=token_padding,
           )
         with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
@@ -782,6 +784,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       rotary_emb: Optional[jax.Array] = None,
       encoder_attention_mask: Optional[jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding=None,
   ) -> Union[jax.Array, Tuple[jax.Array, jax.Array], Dict[str, jax.Array]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
@@ -798,6 +801,52 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = self.patch_embedding(hidden_states)
       hidden_states = jax.lax.collapse(hidden_states, 1, -1)
     per_token_t = timestep.ndim == 2  # [B, seq_len] for TI2V
+    to_physical = None
+    block_reorder = False
+    num_patch_tokens = hidden_states.shape[1]
+    if token_padding is not None:
+      token_padding.validate()
+      if not token_padding.num_real <= num_patch_tokens <= token_padding.num_total:
+        raise ValueError(
+            f"token_padding (num_real={token_padding.num_real}, num_total={token_padding.num_total}) "
+            f"does not fit {num_patch_tokens} patch tokens."
+        )
+      if per_token_t or skip_blocks:
+        raise NotImplementedError("token_padding does not support per-token timesteps or skip_blocks.")
+      # block_reorder: build the shard layout (each ring chunk = its real tokens + zeros) with
+      # a reshape + pad instead of an index gather. Needs the padding to be zeros appended
+      # past exactly num_real patch tokens.
+      block_reorder = token_padding.block_reorder and num_patch_tokens == token_padding.num_real
+      if block_reorder:
+        num_chunks = token_padding.num_chunks
+        real_per_chunk = token_padding.num_real // num_chunks
+        pad_per_chunk = token_padding.num_pad // num_chunks
+
+        def _to_shard_layout(x, axis):
+          shape = x.shape
+          x = x.reshape(shape[:axis] + (num_chunks, real_per_chunk) + shape[axis + 1 :])
+          widths = [(0, 0)] * x.ndim
+          widths[axis + 1] = (0, pad_per_chunk)
+          return jnp.pad(x, widths).reshape(shape[:axis] + (token_padding.num_total,) + shape[axis + 1 :])
+
+        hidden_states = _to_shard_layout(hidden_states, 1)
+        if rotary_emb.shape[2] == num_patch_tokens:
+          rotary_emb = _to_shard_layout(rotary_emb, 2)
+        if rotary_emb.shape[2] != token_padding.num_total:
+          raise ValueError(f"rotary_emb covers {rotary_emb.shape[2]} positions, need {token_padding.num_total}.")
+      else:
+        num_extra = token_padding.num_total - num_patch_tokens
+        if num_extra:
+          # Token-level padding past the patch tokens (zeros, dropped before the head).
+          hidden_states = jnp.pad(hidden_states, ((0, 0), (0, num_extra), (0, 0)))
+          if rotary_emb.shape[2] == num_patch_tokens:
+            rotary_emb = jnp.pad(rotary_emb, ((0, 0), (0, 0), (0, num_extra), (0, 0)))
+        if rotary_emb.shape[2] != token_padding.num_total:
+          raise ValueError(f"rotary_emb covers {rotary_emb.shape[2]} positions, need {token_padding.num_total}.")
+        to_physical = token_padding.natural_to_physical()
+        if to_physical is not None:
+          hidden_states = hidden_states[:, jnp.asarray(to_physical)]
+          rotary_emb = rotary_emb[:, :, jnp.asarray(to_physical)]
     with self.conditional_named_scope("condition_embedder"):
       if per_token_t:
         # Per-token timestep: process time and text embeddings separately.
@@ -875,6 +924,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
               svg_layer_index=layer_index,
               svg_timestep=timestep,
               svg_step_index=svg_step_index,
+              token_padding=token_padding,
           )
           new_carry = (hidden_states, rngs_carry)
           return new_carry, None
@@ -924,6 +974,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
                 svg_layer_index=i,
                 svg_timestep=timestep,
                 svg_step_index=svg_step_index,
+                token_padding=token_padding,
             )
 
           rematted_layer_forward = self.gradient_checkpoint.apply(
@@ -945,6 +996,24 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       hidden_states = _run_all_blocks(hidden_states)
 
     residual_x = hidden_states - hidden_states_before_blocks
+    if block_reorder:
+      # The head is per token: run it on the padded physical sequence, then drop the
+      # padding from the narrow (out_channels * patch) output with a reshape + slice.
+      def _from_shard_layout(x):
+        b, _, d = x.shape
+        x = x.reshape(b, num_chunks, token_padding.num_total // num_chunks, d)
+        return x[:, :, :real_per_chunk].reshape(b, token_padding.num_real, d)
+
+      if return_residual:
+        residual_x = _from_shard_layout(residual_x)
+    else:
+      if to_physical is not None:
+        to_natural = jnp.asarray(token_padding.physical_to_natural())
+        hidden_states = hidden_states[:, to_natural]
+        residual_x = residual_x[:, to_natural]
+      if hidden_states.shape[1] != num_patch_tokens:
+        hidden_states = hidden_states[:, :num_patch_tokens]
+        residual_x = residual_x[:, :num_patch_tokens]
 
     if per_token_t:
       # temb: [B, seq_len, dim] — per-token modulation for final head
@@ -957,6 +1026,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)
+    if block_reorder:
+      hidden_states = _from_shard_layout(hidden_states)
 
     hidden_states = hidden_states.reshape(
         batch_size,
