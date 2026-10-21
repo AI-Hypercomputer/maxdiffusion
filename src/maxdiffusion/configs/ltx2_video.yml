@@ -5,7 +5,8 @@ skip_jax_distributed_system: False
 # dot_product, flash, tokamax_flash, tokamax_ring, tokamax_ring_custom,
 # ulysses, ulysses_custom, ulysses_custom_fixed_m,
 # ulysses_custom_fixed_m_per_q_block, ulysses_ring,
-# ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_bidir,
+# ulysses_ring_custom, ulysses_ring_custom_fixed_m,
+# ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir,
 # and cudnn_flash_te (GPU only).
 attention: 'flash'
 use_base2_exp: False
