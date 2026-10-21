@@ -29,5 +29,8 @@ TESTS=(
   # Fixed-m custom splash kernel and ring (feat/fixed-m-kernel)
   "$T/custom_splash_fixed_m_test.py"
   "$T/ring_fixed_m_test.py"
+  # Dot-product fallback layout and tile-size grid-search fixes (feat/attn-dot-fallback-fixes)
+  "$T/dot_fallback_layout_test.py"
+  "$T/tile_size_grid_search_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
