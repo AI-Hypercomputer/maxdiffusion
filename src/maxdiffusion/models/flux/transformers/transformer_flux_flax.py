@@ -37,6 +37,7 @@ from ...embeddings_flax import (
     CombinedTimestepGuidanceTextProjEmbeddings,
     CombinedTimestepGuidanceTextProjEmbeddings as CombinedTimestepGuidanceTextEmbeddings,
     CombinedTimestepTextProjEmbeddings,
+    FlaxTimesteps,
     NNXCombinedTimestepGuidanceTextProjEmbeddings,
 )
 from .... import common_types
@@ -1052,6 +1053,10 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
         weights_dtype=self.weights_dtype,
         precision=self.precision,
     )
+    # The shared embeddings take projected timesteps, as FluxTransformer2DModel
+    # passes them. FlaxTimesteps holds no parameters, so the checkpoint layout
+    # is unchanged.
+    self.time_proj = FlaxTimesteps(dim=self.time_text_embed.frequency_embedding_size, flip_sin_to_cos=True, freq_shift=0)
 
     if self.use_global_modulation:
       self.double_stream_modulation_img = nn.Dense(
@@ -1180,9 +1185,9 @@ class Flux2KleinTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
       intermediates["single_block_outputs"] = []
 
     hidden_states = self.x_embedder(hidden_states)
-    timestep = timestep * 1000.0
+    timestep = self.time_proj(timestep * 1000.0)
     if guidance is not None:
-      guidance = guidance * 1000.0
+      guidance = self.time_proj(guidance * 1000.0)
     temb = self.time_text_embed(timestep, guidance, pooled_projections)
     temb = temb.astype(hidden_states.dtype)
 

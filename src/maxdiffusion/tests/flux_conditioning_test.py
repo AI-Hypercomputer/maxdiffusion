@@ -30,6 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from maxdiffusion.models.embeddings_flax import CombinedTimestepGuidanceTextProjEmbeddings
+from maxdiffusion.models.flux.transformers.transformer_flux_flax import Flux2KleinTransformer2DModel
 from maxdiffusion.models.normalization_flax import AdaLayerNormContinuous
 
 
@@ -89,6 +90,39 @@ class FluxConditioningTest(unittest.TestCase):
     np.testing.assert_allclose(np.asarray(modulate("shift_scale")), normalized + 2.0, atol=1e-4)
     # scale first: (1 + 2) * norm + 0
     np.testing.assert_allclose(np.asarray(modulate("scale_shift")), 3.0 * normalized, atol=1e-4)
+
+  def test_flux2klein_linen_projects_timesteps_before_embedding(self):
+    """The Linen Flux.2-Klein model shares the guidance embeddings with FLUX."""
+    batch, image_tokens, text_tokens = 2, 4, 3
+    model = Flux2KleinTransformer2DModel(
+        in_channels=4,
+        num_layers=1,
+        num_single_layers=1,
+        attention_head_dim=8,
+        num_attention_heads=2,
+        joint_attention_dim=8,
+        pooled_projection_dim=8,
+        axes_dim=(2, 2, 2, 2),
+        axes_dims_rope=(2, 2, 2, 2),
+    )
+    inputs = dict(
+        hidden_states=jnp.ones((batch, image_tokens, 4), jnp.float32),
+        encoder_hidden_states=jnp.ones((batch, text_tokens, 8), jnp.float32),
+        pooled_projections=jnp.ones((batch, 8), jnp.float32),
+        timestep=jnp.full((batch,), 0.5, jnp.float32),
+        img_ids=jnp.zeros((image_tokens, 4), jnp.float32),
+        txt_ids=jnp.zeros((text_tokens, 4), jnp.float32),
+        guidance=jnp.full((batch,), 0.5, jnp.float32),
+        return_dict=False,
+    )
+
+    variables = model.init(jax.random.PRNGKey(0), **inputs)
+    time_text_embed = flax.linen.meta.unbox(variables["params"]["time_text_embed"])
+    for embedder in ("FlaxTimestepEmbedding_0", "FlaxTimestepEmbedding_1"):
+      self.assertEqual(time_text_embed[embedder]["linear_1"]["kernel"].shape, (256, 16))
+
+    (sample,) = model.apply(variables, **inputs)
+    self.assertEqual(sample.shape, (batch, image_tokens, 4))
 
 
 if __name__ == "__main__":

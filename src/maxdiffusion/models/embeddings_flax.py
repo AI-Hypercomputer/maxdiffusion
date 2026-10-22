@@ -548,7 +548,8 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
   def __call__(self, timestep, guidance, pooled_projection=None):
     # timestep and guidance arrive already projected: FluxTransformer2DModel runs
     # both through its own timestep_embedding(), which carries a time_factor the
-    # sinusoidal helper here does not. Projecting again would shape them
+    # sinusoidal helper here does not, and the Linen Flux2KleinTransformer2DModel
+    # projects them with FlaxTimesteps. Projecting again would shape them
     # (batch, frequency_embedding_size, embedding_dim) and break the sum with the
     # pooled projection below. The NNX variant owns its projection instead.
     timesteps_proj = timestep
