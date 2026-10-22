@@ -40,7 +40,7 @@ import torch
 from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from jax.sharding import NamedSharding, PartitionSpec as P
-from maxdiffusion import max_logging
+from maxdiffusion import max_logging, wan_runtime_options
 from maxdiffusion.image_processor import PipelineImageInput, VaeImageProcessor
 from maxdiffusion.max_utils import get_flash_block_sizes, get_precision
 from maxdiffusion.video_processor import VideoProcessor
@@ -97,6 +97,10 @@ def create_sharded_animate_transformer(
       "ulysses_shards": getattr(config, "ulysses_shards", -1),
       "ulysses_attention_chunks": getattr(config, "ulysses_attention_chunks", 1),
       "use_k_centering": getattr(config, "use_k_centering", "auto"),
+      "use_fused_rope_kernel": getattr(config, "use_fused_rope_kernel", False),
+      "fused_rope_block_s": getattr(config, "fused_rope_block_s", 1024),
+      "fused_rope_head_block": getattr(config, "fused_rope_head_block", -1),
+      **wan_runtime_options.attention_config_entries(config),
   }
 
   # 2. eval_shape – creates the model structure without allocating HBM.

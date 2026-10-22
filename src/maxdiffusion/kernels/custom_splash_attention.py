@@ -27,6 +27,7 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
+
 DEFAULT_MASK_VALUE = -0.7 * float(np.finfo(np.dtype("float32")).max)
 NUM_LANES = 128
 NUM_SUBLANES = 8
@@ -245,6 +246,7 @@ def _flash_attention_kernel_impl(
     uniform_fixed_m: bool = False,
     use_k_centering: bool = False,
     save_lse: bool = False,
+    transpose_out: bool = False,
 ):
   """Pallas Mosaic TPU flash attention kernel with fixed-m support.
 
@@ -533,12 +535,19 @@ def _flash_attention_kernel_impl(
     l = l_scratch_ref[...]
     if fuse_reciprocal:
       l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
-      o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
+      o_val = o_scratch_ref[...] * l_inv
+      if transpose_out:
+        o_ref[...] = o_val.T.astype(o_ref.dtype)
+      else:
+        o_ref[...] = o_val.astype(o_ref.dtype)
     else:
       # Ring path: emit the un-normalized numerator plus the running softmax
       # stats (max logit `m` and linear denominator `l`) so the outer ring loop
       # can merge shard contributions and normalize only once at the very end.
-      o_ref[...] = o_scratch_ref[...].astype(o_ref.dtype)
+      if transpose_out:
+        o_ref[...] = o_scratch_ref[...].T.astype(o_ref.dtype)
+      else:
+        o_ref[...] = o_scratch_ref[...].astype(o_ref.dtype)
     if l_ring_ref is not None:
       if save_lse:
         log = jnp.log2 if use_base2_exp else jnp.log
@@ -573,6 +582,7 @@ def _flash_attention_kernel(
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
     save_lse: bool = False,
+    transpose_out: bool = False,
 ):
   return _flash_attention_kernel_impl(
       mk_ref,
@@ -599,6 +609,7 @@ def _flash_attention_kernel(
       uniform_fixed_m=uniform_fixed_m,
       use_k_centering=False,
       save_lse=save_lse,
+      transpose_out=transpose_out,
   )
 
 
@@ -627,6 +638,7 @@ def _flash_attention_kernel_kcentered(
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
     use_k_centering: bool = True,
+    transpose_out: bool = False,
 ):
   return _flash_attention_kernel_impl(
       mk_ref,
@@ -652,6 +664,7 @@ def _flash_attention_kernel_kcentered(
       use_fixed_m=use_fixed_m,
       uniform_fixed_m=uniform_fixed_m,
       use_k_centering=use_k_centering,
+      transpose_out=transpose_out,
   )
 
 
@@ -673,6 +686,7 @@ def _flash_attention_kernel_mhpt(
     kv_seq_len: int,
     heads_per_tile: int,
     use_base2_exp: bool = True,
+    transpose_out: bool = False,
 ):
   float32 = jnp.float32
   head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -804,7 +818,11 @@ def _flash_attention_kernel_mhpt(
     for h_local in range(heads_per_tile):
       l = l_scratch_ref[h_local]
       l_inv = jnp.tile(1.0 / l, (head_dim_v_repeats, 1))
-      o_ref[h_local] = (o_scratch_ref[h_local] * l_inv).astype(o_ref.dtype)
+      o_val = o_scratch_ref[h_local] * l_inv
+      if transpose_out:
+        o_ref[h_local] = o_val.T.astype(o_ref.dtype)
+      else:
+        o_ref[h_local] = o_val.astype(o_ref.dtype)
 
 
 def _splash_attention_forward(
@@ -823,9 +841,12 @@ def _splash_attention_forward(
     k_mean: jax.Array | None = None,
     interpret: bool | None = None,
     save_residuals: bool = False,
+    transpose_out: bool | None = None,
 ):
   if interpret is None:
     interpret = jax.default_backend() == "cpu"
+  if transpose_out is None:
+    transpose_out = False
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
@@ -874,18 +895,32 @@ def _splash_attention_forward(
   active_q_len = grid_height * bq
   active_kv_len = grid_width * bkv
 
-  out_shapes = [
-      jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
-      jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
-      jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
-  ]
-  out_specs = [
-      pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
-      pl.BlockSpec((None, head_dim_v, bq), out_index_map),
-  ]
+  if transpose_out:
+    out_shapes = [
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, actual_q_seq_len, head_dim_v), q.dtype),
+    ]
+    out_specs = [
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((None, bq, head_dim_v), lambda h, i, j, *_: (h, i, 0)),
+    ]
+  else:
+    out_shapes = [
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
+    ]
+    out_specs = [
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
+        pl.BlockSpec((None, head_dim_v, bq), out_index_map),
+    ]
   if save_residuals:
     out_shapes.append(jax.ShapeDtypeStruct((num_q_heads, NUM_SUBLANES, actual_q_seq_len), jnp.float32))
     out_specs.append(pl.BlockSpec((None, NUM_SUBLANES, bq), out_index_map))
@@ -925,6 +960,7 @@ def _splash_attention_forward(
         use_fixed_m=use_fixed_m,
         uniform_fixed_m=uniform_fixed_m,
         save_lse=save_residuals,
+        transpose_out=transpose_out,
     )
     kernel_args = (mk, q, k, v)
   else:
@@ -958,6 +994,7 @@ def _splash_attention_forward(
         use_fixed_m=use_fixed_m,
         uniform_fixed_m=uniform_fixed_m,
         use_k_centering=True,
+        transpose_out=transpose_out,
     )
     kernel_args = (mk, q, k, v, k_mean_tiled)
 
@@ -1168,7 +1205,11 @@ def _splash_attention_forward_mhpt(
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
+    transpose_out: bool | None = None,
 ):
+  if transpose_out is None:
+    transpose_out = False
+
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
@@ -1201,18 +1242,32 @@ def _splash_attention_forward_mhpt(
       pl.BlockSpec((hpt, bkv, head_dim_qk), k_index_map),
       pl.BlockSpec((hpt, bkv, head_dim_v), v_index_map),
   ]
-  out_shapes = [
-      jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
-      jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
-      jax.ShapeDtypeStruct((hpt, head_dim_v, bq), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
-  ]
-  out_specs = [
-      pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
-      pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
-      pl.BlockSpec((hpt, head_dim_v, bq), lambda *_: (0, 0, 0)),
-      pl.BlockSpec((hpt, head_dim_v, bq), out_index_map),
-  ]
+  if transpose_out:
+    out_shapes = [
+        jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((hpt, head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, actual_q_seq_len, head_dim_v), q.dtype),
+    ]
+    out_specs = [
+        pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
+        pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
+        pl.BlockSpec((hpt, head_dim_v, bq), lambda *_: (0, 0, 0)),
+        pl.BlockSpec((hpt, bq, head_dim_v), lambda h, i, j, *_: (h, i, 0)),
+    ]
+  else:
+    out_shapes = [
+        jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((hpt, NUM_SUBLANES, bq), jnp.float32),
+        jax.ShapeDtypeStruct((hpt, head_dim_v, bq), jnp.float32),
+        jax.ShapeDtypeStruct((num_q_heads, head_dim_v, actual_q_seq_len), q.dtype),
+    ]
+    out_specs = [
+        pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
+        pl.BlockSpec((hpt, NUM_SUBLANES, bq), lambda *_: (0, 0, 0)),
+        pl.BlockSpec((hpt, head_dim_v, bq), lambda *_: (0, 0, 0)),
+        pl.BlockSpec((hpt, head_dim_v, bq), out_index_map),
+    ]
   grid_width = (actual_kv_seq_len + bkv - 1) // bkv
   grid_height = (actual_q_seq_len + bq - 1) // bq
   grid = (num_q_heads // hpt, grid_height, grid_width)
@@ -1229,6 +1284,7 @@ def _splash_attention_forward_mhpt(
           kv_seq_len=actual_kv_seq_len,
           heads_per_tile=hpt,
           use_base2_exp=use_base2_exp,
+          transpose_out=transpose_out,
       ),
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=0,
@@ -2086,6 +2142,7 @@ def make_splash_mha(
     uniform_fixed_m: bool = False,
     interpret: bool | None = None,
     residual_checkpoint_name: str | None = None,
+    transpose_out: bool | None = None,
 ):
   """Builds a splash multi-head attention callable.
 
@@ -2093,17 +2150,19 @@ def make_splash_mha(
     - Standard dense training uses `_splash_attention_custom` (which defines custom VJP
       forward and backward rules with activation checkpointing).
     - `heads_per_tile > 1`, `use_fixed_m=True`, `mk is not None`, `k_mean is not None`,
-      and `interpret=True` are inference/testing paths that execute forward-only
-      kernels without custom backward passes. `interpret=False` behaves like the
-      default (`None`) and keeps the custom VJP.
+      `interpret=True`, and `transpose_out=True` are inference/testing paths that execute
+      forward-only kernels without custom backward passes. `interpret=False` behaves like
+      the default (`None`) and keeps the custom VJP.
   """
+  if transpose_out is None:
+    transpose_out = False
   if use_fixed_m and not use_base2_exp:
     raise NotImplementedError(
         "fixed-m softmax bounds are derived strictly for base-2 exponents. Please set use_base2_exp=True."
     )
 
   def _splash_attention(q, k, v, mk=None, k_mean=None):
-    # Note: heads_per_tile > 1 and fixed-m/mk/k_mean paths are forward-only (inference-only);
+    # Note: heads_per_tile > 1 and fixed-m/mk/k_mean/transpose_out paths are forward-only (inference-only);
     # they do not define a custom backward VJP rule.
     if use_fixed_m and mk is None:
       raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
@@ -2121,8 +2180,9 @@ def make_splash_mha(
           use_base2_exp=use_base2_exp,
           use_experimental_scheduler=use_experimental_scheduler,
           vmem_limit_bytes=vmem_limit_bytes,
+          transpose_out=transpose_out,
       )
-    if use_fixed_m or mk is not None or k_mean is not None or interpret:
+    if use_fixed_m or mk is not None or k_mean is not None or interpret or transpose_out:
       return _splash_attention_forward(
           q,
           k,
@@ -2138,6 +2198,7 @@ def make_splash_mha(
           uniform_fixed_m=uniform_fixed_m,
           k_mean=k_mean,
           interpret=interpret,
+          transpose_out=transpose_out,
       )
     return _splash_attention_custom(
         q,

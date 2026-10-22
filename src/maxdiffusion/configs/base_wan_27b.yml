@@ -82,7 +82,7 @@ jit_initializers: True
 
 # Set true to load weights from pytorch
 from_pt: True
-split_head_dim: True
+split_head_dim: False
 # Sparse VideoGen (SVG) Attention configuration
 use_svg_attention: False
 svg_spatial_density: 0.35
@@ -127,9 +127,45 @@ attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cud
 #     that does not equal CP raises ValueError instead of being silently ignored.
 use_base2_exp: True
 use_experimental_scheduler: True
-# auto: on for non-ring ulysses_custom_fixed_m* (virtual, no copy), off for ring
-# paths (virtual K-centering via k_mean, plus a pmean across ring shards when R>1).
+# use_k_centering: "auto" turns K-centering on for the non-ring
+# ulysses_custom_fixed_m* kernels (virtual: q.k_mean folded into the kernel, no
+# collective, no HBM copy) and off for ring kernels (virtual via k_mean, plus a
+# pmean across ring shards when R>1). Set True/False to force either path.
 use_k_centering: "auto"
+# Fused RMSNorm+RoPE+head-transpose Pallas producer for self-attention QK.
+# In isolation on one v6e chip it is 1.9x-2.1x faster than the XLA producer
+# (40 heads, per-shard seq 9450 / 18900). End-to-end (40 steps, 720p/81f, full
+# stack, DVFS unpinned) it cuts denoise 130.0-130.1s -> 124.5-125.0s on v6e-8
+# and 106.6s -> 104.9s on tpu7x-8 (93.4s -> 91.7s with PIN_DVFS_P_STATE=true);
+# run_wan_fast_inference.sh enables it there.
+# Off by default: inlined into the model XLA rounds the unfused producer
+# differently, so the output is equivalent (0-ULP bit-identical to the
+# standalone XLA producer on both v6e and tpu7x; 720p/81f, 40 steps: pre-decode
+# bf16 latent PSNR is 53.8 dB after 1 step and 34.1 dB after 40 steps on v6e
+# seed 12345; post-VAE decoded uint8 video PSNR / SSIM with peak=255 at stack
+# tip is 25.71 dB / 0.9125 on v6e seed 777, 17.92 dB / 0.6556 on v6e seed
+# 12345, and 17.69 dB / 0.6918 on tpu7x seed 12345). Refused on platforms whose RoPE
+# rounding is unmeasured; tuned and measured for inference.
+use_fused_rope_kernel: False
+# Sequence block size for the fused RoPE kernel grid (clamped to 256 in "fused" norm mode).
+fused_rope_block_s: 1024
+# Heads processed per grid step; -1 means "all heads in one step".
+fused_rope_head_block: -1
+# Wan inference switches. These change the compiled graph, so they are part of
+# the AOT cache fingerprint.
+# RMSNorm reduction for the fused RoPE producer: "exact" (XLA reduction,
+# bit-identical to the jitted XLA producer) or "fused" (in-kernel, within 2x pair-relative bf16 eps).
+wan_rope_norm_mode: "exact"
+# Fold log2(e) into Q and 1/sqrt(d) into K inside the fused RoPE producer.
+wan_fuse_qk_prescale: True
+# Have the splash kernel write its output as [B, H, S, D] (instead of [B, H, D, S]), removing the post-kernel swap. Off by default.
+wan_splash_transpose_out: False
+# Apply classifier-free guidance before unpatchify (halves the unpatchify work).
+wan_cfg_before_unpatchify: True
+# Pre-scale cached cross-attention K by 1/sqrt(d) once per video.
+wan_cross_attn_prescale_kv: False
+# Fused RoPE accumulation: "auto" (measured per-platform default), "dtype", "f32".
+wan_rope_accum: "auto"
 # For attention=ulysses_ring*, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.
