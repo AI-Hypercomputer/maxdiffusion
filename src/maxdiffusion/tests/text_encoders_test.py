@@ -19,13 +19,18 @@ import unittest
 import pytest
 from absl.testing import absltest
 
-from transformers import CLIPTokenizer, FlaxCLIPTextModel
-from transformers import T5TokenizerFast, FlaxT5EncoderModel
+import jax.numpy as jnp
+import torch
+from transformers import CLIPTokenizer, CLIPTextModel
+from transformers import T5TokenizerFast, T5EncoderModel
 
 from ..generate_flux import get_clip_prompt_embeds, get_t5_prompt_embeds
+from ..models.flux.text_encoders.torchax_text_encoders import TorchaxCLIPTextEncoder, TorchaxT5TextEncoder
 
 IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+FLUX_DEV = "black-forest-labs/FLUX.1-dev"
 
 
 class TextEncoderTest(unittest.TestCase):
@@ -36,9 +41,12 @@ class TextEncoderTest(unittest.TestCase):
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_flux_t5_text_encoder(self):
-    text_encoder = FlaxT5EncoderModel.from_pretrained("ariG23498/t5-v1-1-xxl-flax")
+    text_encoder = TorchaxT5TextEncoder.from_torch(
+        T5EncoderModel.from_pretrained(FLUX_DEV, subfolder="text_encoder_2", dtype=torch.bfloat16),
+        jnp.bfloat16,
+    )
 
-    tokenizer_2 = T5TokenizerFast.from_pretrained("ariG23498/t5-v1-1-xxl-flax")
+    tokenizer_2 = T5TokenizerFast.from_pretrained(FLUX_DEV, subfolder="tokenizer_2")
 
     embeds = get_t5_prompt_embeds("A dog on a skateboard", 2, tokenizer_2, text_encoder)
 
@@ -46,10 +54,11 @@ class TextEncoderTest(unittest.TestCase):
 
   @pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Don't run smoke tests on Github Actions")
   def test_flux_clip_text_encoder(self):
-    text_encoder = FlaxCLIPTextModel.from_pretrained(
-        "black-forest-labs/FLUX.1-dev", subfolder="text_encoder", from_pt=True, dtype="bfloat16"
+    text_encoder = TorchaxCLIPTextEncoder.from_torch(
+        CLIPTextModel.from_pretrained(FLUX_DEV, subfolder="text_encoder", dtype=torch.bfloat16),
+        jnp.bfloat16,
     )
-    tokenizer = CLIPTokenizer.from_pretrained("black-forest-labs/FLUX.1-dev", subfolder="tokenizer", dtype="bfloat16")
+    tokenizer = CLIPTokenizer.from_pretrained(FLUX_DEV, subfolder="tokenizer")
     embeds = get_clip_prompt_embeds("A cat riding a skateboard", 2, tokenizer, text_encoder)
     assert embeds.shape == (2, 768)
 
