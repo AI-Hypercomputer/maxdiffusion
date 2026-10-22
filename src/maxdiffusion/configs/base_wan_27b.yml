@@ -181,6 +181,12 @@ wan_patch_embed_mode: "conv"
 # when S_local % block_q == 0); "shard_major" strictly requires the Pallas
 # 4D-q / out_num_shards path and raises if any kernel precondition fails.
 wan_ulysses_out_a2a: "flat"
+# Self-attention token padding: "off", or "lane" to append pad tokens at the end
+# of the video token sequence (or at the end of each ring segment on the ring
+# path) so every context shard has a multiple of 128 tokens. Aligned shards make
+# the Ulysses all-to-all reshapes free; the custom kernels mask the pad keys.
+# Only the custom Ulysses / Ulysses-ring kernels use it.
+wan_seq_pad: "off"
 # For attention=ulysses_ring*, hidden Ulysses shard count; ring shards are context / this.
 ulysses_shards: -1
 # Splits Ulysses all-to-all into head-group chunks. The last chunk carries any remainder.

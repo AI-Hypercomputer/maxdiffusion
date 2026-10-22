@@ -35,7 +35,11 @@ from ...embeddings_flax import (
     NNXPixArtAlphaTextProjection,
 )
 from ...normalization_flax import FP32LayerNorm
-from ...attention_flax import FlaxWanAttention
+from ...attention_flax import (
+    FlaxWanAttention,
+    TokenPadding,
+    plan_token_padding,
+)
 from ...gradient_checkpoint import GradientCheckpointType
 
 BlockSizes = common_types.BlockSizes
@@ -513,6 +517,7 @@ class WanTransformerBlock(nnx.Module):
       svg_layer_index: Optional[int | jax.Array] = None,
       svg_timestep: Optional[int | float | jax.Array] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      token_padding: Optional[TokenPadding] = None,
   ):
     with self.conditional_named_scope("transformer_block"):
       # Support both global [B, 6, dim] and per-token [B, seq_len, 6, dim] temb.
@@ -562,6 +567,7 @@ class WanTransformerBlock(nnx.Module):
               svg_layer_index=svg_layer_index,
               svg_timestep=svg_timestep,
               svg_step_index=svg_step_index,
+              token_padding=token_padding,
           )
         with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
@@ -664,6 +670,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         "use_k_centering": "auto",
         **(attention_config or {}),
     }
+    self.attention = attention
+    self.attention_config = attention_config
+    self.flash_min_seq_length = flash_min_seq_length
+    self.mesh = mesh
 
     # Resolved at build time so they live on the GraphDef; None -> built-in default.
     def _wan_opt(name):
@@ -671,6 +681,20 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       return wan_runtime_options.default(name) if value is None else wan_runtime_options.coerce(name, value)
 
     self.patch_embed_mode = _wan_opt("wan_patch_embed_mode")
+    self.seq_pad_mode = _wan_opt("wan_seq_pad")
+    if self.seq_pad_mode == "lane":
+      # Validate static configuration preconditions at build time rather than
+      # silently disabling token padding on every forward pass.
+      plan_token_padding(
+          None,
+          mode=self.seq_pad_mode,
+          attention=self.attention,
+          mesh=self.mesh,
+          ulysses_shards=self.attention_config.get("ulysses_shards", -1),
+          flash_min_seq_length=self.flash_min_seq_length,
+          use_svg_attention=bool(self.attention_config.get("use_svg_attention", False)),
+          use_memory_efficient_attention=bool(self.attention_config.get("use_memory_efficient_attention", False)),
+      )
 
     # 1. Patch & position embedding
     self.rope = WanRotaryPosEmbed(attention_head_dim, patch_size, rope_max_seq_len)
@@ -841,6 +865,48 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     return kv_cache, encoder_attention_mask
 
+  def _get_token_padding(self, seq_len: int, per_token_t: bool = False) -> Optional[TokenPadding]:
+    return plan_token_padding(
+        seq_len,
+        mode=self.seq_pad_mode,
+        attention=self.attention,
+        mesh=self.mesh,
+        ulysses_shards=self.attention_config.get("ulysses_shards", -1),
+        flash_min_seq_length=self.attention_config.get("flash_min_seq_length", self.flash_min_seq_length),
+        per_token_t=per_token_t,
+        use_svg_attention=bool(self.attention_config.get("use_svg_attention", False)),
+        use_memory_efficient_attention=bool(self.attention_config.get("use_memory_efficient_attention", False)),
+    )
+
+  @staticmethod
+  def _pad_tokens(x: jax.Array, pad: TokenPadding) -> jax.Array:
+    if pad.padded_len == pad.real_len:
+      return x
+    b, _, d = x.shape
+    x = x.reshape(b, pad.num_segments, pad.real_len, d)
+    x = jnp.pad(x, ((0, 0), (0, 0), (0, pad.padded_len - pad.real_len), (0, 0)))
+    x = x.reshape(b, pad.total_len, d)
+    return nn.with_logical_constraint(x, ("activation_batch", "activation_length", "activation_heads"))
+
+  @staticmethod
+  def _unpad_tokens(x: jax.Array, pad: TokenPadding) -> jax.Array:
+    if pad.padded_len == pad.real_len:
+      return x
+    b, _, d = x.shape
+    x = x.reshape(b, pad.num_segments, pad.padded_len, d)
+    x = x[:, :, : pad.real_len, :]
+    x = x.reshape(b, pad.real_len * pad.num_segments, d)
+    return nn.with_logical_constraint(x, ("activation_batch", "activation_length", "activation_heads"))
+
+  @staticmethod
+  def _pad_rotary_emb(rotary_emb: jax.Array, pad: TokenPadding) -> jax.Array:
+    if pad.padded_len == pad.real_len:
+      return rotary_emb
+    dim = rotary_emb.shape[-1]
+    r = rotary_emb.reshape(1, 1, pad.num_segments, pad.real_len, dim)
+    r = jnp.pad(r, ((0, 0), (0, 0), (0, 0), (0, pad.padded_len - pad.real_len), (0, 0)))
+    return r.reshape(1, 1, pad.total_len, dim)
+
   @jax.named_scope("WanModel")
   def __call__(
       self,
@@ -940,6 +1006,11 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     else:
       encoder_hidden_states = encoder_hidden_states_out.astype(hidden_states.dtype)
 
+    token_padding = self._get_token_padding(hidden_states.shape[1], per_token_t=per_token_t)
+    if token_padding is not None:
+      hidden_states = self._pad_tokens(hidden_states, token_padding)
+      rotary_emb = self._pad_rotary_emb(rotary_emb, token_padding)
+
     def _run_all_blocks(h):
       if self.scan_layers:
 
@@ -964,6 +1035,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
               svg_layer_index=layer_index,
               svg_timestep=timestep,
               svg_step_index=svg_step_index,
+              token_padding=token_padding,
           )
           new_carry = (hidden_states, rngs_carry)
           return new_carry, None
@@ -1013,6 +1085,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
                 svg_layer_index=i,
                 svg_timestep=timestep,
                 svg_step_index=svg_step_index,
+                token_padding=token_padding,
             )
 
           rematted_layer_forward = self.gradient_checkpoint.apply(
@@ -1029,6 +1102,8 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     if skip_blocks:
       if cached_residual is None:
         raise ValueError("cached_residual must be provided when skip_blocks is True")
+      if token_padding is not None:
+        cached_residual = self._pad_tokens(cached_residual, token_padding)
       hidden_states = hidden_states + cached_residual
     else:
       hidden_states = _run_all_blocks(hidden_states)
@@ -1047,6 +1122,10 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)
+
+    if token_padding is not None:
+      hidden_states = self._unpad_tokens(hidden_states, token_padding)
+      residual_x = self._unpad_tokens(residual_x, token_padding)
 
     if not unpatchify:
       if return_residual:
