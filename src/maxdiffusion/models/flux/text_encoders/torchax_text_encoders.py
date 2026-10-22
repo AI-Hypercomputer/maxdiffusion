@@ -58,13 +58,16 @@ class _TorchaxTextEncoder(interop.JittableModule):
       return cls(model.to("jax"), jax_dtype)
 
   def place_params(self, device_or_sharding) -> None:
-    """Move the frozen weights onto `device_or_sharding`.
+    """Move the frozen weights and buffers onto `device_or_sharding`.
 
     Torchax holds the weights as torch views over JAX arrays, so the placement
     goes through `jax_view`/`torch_view`. A `Sharding` target is built with
     `make_array_from_callback` (as `max_utils.device_put_replicated` does),
     because each host only holds its own full copy of these weights and
     `device_put` cannot span non-addressable devices.
+
+    Buffers move too: CLIP's `position_ids` is one, and Torchax files any
+    parameter with `requires_grad=False` under buffers rather than params.
     """
 
     def place(leaf):
@@ -72,7 +75,11 @@ class _TorchaxTextEncoder(interop.JittableModule):
         return jax.make_array_from_callback(leaf.shape, device_or_sharding, lambda index: leaf[index])
       return jax.device_put(leaf, device_or_sharding)
 
-    self.params = interop.torch_view(jax.tree_util.tree_map(place, interop.jax_view(self.params)))
+    def place_tree(tree):
+      return interop.torch_view(jax.tree_util.tree_map(place, interop.jax_view(tree)))
+
+    self.params = place_tree(self.params)
+    self.buffers = place_tree(self.buffers)
 
   def offload_params(self) -> None:
     """Park the weights in host memory until the next encode call."""

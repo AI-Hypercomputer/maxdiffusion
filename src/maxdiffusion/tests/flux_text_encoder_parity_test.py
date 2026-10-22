@@ -26,6 +26,7 @@ import jax.numpy as jnp
 import numpy as np
 import torch
 from absl.testing import absltest
+from torchax import interop
 from transformers import CLIPTextConfig, CLIPTextModel, T5Config, T5EncoderModel
 
 from ..models.flux.text_encoders.torchax_text_encoders import TorchaxCLIPTextEncoder, TorchaxT5TextEncoder
@@ -110,6 +111,27 @@ class FluxTextEncoderParityTest(unittest.TestCase):
     np.testing.assert_allclose(np.asarray(encoder(input_ids)), before, atol=1e-6, rtol=1e-6)
 
     encoder.offload_params()
+    np.testing.assert_allclose(np.asarray(encoder(input_ids)), before, atol=1e-6, rtol=1e-6)
+
+  def test_place_and_offload_params_move_buffers(self):
+    input_ids = jnp.asarray(_input_ids(), dtype=jnp.int32)
+    # CLIP, unlike T5, carries a buffer (`position_ids`), so only it can catch
+    # buffers left behind on the default device.
+    encoder = TorchaxCLIPTextEncoder.from_torch(_tiny_clip_text_model(), jnp.float32)
+    self.assertTrue(encoder.buffers)
+    before = np.asarray(encoder(input_ids))
+
+    mesh = jax.sharding.Mesh(np.array(jax.devices()), ("data",))
+    replicated = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    encoder.place_params(replicated)
+    for leaf in jax.tree_util.tree_leaves(interop.jax_view(encoder.buffers)):
+      self.assertEqual(leaf.sharding, replicated)
+    np.testing.assert_allclose(np.asarray(encoder(input_ids)), before, atol=1e-6, rtol=1e-6)
+
+    encoder.offload_params()
+    cpu = jax.devices("cpu")[0]
+    for leaf in jax.tree_util.tree_leaves(interop.jax_view(encoder.buffers)):
+      self.assertEqual(leaf.devices(), {cpu})
     np.testing.assert_allclose(np.asarray(encoder(input_ids)), before, atol=1e-6, rtol=1e-6)
 
 
