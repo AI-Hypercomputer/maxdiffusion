@@ -43,6 +43,7 @@ _OPTIONS: dict[str, tuple[Any, str]] = {
     "wan_cross_attn_prescale_kv": (False, "bool"),
     "wan_rope_accum": ("auto", "str"),
     "wan_cross_attn_kernel": ("xla", "str"),
+    "wan_patch_embed_mode": ("conv", "str"),
 }
 
 
@@ -64,6 +65,8 @@ def _coerce(name: str, value: Any) -> Any:
     raise ValueError(f"wan_rope_accum must be 'auto', 'dtype', or 'f32', got {value!r}.")
   if name == "wan_cross_attn_kernel" and val not in ("xla", "pallas"):
     raise ValueError(f"wan_cross_attn_kernel must be 'xla' or 'pallas', got {value!r}.")
+  if name == "wan_patch_embed_mode" and val not in ("conv", "tokens"):
+    raise ValueError(f"wan_patch_embed_mode must be 'conv' or 'tokens', got {value!r}.")
   return val
 
 
@@ -105,6 +108,7 @@ ATTENTION_OPTIONS = (
     "wan_cross_attn_prescale_kv",
     "wan_rope_accum",
     "wan_cross_attn_kernel",
+    "wan_patch_embed_mode",
 )
 
 
