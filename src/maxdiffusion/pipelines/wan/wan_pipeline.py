@@ -631,7 +631,7 @@ class WanPipeline:
     # This helps with loading sharded weights directly into the accelerators without fist copying them
     # all to one device and then distributing them, thus using low HBM memory.
     params = load_wan_vae(config.pretrained_model_name_or_path, params, "cpu")
-    params = jax.tree_util.tree_map(lambda x: x.astype(config.weights_dtype), params)
+    params = jax.tree_util.tree_map(lambda x: x.astype(config.vae_weights_dtype), params)
     for path, val in flax.traverse_util.flatten_dict(params).items():
       sharding = logical_state_sharding[path].value
       if config.replicate_vae:
