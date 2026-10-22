@@ -229,6 +229,10 @@ class ZImageCheckpointer:
 
   def build_text_encoder(self, text_encoder_config: dict):
     """Qwen3 graph, its abstract params and their target shardings."""
+    # transformers 5.x moved `rope_theta` into `rope_parameters`.
+    rope_theta = (text_encoder_config.get("rope_parameters") or {}).get("rope_theta")
+    if rope_theta is None:
+      rope_theta = text_encoder_config["rope_theta"]
     qwen3_config = FlaxQwen3Config(
         vocab_size=text_encoder_config["vocab_size"],
         hidden_size=text_encoder_config["hidden_size"],
@@ -238,7 +242,7 @@ class ZImageCheckpointer:
         num_key_value_heads=text_encoder_config["num_key_value_heads"],
         head_dim=text_encoder_config["head_dim"],
         rms_norm_eps=text_encoder_config["rms_norm_eps"],
-        rope_theta=text_encoder_config["rope_theta"],
+        rope_theta=rope_theta,
         max_position_embeddings=text_encoder_config["max_position_embeddings"],
         dtype=self.config.weights_dtype,
     )
