@@ -33,6 +33,7 @@ from ... import aot_cache
 from ... import max_logging
 from ... import max_utils
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
+from ...models import sol_attention
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
 from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
@@ -393,6 +394,7 @@ def create_sharded_logical_transformer(
       "svg_high_noise_density": high_density,
       "svg_low_noise_density": low_density,
       "svg_flash_block_sizes": getattr(config, "svg_flash_block_sizes", None) or None,
+      **sol_attention.attention_config_from_pyconfig(config, wan_config.get("num_layers", 40)),
   }
 
   # 2. eval_shape - will not use flops or create weights on device

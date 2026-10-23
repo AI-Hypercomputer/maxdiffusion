@@ -143,6 +143,54 @@ def extract_svg_meta(config: Any, pipeline: Any = None) -> dict[str, Any]:
   return meta
 
 
+def extract_sol_meta(config: Any, pipeline: Any = None) -> dict[str, Any]:
+  """Extracts all graph-affecting Sol-Attn settings for AOT cache identity."""
+  sol_keys = (
+      "use_sol_attention",
+      "sol_beta",
+      "sol_block_q",
+      "sol_block_kv",
+      "sol_active_start_step",
+      "sol_active_end_step",
+      "sol_active_start_layer",
+      "sol_active_end_layer",
+      "sol_dense_layer_fraction",
+      "sol_dense_timestep_fraction",
+      "sol_num_train_timesteps",
+      "sol_num_layers",
+      "sol_vmem_limit_bytes",
+      "sol_log_density",
+  )
+  enabled = config is not None and bool(
+      config.get("use_sol_attention", False) if isinstance(config, dict) else getattr(config, "use_sol_attention", False)
+  )
+  if not enabled:
+    # Dense runs keep their pre-Sol cache identity.
+    return {}
+  meta: dict[str, Any] = {}
+  if config is not None:
+    for k in sol_keys:
+      val = getattr(config, k, None) if not isinstance(config, dict) else config.get(k, None)
+      if val is not None:
+        meta[k] = str(val)
+  if pipeline is not None:
+    for attr in ("transformer", "high_noise_transformer", "low_noise_transformer"):
+      t = getattr(pipeline, attr, None)
+      if t is None:
+        continue
+      t_cfg = getattr(t, "config", None)
+      attn_cfg = getattr(t_cfg, "attention_config", None) or (
+          t_cfg.get("attention_config") if isinstance(t_cfg, dict) else None
+      )
+      if isinstance(attn_cfg, dict):
+        meta[f"{attr}_sol_config"] = json.dumps(
+            {k: v for k, v in attn_cfg.items() if str(k).startswith(("sol_", "use_sol_"))},
+            sort_keys=True,
+            default=str,
+        )
+  return meta
+
+
 def _metadata_fingerprint(meta: dict[str, Any]) -> str:
   """Returns the stable filename fingerprint for install-time metadata."""
   serialized = json.dumps(meta, sort_keys=True, default=str)

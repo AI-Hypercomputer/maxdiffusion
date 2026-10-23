@@ -315,6 +315,7 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
           "scan_layers": str(config.scan_layers),
           "jax": jax.__version__,
           **aot_cache.extract_svg_meta(config, pipeline),
+          **aot_cache.extract_sol_meta(config, pipeline),
       },
       mesh=pipeline.mesh,
   )
