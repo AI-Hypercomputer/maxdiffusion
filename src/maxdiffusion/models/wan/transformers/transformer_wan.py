@@ -16,6 +16,7 @@ limitations under the License.
 
 from typing import Tuple, Optional, Dict, Union, Any
 import contextlib
+import functools
 import math
 import jax
 import jax.numpy as jnp
@@ -38,6 +39,90 @@ from ...attention_flax import FlaxWanAttention
 from ...gradient_checkpoint import GradientCheckpointType
 
 BlockSizes = common_types.BlockSizes
+BATCH = common_types.BATCH
+
+
+def _batch_sharding(mesh, ndim: int, batch_axis: int, batch_size: Optional[int] = None):
+  """NamedSharding with the activation-batch mesh axes on ``batch_axis``, rest replicated.
+
+  Returns None (caller skips the constraint, array stays replicated) when there
+  is no mesh, when the ambient ``axis_rules`` context does not map BATCH to any
+  mesh axis, or when ``batch_size`` is not divisible by the product of the
+  batch mesh axes -- e.g. ``data_parallelism > 1`` with ``per_device_batch_size
+  = 1`` and CFG off, which the pipelines already tolerate for the CFG cache.
+  ``with_sharding_constraint`` would otherwise raise inside the jit.
+  """
+  if mesh is None:
+    return None
+  batch_mesh_axes = nn.logical_to_mesh_axes((BATCH,))[0]
+  if batch_mesh_axes is None:
+    return None
+  if batch_size is not None:
+    axes = (batch_mesh_axes,) if isinstance(batch_mesh_axes, str) else tuple(batch_mesh_axes)
+    num_shards = math.prod(mesh.shape[a] for a in axes)
+    if batch_size % num_shards != 0:
+      return None
+  spec = [None] * ndim
+  spec[batch_axis] = batch_mesh_axes
+  return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
+
+
+def _shard_kv_cache_on_batch(kv_cache, mesh):
+  """Pins every K/V cache array to the activation batch sharding.
+
+  Cache arrays are either [B, S, H*D] (one layer) or [L, B, S, H*D] (stacked),
+  so the batch axis is the first non-layer axis.  The cross-attention consumer
+  re-constrains K/V to (BATCH, CROSS_ATTN_HEAD, None, D_KV), i.e. batch on
+  ('data', 'fsdp') and everything else replicated, so this is exactly the
+  layout it needs — no resharding at use time, and each device only holds its
+  own B_local slice instead of the full CFG-doubled batch.
+  """
+  if mesh is None:
+    return kv_cache
+
+  def _constrain(x):
+    batch_axis = 1 if x.ndim == 4 else 0
+    sharding = _batch_sharding(mesh, x.ndim, batch_axis, batch_size=x.shape[batch_axis])
+    return x if sharding is None else jax.lax.with_sharding_constraint(x, sharding)
+
+  return jax.tree.map(_constrain, kv_cache)
+
+
+@functools.partial(jax.jit, static_argnames=("num_layers", "mesh"))
+def _scanned_compute_kv(blocks_graphdef, blocks_state, encoder_hidden_states, encoder_attention_mask, num_layers, mesh):
+  """Cross-attention K/V cache for all layers as ONE sharded executable.
+
+  Replaces the eager ``nnx.vmap`` over the stacked blocks.  Eager vmap
+  materialises the K/V projections, the FP32 RMSNorm upcast and the bf16
+  downcast for all ``num_layers`` at once *and* on every device (the inputs
+  are replicated), which is what blew the 32 GiB parts at B=8.
+
+  Here the batch axis is sharded on ('data', 'fsdp') before the projections,
+  and ``nnx.scan`` processes one layer per iteration so the FP32 temporaries
+  are bounded to a single layer and freed before the next.  The stacked
+  [L, B, S, H*D] outputs stay batch-sharded.
+  """
+  blocks = nnx.merge(blocks_graphdef, blocks_state)
+  batch_size = encoder_hidden_states.shape[0]
+  in_sharding = _batch_sharding(mesh, encoder_hidden_states.ndim, 0, batch_size=batch_size)
+  if in_sharding is not None:
+    encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, in_sharding)
+    if encoder_attention_mask is not None:
+      encoder_attention_mask = jax.lax.with_sharding_constraint(
+          encoder_attention_mask, _batch_sharding(mesh, encoder_attention_mask.ndim, 0, batch_size=batch_size)
+      )
+
+  def scan_fn(carry, block):
+    kv = block.compute_kv(encoder_hidden_states, encoder_attention_mask)
+    return carry, _shard_kv_cache_on_batch(kv, mesh)
+
+  _, kv_cache = nnx.scan(
+      scan_fn,
+      length=num_layers,
+      in_axes=(nnx.Carry, 0),
+      out_axes=(nnx.Carry, 0),
+  )(None, blocks)
+  return _shard_kv_cache_on_batch(kv_cache, mesh)
 
 
 def get_frequencies(max_seq_len: int, theta: int, attention_head_dim: int):
@@ -588,6 +673,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
     out_channels = out_channels or in_channels
     self.num_layers = num_layers
     self.scan_layers = scan_layers
+    self.mesh = mesh
     self.enable_jax_named_scopes = enable_jax_named_scopes
     attention_config = {
         "use_base2_exp": False,
@@ -741,16 +827,17 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         encoder_attention_mask = jnp.concatenate([encoder_attention_mask, text_mask], axis=1)
 
     if self.scan_layers:
-
-      @nnx.vmap(
-          in_axes=(0, None, None),
-          out_axes=0,
-          transform_metadata={nnx.PARTITION_NAME: "layers_per_stage"},
+      # Jitted + scanned + batch-sharded; see _scanned_compute_kv for why the
+      # previous eager nnx.vmap was a 6.8 GiB-per-video HBM hit on every device.
+      blocks_graphdef, blocks_state = nnx.split(self.blocks)
+      kv_cache = _scanned_compute_kv(
+          blocks_graphdef,
+          blocks_state,
+          encoder_hidden_states,
+          encoder_attention_mask,
+          num_layers=self.num_layers,
+          mesh=self.mesh,
       )
-      def _compute_kv(block, enc_states, enc_mask):
-        return block.compute_kv(enc_states, enc_mask)
-
-      kv_cache = _compute_kv(self.blocks, encoder_hidden_states, encoder_attention_mask)
     else:
       kv_cache_list = []
       for block in self.blocks:
@@ -761,6 +848,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         k_list = [d[k][0] for d in kv_cache_list]
         v_list = [d[k][1] for d in kv_cache_list]
         kv_cache[k] = (jnp.stack(k_list, axis=0), jnp.stack(v_list, axis=0))
+      kv_cache = _shard_kv_cache_on_batch(kv_cache, self.mesh)
 
     return kv_cache, encoder_attention_mask
 
