@@ -57,8 +57,8 @@ class WanSmokeTest(unittest.TestCase):
     checkpoint_loader = WanCheckpointer2_1(config=cls.config)
     cls.pipeline, _, _ = checkpoint_loader.load_checkpoint()
 
-    cls.prompt = [cls.config.prompt]
-    cls.negative_prompt = [cls.config.negative_prompt]
+    cls.prompt = [cls.config.prompt] * cls.config.global_batch_size_to_train_on
+    cls.negative_prompt = [cls.config.negative_prompt] * cls.config.global_batch_size_to_train_on
 
   def test_wan_inference(self):
     """Test that Wan pipeline can run inference and produce output."""
