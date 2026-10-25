@@ -20,7 +20,12 @@ from flax import nnx
 import jax
 from jax import tree_util
 import jax.numpy as jnp
-from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWanCache, WanCausalConv3d, _spatial_sharding  # pylint: disable=g-importing-member,protected-access
+from maxdiffusion.models.wan.autoencoder_kl_wan import (  # pylint: disable=g-importing-member,protected-access
+    AutoencoderKLWanCache,
+    WanCausalConv3d,
+    _spatial_sharding,
+    check_vae_batch_is_shardable,
+)
 
 from ... import common_types
 from ...configuration_utils import ConfigMixin
@@ -1375,6 +1380,7 @@ class AutoencoderKLWan2p2(nnx.Module, FlaxModelMixin, ConfigMixin):
       return_dict: bool = True,
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
+    check_vae_batch_is_shardable(self.mesh, x.shape[0], "encode")
     h = self._encode(x, feat_cache)
     posterior = WanDiagonalGaussianDistribution(h)
     if not return_dict:

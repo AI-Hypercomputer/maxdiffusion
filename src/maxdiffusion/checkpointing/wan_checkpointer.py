@@ -60,15 +60,18 @@ class WanCheckpointer(Generic[T], ABC):
 
   @classmethod
   def load_pretrained_pipeline_or_diffusers(
-      cls, config, pipeline_cls, pretrained_state_sources, pretrained_config_transformer_attr
+      cls, config, pipeline_cls, pretrained_state_sources, pretrained_config_transformer_attr, batch_parallel_vae=False
   ):
     """Load a WAN pipeline from the pretrained Orbax cache, or seed it from diffusers.
 
     This helper is used only for inference when no training checkpoint exists.
     `pretrained_config_transformer_attr` is explicit because WAN 2.2 has separate
     transformer states but still saves one `wan_config`, matching the existing
-    training checkpoint format.
+    training checkpoint format.  `batch_parallel_vae` opts T2V inference into
+    the batch-parallel VAE mesh (see `WanPipeline._auto_vae_spatial`); it is
+    only forwarded when set.
     """
+    vae_kwargs = {"batch_parallel_vae": True} if batch_parallel_vae else {}
     pretrained_dir = getattr(config, "pretrained_orbax_dir", "")
     if pretrained_dir:
       restored_checkpoint = cls._restore_pretrained_checkpoint(
@@ -76,10 +79,10 @@ class WanCheckpointer(Generic[T], ABC):
       )
       if restored_checkpoint is not None:
         max_logging.log(f"Loading WAN pipeline from pretrained orbax checkpoint at {pretrained_dir}")
-        return pipeline_cls.from_checkpoint(config, restored_checkpoint)
+        return pipeline_cls.from_checkpoint(config, restored_checkpoint, **vae_kwargs)
 
     max_logging.log("No checkpoint found, loading default pipeline.")
-    pipeline = pipeline_cls.from_pretrained(config)
+    pipeline = pipeline_cls.from_pretrained(config, **vae_kwargs)
     if pretrained_dir:
       cls._save_pretrained_checkpoint(pretrained_dir, pipeline, pretrained_state_sources, pretrained_config_transformer_attr)
     return pipeline
@@ -184,6 +187,7 @@ class WanCheckpointer(Generic[T], ABC):
       load_text_encoder=None,
       load_transformer=None,
       load_scheduler=None,
+      batch_parallel_vae=False,
   ) -> T:
     pipeline = self.pipeline_class.from_pretrained(
         self.config,
@@ -192,6 +196,7 @@ class WanCheckpointer(Generic[T], ABC):
         load_text_encoder=load_text_encoder,
         load_transformer=load_transformer,
         load_scheduler=load_scheduler,
+        **({"batch_parallel_vae": True} if batch_parallel_vae else {}),
     )
     return pipeline
 
@@ -203,7 +208,14 @@ class WanCheckpointer(Generic[T], ABC):
       load_text_encoder=None,
       load_transformer=None,
       load_scheduler=None,
+      batch_parallel_vae=False,
   ) -> Tuple[T, Optional[dict], Optional[int]]:
+    """Loads the pipeline from a training checkpoint, or from diffusers if there is none.
+
+    `batch_parallel_vae` opts T2V inference into the batch-parallel VAE mesh
+    (see `WanPipeline._auto_vae_spatial`); it is only forwarded when set.
+    """
+    vae_kwargs = {"batch_parallel_vae": True} if batch_parallel_vae else {}
     restored_checkpoint, step = self.load_wan_configs_from_orbax(step)
     opt_state = None
     if restored_checkpoint:
@@ -216,6 +228,7 @@ class WanCheckpointer(Generic[T], ABC):
           load_text_encoder=load_text_encoder,
           load_transformer=load_transformer,
           load_scheduler=load_scheduler,
+          **vae_kwargs,
       )
       opt_state = self._extract_opt_state(restored_checkpoint)
     else:
@@ -226,6 +239,7 @@ class WanCheckpointer(Generic[T], ABC):
           load_text_encoder=load_text_encoder,
           load_transformer=load_transformer,
           load_scheduler=load_scheduler,
+          **vae_kwargs,
       )
 
     return pipeline, opt_state, step

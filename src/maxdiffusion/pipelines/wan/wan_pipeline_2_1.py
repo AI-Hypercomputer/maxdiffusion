@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from ...models.wan.autoencoder_kl_wan import check_vae_batch_is_shardable
 from .wan_pipeline import (
     WanPipeline,
     transformer_forward_pass,
@@ -41,6 +42,9 @@ from maxdiffusion import max_logging
 class WanPipeline2_1(WanPipeline):
   """Pipeline for WAN 2.1 with a single transformer."""
 
+  # T2V only runs the VAE on the final full-batch decode; see _auto_vae_spatial.
+  _supports_batch_parallel_vae = True
+
   def __init__(self, config: HyperParameters, transformer: Optional[WanModel], **kwargs):
     super().__init__(config=config, **kwargs)
     self.transformer = transformer
@@ -54,6 +58,7 @@ class WanPipeline2_1(WanPipeline):
       load_text_encoder=True,
       load_transformer=True,
       load_scheduler=True,
+      batch_parallel_vae=False,
   ):
     # Load VAE/tokenizer/text-encoder/scheduler in a background thread while
     # the main thread converts the 14B transformer: the small components and
@@ -68,6 +73,8 @@ class WanPipeline2_1(WanPipeline):
         load_vae=load_vae,
         load_text_encoder=load_text_encoder,
         load_scheduler=load_scheduler,
+        # Opt-in batch-aware (N, 1) VAE mesh; see _auto_vae_spatial.
+        batch_parallel_vae=batch_parallel_vae,
     )
     transformer = None
     try:
@@ -164,6 +171,9 @@ class WanPipeline2_1(WanPipeline):
         prompt_embeds,
         negative_prompt_embeds,
     )
+    if output_type != "latent":
+      # Fail before denoising rather than at the final decode.
+      check_vae_batch_is_shardable(self.vae_mesh, latents.shape[0], "decode")
     latents.block_until_ready()
     prompt_embeds.block_until_ready()
     trace["conditioning"] = time.perf_counter() - t_cond_start

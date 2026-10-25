@@ -526,15 +526,19 @@ def run(config, pipeline=None, filename_prefix="", commit_hash=None):
         checkpoint_loader = WanCheckpointer2_2(config=config)
     else:
       raise ValueError(f"Unsupported model_name for checkpointer: {model_key}")
+    # T2V inference always decodes the full (padded) batch, so it can use the
+    # batch-parallel VAE mesh; see WanPipeline._auto_vae_spatial.
+    batch_parallel_vae = pipeline_cls._supports_batch_parallel_vae  # pylint: disable=protected-access
     checkpoint_step = checkpoint_loader.checkpoint_manager.latest_step()
     if checkpoint_step is not None:
-      pipeline, _, _ = checkpoint_loader.load_checkpoint(checkpoint_step)
+      pipeline, _, _ = checkpoint_loader.load_checkpoint(checkpoint_step, batch_parallel_vae=batch_parallel_vae)
     else:
       pipeline = checkpoint_loader.load_pretrained_pipeline_or_diffusers(
           config,
           pipeline_cls,
           pretrained_state_sources,
           pretrained_config_transformer_attr,
+          batch_parallel_vae=batch_parallel_vae,
       )
     load_time = time.perf_counter() - load_start
     max_logging.log(f"load_time: {load_time:.1f}s")

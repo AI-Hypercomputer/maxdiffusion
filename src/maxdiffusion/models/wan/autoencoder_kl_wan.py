@@ -48,6 +48,27 @@ def _update_cache(cache, idx, value):
   return cache[:idx] + (value,) + cache[idx + 1 :]
 
 
+def check_vae_batch_is_shardable(mesh: Optional[jax.sharding.Mesh], batch_size: int, what: str) -> None:
+  """Raises if a VAE batch would run fully replicated on a batch-parallel mesh.
+
+  On a ('redundant', 'vae_spatial') == (N, 1) mesh the batch axis is the only
+  sharded one.  A batch that is not a multiple of N cannot be sharded on it,
+  so under jit the constraint is dropped and every device runs the whole
+  batch (outside jit it raises an IndivisibleError deep in the conv stack).
+  Meshes with vae_spatial > 1 are fine: there an indivisible batch only loses
+  its batch sharding and stays spatially sharded.
+  """
+  if mesh is None:
+    return
+  redundant = mesh.shape.get("redundant", 1)
+  if redundant > 1 and mesh.shape.get("vae_spatial", 1) == 1 and batch_size % redundant != 0:
+    raise ValueError(
+        f"VAE {what} batch size ({batch_size}) must be divisible by the 'redundant' mesh axis ({redundant}) on the "
+        f"batch-parallel vae_mesh={dict(mesh.shape)}, which has no spatial sharding. Pass a full batch matching "
+        "global_batch_size_to_train_on, set vae_spatial explicitly, or load the pipeline without batch_parallel_vae."
+    )
+
+
 def _spatial_sharding(
     mesh: Optional[jax.sharding.Mesh], shape: Sequence[int], batch_axis: Optional[str] = "redundant"
 ) -> Optional[NamedSharding]:
@@ -1281,6 +1302,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
       self, x: jax.Array, feat_cache: AutoencoderKLWanCache, return_dict: bool = True
   ) -> Union[FlaxAutoencoderKLOutput, Tuple[FlaxDiagonalGaussianDistribution]]:
     """Encode video into latent distribution."""
+    check_vae_batch_is_shardable(self.mesh, x.shape[0], "encode")
     h = self._encode(x, feat_cache)
     posterior = WanDiagonalGaussianDistribution(h)
     if not return_dict:
