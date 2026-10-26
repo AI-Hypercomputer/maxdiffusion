@@ -821,6 +821,46 @@ class FixedMMetadataSafetyTest(unittest.TestCase):
         f"Fallback online softmax output must be ~15/17 (~0.8824), got {float(out[0, 0, 0]):.6f}",
     )
 
+  def test_gqa_rejects_q_head_padded_k_mean(self):
+    """GQA (8 Q heads, 2 KV heads): a k_mean padded to 8 rows is rejected by the splash kernel.
+
+    Only the ValueError is asserted; the correctly shaped (2, dim) k_mean is used
+    to build the metadata but is not run through the kernel here.
+    """
+    from maxdiffusion.models.attention_flax import _compute_fixed_m_metadata
+
+    batch, num_q_heads, num_kv_heads, seq_len, dim = 1, 8, 2, 1024, 128
+    bq = 512
+    q = jnp.ones((batch, num_q_heads, seq_len, dim), dtype=jnp.bfloat16)
+    # Give the two KV heads different means, so a padded array read as
+    # Q-head-indexed would pair Q heads with the wrong (zero) mean rows.
+    k = jnp.zeros((batch, num_kv_heads, seq_len, dim), dtype=jnp.bfloat16)
+    k = k.at[:, 0, :, 0].set(1.0)
+    k = k.at[:, 1, :, 0].set(50.0)
+    v = jnp.ones((batch, num_kv_heads, seq_len, dim), dtype=jnp.bfloat16)
+
+    k_mean = jnp.mean(k.astype(jnp.float32), axis=2)  # (batch, 2, dim)
+    self.assertEqual(k_mean.shape, (batch, num_kv_heads, dim))
+    mk_arr, _ = _compute_fixed_m_metadata(q, k, block_q=bq, k_mean=k_mean, value=v)
+    block_sizes = custom_splash._BlockSizes(block_q=bq, block_kv=512, block_kv_compute=256, block_kv_compute_in=256)
+
+    # Pre-padding k_mean from 2 rows to 8 (NUM_SUBLANES) matches num_q_heads=8
+    # and must be rejected rather than misinterpreted as Q-head-expanded metadata.
+    padded_k_mean = jnp.pad(k_mean[0], ((0, 6), (0, 0)))
+    with self.assertRaisesRegex(ValueError, "indexed by KV head"):
+      custom_splash._splash_attention_forward(
+          q[0],
+          k[0],
+          v[0],
+          block_sizes=block_sizes,
+          q_seq_len=seq_len,
+          kv_seq_len=seq_len,
+          use_base2_exp=True,
+          use_fixed_m=True,
+          mk=mk_arr[0],
+          k_mean=padded_k_mean,
+      )
+
 
 class SplashMhaDispatchTest(unittest.TestCase):
   """Trace-level contracts of `make_splash_mha` / `_splash_attention_forward`.
@@ -1253,7 +1293,7 @@ class UlyssesRingCustomBatchFoldTest(unittest.TestCase):
     devices = np.array(jax.devices()[:context_devices]).reshape(1, 1, context_devices, 1)
     return Mesh(devices, ("data", "fsdp", "context", "tensor"))
 
-  def _run(self, mesh, q, k, v):
+  def _run(self, mesh, q, k, v, kv_heads=None):
     with mesh, self.nn_partitioning.axis_rules(self.rules):
       return self.af._ulysses_ring_custom_attention(
           q,
@@ -1267,13 +1307,28 @@ class UlyssesRingCustomBatchFoldTest(unittest.TestCase):
           dtype=jnp.bfloat16,
           ulysses_shards=mesh.shape["context"],  # R = 1
           use_fixed_m=True,
+          kv_heads=kv_heads,
       )
 
-  def _reference(self, q, k, v):
+  def _reference(self, q, k, v, kv_heads=None):
     b, s, h, d = self.batch, self.seq_len, self.num_heads, self.head_dim
-    qf, kf, vf = (x.astype(jnp.float32).reshape(b, s, h, d) for x in (q, k, v))
+    hkv = kv_heads or h
+    qf = q.astype(jnp.float32).reshape(b, s, h, d)
+    kf, vf = (x.astype(jnp.float32).reshape(b, s, hkv, d) for x in (k, v))
+    if hkv != h:
+      kf = jnp.repeat(kf, h // hkv, axis=2)
+      vf = jnp.repeat(vf, h // hkv, axis=2)
     probs = jax.nn.softmax(jnp.einsum("bshd,bthd->bhst", qf, kf), axis=-1)
     return jnp.einsum("bhst,bthd->bshd", probs, vf).reshape(b, s, h * d)
+
+  def _gqa_kv(self, kv_heads):
+    """K/V with `kv_heads` heads for the `num_heads`-head `self.q` (K rounded like `self.k`)."""
+    b, s, d = self.batch, self.seq_len, self.head_dim
+    kk, kv = jax.random.split(jax.random.PRNGKey(5), 2)
+    k = jax.random.normal(kk, (b, s, kv_heads * d), jnp.float32) * d**-0.5
+    k = (jnp.round(k * 1024) / 1024).astype(jnp.bfloat16)
+    v = jax.random.normal(kv, (b, s, kv_heads * d), jnp.float32).astype(jnp.bfloat16)
+    return k, v
 
   def _with_sink_heads(self):
     """Sample 0 sinks head 1 and sample 1 sinks head 2 (same construction as the hybrid-branch test)."""
@@ -1305,6 +1360,32 @@ class UlyssesRingCustomBatchFoldTest(unittest.TestCase):
             # last-KV-block code paths for the clean heads and agree only to
             # bf16 rounding.
             self.assertLess(float(jnp.max(jnp.abs(folded.astype(jnp.float32) - per_sample.astype(jnp.float32)))), 1e-2)
+
+    # GQA (4 Q heads, 2 KV heads). The fold maps query head b*H + h to KV head
+    # b*Hkv + h // (H/Hkv), so each sample's groups stay contiguous; the Ulysses
+    # head split must then hand every device matching Q and KV groups. U=2 puts
+    # four folded Q heads and two folded KV heads per device. (U=4 is out of
+    # reach: the per-sample B=1 runs need kv_heads % U == 0.)
+    kv_heads = 2
+    k_gqa, v_gqa = self._gqa_kv(kv_heads)
+    for context in (1, 2) if len(jax.devices()) >= 2 else (1,):
+      mesh = self._mesh(context)
+      with self.subTest(context=context, inputs="gqa"):
+        folded = self._run(mesh, self.q, k_gqa, v_gqa, kv_heads=kv_heads)
+        per_sample = jnp.concatenate(
+            [
+                self._run(mesh, self.q[i : i + 1], k_gqa[i : i + 1], v_gqa[i : i + 1], kv_heads=kv_heads)
+                for i in range(self.batch)
+            ],
+            axis=0,
+        )
+        self.assertEqual(folded.shape, per_sample.shape)
+        self.assertEqual(folded.dtype, per_sample.dtype)
+        self.assertTrue(bool(jnp.all(jnp.isfinite(folded.astype(jnp.float32)))))
+        reference = self._reference(self.q, k_gqa, v_gqa, kv_heads=kv_heads)
+        self.assertLess(float(jnp.max(jnp.abs(folded.astype(jnp.float32) - reference))), 1e-2)
+        # All heads eligible, so both arrangements take the uniform kernel: bit-identical.
+        self.assertTrue(bool(jnp.array_equal(folded, per_sample)))
 
   def test_folded_batch_traces_one_grid_batched_kernel(self):
     for context in self._context_sizes():
@@ -1375,7 +1456,7 @@ class UlyssesRingPreA2AVCheckTest(unittest.TestCase):
     def fake_make_ring(**kwargs):
       v_ok = kwargs["v_ok"]
       self.assertIsNotNone(v_ok)
-      return lambda q, k, val: jnp.broadcast_to(jnp.asarray(v_ok, jnp.float32), q.shape).astype(q.dtype)
+      return lambda q, k, val, *_: jnp.broadcast_to(jnp.asarray(v_ok, jnp.float32), q.shape).astype(q.dtype)
 
     shape = (1, self.seq_len, self.num_heads * self.head_dim)
     q = jnp.full(shape, 0.01, jnp.bfloat16)
