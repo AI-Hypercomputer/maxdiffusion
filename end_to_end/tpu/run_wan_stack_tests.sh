@@ -35,5 +35,7 @@ TESTS=(
   # Ulysses x Ring attention (feat/ring-attention)
   "$T/attention_config_guards_test.py"
   "$T/custom_splash_unpadded_test.py"
+  # XLA-fused RMSNorm+RoPE producer (feat/fused-rmsnorm-rope-xla)
+  "$T/fused_producers_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"

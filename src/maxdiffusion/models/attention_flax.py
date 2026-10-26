@@ -28,6 +28,7 @@ from maxdiffusion.kernels.splash_attention import splash_attention_mask as tokam
 from maxdiffusion.kernels.splash_attention import splash_attention_kernel as tokamax_splash_attention_kernel
 from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokamax_ring_attention_kernel
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
+from maxdiffusion.kernels.fused_producers import fused_rmsnorm_rope
 from einops import rearrange
 from .. import common_types, max_logging
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
@@ -3717,20 +3718,40 @@ class FlaxWanAttention(nnx.Module):
         with jax.named_scope("value_proj"):
           value_proj = self.value(encoder_hidden_states)
 
-      if self.qk_norm:
-        with self.conditional_named_scope("attn_q_norm"):
-          query_proj = self.norm_q(query_proj)
-        if is_self_attention or cached_kv is None or "text" not in cached_kv:
-          with self.conditional_named_scope("attn_k_norm"):
-            key_proj = self.norm_k(key_proj)
-
-      if rotary_emb is not None:
-        with self.conditional_named_scope("attn_rope"):
-          query_proj = _unflatten_heads(query_proj, self.heads)
-          key_proj = _unflatten_heads(key_proj, self.heads)
+      if rotary_emb is not None and self.qk_norm and is_self_attention:
+        with self.conditional_named_scope("fused_rmsnorm_rope"):
+          q_scale = self.norm_q.scale[...]
+          k_scale = self.norm_k.scale[...]
+          # norm_q is built with epsilon=eps; norm_k keeps flax's default (1e-6).
+          q_eps = self.norm_q.epsilon
+          k_eps = self.norm_k.epsilon
+          query_proj, key_proj = fused_rmsnorm_rope(
+              query_proj,
+              key_proj,
+              q_scale,
+              k_scale,
+              rotary_emb,
+              q_heads=self.heads,
+              dim_head=self.dim_head,
+              eps=q_eps,
+              k_eps=k_eps,
+          )
           value_proj = _unflatten_heads(value_proj, self.heads)
-          # output of _unflatten_heads Batch, heads, seq_len, head_dim
-          query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
+      else:
+        if self.qk_norm:
+          with self.conditional_named_scope("attn_q_norm"):
+            query_proj = self.norm_q(query_proj)
+          if is_self_attention or cached_kv is None or "text" not in cached_kv:
+            with self.conditional_named_scope("attn_k_norm"):
+              key_proj = self.norm_k(key_proj)
+
+        if rotary_emb is not None:
+          with self.conditional_named_scope("attn_rope"):
+            query_proj = _unflatten_heads(query_proj, self.heads)
+            key_proj = _unflatten_heads(key_proj, self.heads)
+            value_proj = _unflatten_heads(value_proj, self.heads)
+            # output of _unflatten_heads Batch, heads, seq_len, head_dim
+            query_proj, key_proj = self._apply_rope(query_proj, key_proj, rotary_emb)
 
       query_proj = checkpoint_name(query_proj, "query_proj")
       key_proj = checkpoint_name(key_proj, "key_proj")
