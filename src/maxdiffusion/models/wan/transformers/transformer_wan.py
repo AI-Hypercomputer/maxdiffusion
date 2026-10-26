@@ -253,8 +253,7 @@ class ApproximateGELU(nnx.Module):
 
   def __call__(self, x: jax.Array) -> jax.Array:
     with jax.named_scope("gelu"):
-      x = self.proj(x)
-    return nnx.gelu(x)
+      return nnx.gelu(self.proj(x))
 
 
 class WanFeedForward(nnx.Module):
@@ -322,12 +321,13 @@ class WanFeedForward(nnx.Module):
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
   ) -> jax.Array:
-    hidden_states = self.act_fn(hidden_states)  # Output is (4, 75600, 13824)
+    hidden_states = self.act_fn(hidden_states)
     hidden_states = checkpoint_name(hidden_states, "ffn_activation")
     if self.drop_out.rate > 0:
       hidden_states = self.drop_out(hidden_states, deterministic=deterministic, rngs=rngs)
     with jax.named_scope("proj_out"):
-      return self.proj_out(hidden_states)  # output is (4, 75600, 5120)
+      hidden_states = self.proj_out(hidden_states)
+    return hidden_states
 
 
 class WanTransformerBlock(nnx.Module):
@@ -361,6 +361,7 @@ class WanTransformerBlock(nnx.Module):
         "use_experimental_scheduler": False,
         "ulysses_shards": -1,
         "ulysses_attention_chunks": 1,
+        "use_k_centering": "auto",
         **(attention_config or {}),
     }
 
@@ -494,7 +495,6 @@ class WanTransformerBlock(nnx.Module):
         with self.conditional_named_scope("self_attn_attn"):
           attn_output = self.attn1(
               hidden_states=norm_hidden_states,
-              encoder_hidden_states=norm_hidden_states,
               rotary_emb=rotary_emb,
               deterministic=deterministic,
               rngs=rngs,
@@ -594,6 +594,7 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
         "use_experimental_scheduler": False,
         "ulysses_shards": -1,
         "ulysses_attention_chunks": 1,
+        "use_k_centering": "auto",
         **(attention_config or {}),
     }
 
@@ -954,22 +955,37 @@ class WanModel(nnx.Module, FlaxModelMixin, ConfigMixin):
       scale = scale.squeeze(2)  # [B, sl, dim]
     else:
       shift, scale = jnp.split(self.scale_shift_table + jnp.expand_dims(temb, axis=1), 2, axis=1)
+
     hidden_states = (self.norm_out(hidden_states.astype(jnp.float32)) * (1 + scale) + shift).astype(hidden_states.dtype)
     with jax.named_scope("proj_out"):
       hidden_states = self.proj_out(hidden_states)
 
-    hidden_states = hidden_states.reshape(
-        batch_size,
-        post_patch_num_frames,
-        post_patch_height,
-        post_patch_width,
-        p_t,
-        p_h,
-        p_w,
-        -1,
-    )
-    hidden_states = jnp.transpose(hidden_states, (0, 7, 1, 4, 2, 5, 3, 6))
-    hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
+    if p_t == 1:
+      # Lossless HLO optimization: collapse p_t=1 dimension to avoid 8D non-contiguous stride copies
+      hidden_states = hidden_states.reshape(
+          batch_size,
+          post_patch_num_frames,
+          post_patch_height,
+          post_patch_width,
+          p_h,
+          p_w,
+          -1,
+      )
+      hidden_states = jnp.transpose(hidden_states, (0, 6, 1, 2, 4, 3, 5))
+      hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
+    else:
+      hidden_states = hidden_states.reshape(
+          batch_size,
+          post_patch_num_frames,
+          post_patch_height,
+          post_patch_width,
+          p_t,
+          p_h,
+          p_w,
+          -1,
+      )
+      hidden_states = jnp.transpose(hidden_states, (0, 7, 1, 4, 2, 5, 3, 6))
+      hidden_states = hidden_states.reshape(batch_size, -1, num_frames, height, width)
 
     if return_residual:
       return hidden_states, residual_x
