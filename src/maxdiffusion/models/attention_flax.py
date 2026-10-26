@@ -38,6 +38,7 @@ from ..kernels import custom_splash_attention as custom_splash
 from ..kernels import custom_svg_attention_dispatch
 from ..kernels import custom_svg_static_range_attention
 from . import quantizations
+from . import sol_attention
 from . import svg_attention
 from . import svg_head_local
 from .modeling_flax_utils import get_activation
@@ -2279,6 +2280,10 @@ def _apply_attention(
       "spatiotemporal_shape": spatiotemporal_shape,
   }
 
+  if spatiotemporal_config and spatiotemporal_config.get("use_sol_attention"):
+    with jax.named_scope("sol_attention"):
+      return sol_attention.sol_sharded_attention(query, key, value, context)
+
   if spatiotemporal_config and spatiotemporal_config.get("use_svg_attention"):
     if effective_attention_kernel not in (
         "ulysses_custom",
@@ -2846,6 +2851,13 @@ class FlaxWanAttention(nnx.Module):
     )
     for name, value in svg_config.items():
       setattr(self, name, value)
+    sol_config = sol_attention.init_sol_config(
+        attention_config,
+        default_num_layers=40,
+        is_self_attention=is_self_attention,
+    )
+    for name, value in sol_config.items():
+      setattr(self, name, value)
     self.is_self_attention = is_self_attention
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
@@ -3111,6 +3123,8 @@ class FlaxWanAttention(nnx.Module):
         raise ValueError("SVG attention supports deterministic inference only.")
       if spatiotemporal_shape is None:
         raise ValueError("SVG attention requires spatiotemporal_shape.")
+    if self.use_sol_attention and is_self_attention and not deterministic:
+      raise ValueError("Sol-Attn supports deterministic inference only.")
     if encoder_hidden_states is None:
       encoder_hidden_states = hidden_states
 
@@ -3170,6 +3184,15 @@ class FlaxWanAttention(nnx.Module):
             svg_layer_index=svg_layer_index,
             svg_step_index=svg_step_index,
             svg_timestep=svg_timestep,
+        )
+      elif self.use_sol_attention and is_self_attention:
+        # The svg_* indices are the generic sparse-attention schedule signals.
+        attn_output = sol_attention.apply_sol_or_dense(
+            self,
+            run_attention,
+            layer_index=svg_layer_index,
+            step_index=svg_step_index,
+            timestep=svg_timestep,
         )
       else:
         with jax.named_scope("apply_attention"):
