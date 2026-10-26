@@ -30,6 +30,7 @@ from .utils import (
     is_scipy_available,
     is_torch_available,
     is_torchsde_available,
+    wan_runtime_options,
 )
 
 
@@ -71,6 +72,7 @@ _import_structure = {
         "is_transformers_version",
         "is_unidecode_available",
         "logging",
+        "wan_runtime_options",
     ],
 }
 
