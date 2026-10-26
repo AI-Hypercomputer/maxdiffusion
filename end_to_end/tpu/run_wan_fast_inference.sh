@@ -68,7 +68,7 @@
 #                    v6e seed 777, 17.92 dB / 0.6556 on v6e seed 12345, and
 #                    17.69 dB / 0.6918 on tpu7x seed 12345 (visually clean).
 #                    USE_FUSED_ROPE_KERNEL=false restores the XLA producer.
-#   WAN_CROSS_ATTN_KERNEL
+#   WAN_CROSS_ATTN_KERNEL / WAN_PATCH_EMBED_MODE
 #                    override Wan fast-inference kernel/layout switches
 #   DP / CP / PER_DEVICE_BATCH / SEED
 #                    override mesh parallelism, per-device batch, or RNG seed (default 12345)
@@ -182,6 +182,7 @@ case "$TPU_PROFILE" in
     DEFAULT_VAE_SPATIAL=8
     DEFAULT_FUSED_ROPE=true
     DEFAULT_CROSS_ATTN_KERNEL=pallas
+    DEFAULT_PATCH_EMBED_MODE=tokens
     ;;
   v7)
     PLATFORM_LIBTPU="$V7_LIBTPU"
@@ -199,6 +200,7 @@ case "$TPU_PROFILE" in
     DEFAULT_VAE_SPATIAL=8
     DEFAULT_FUSED_ROPE=true
     DEFAULT_CROSS_ATTN_KERNEL=pallas
+    DEFAULT_PATCH_EMBED_MODE=tokens
     ;;
   *)
     echo "== warning: unrecognised or non-v6e/v7 accelerator '${ACCEL_TYPE:-unknown}';" \
@@ -218,6 +220,7 @@ case "$TPU_PROFILE" in
     DEFAULT_VAE_SPATIAL=8
     DEFAULT_FUSED_ROPE=false
     DEFAULT_CROSS_ATTN_KERNEL=xla
+    DEFAULT_PATCH_EMBED_MODE=tokens
     ;;
 esac
 
@@ -250,6 +253,7 @@ FUSED_ROPE_ARGS=()
 [ -n "${FUSED_ROPE_BLOCK_S:-}" ] && FUSED_ROPE_ARGS+=("fused_rope_block_s=$FUSED_ROPE_BLOCK_S")
 [ -n "${FUSED_ROPE_HEAD_BLOCK:-}" ] && FUSED_ROPE_ARGS+=("fused_rope_head_block=$FUSED_ROPE_HEAD_BLOCK")
 WAN_CROSS_ATTN_KERNEL=${WAN_CROSS_ATTN_KERNEL:-$DEFAULT_CROSS_ATTN_KERNEL}
+WAN_PATCH_EMBED_MODE=${WAN_PATCH_EMBED_MODE:-$DEFAULT_PATCH_EMBED_MODE}
 
 # Mesh: context parallelism carries the Ulysses shards, data parallelism takes
 # whatever devices remain. Defaults to CP=4 / DP=2 on an 8-device slice. On a
@@ -317,6 +321,7 @@ python src/maxdiffusion/generate_wan.py "$CONFIG" \
   use_fused_rope_kernel="$USE_FUSED_ROPE_KERNEL" \
   ${FUSED_ROPE_ARGS[@]+"${FUSED_ROPE_ARGS[@]}"} \
   wan_cross_attn_kernel="$WAN_CROSS_ATTN_KERNEL" \
+  wan_patch_embed_mode="$WAN_PATCH_EMBED_MODE" \
   fps=16 ${GUIDANCE_ARGS[@]+"${GUIDANCE_ARGS[@]}"} \
   seed="${SEED:-12345}" \
   flash_block_sizes="$FLASH_BLOCK_SIZES" \
