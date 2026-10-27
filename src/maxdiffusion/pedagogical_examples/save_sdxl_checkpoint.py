@@ -16,7 +16,7 @@ limitations under the License.
 
 """Load and save a checkpoint. This is useful for uploading checkpoints to gcs
 and later loading them from gcs directly.
-After calling this script, use gsutil to upload the weights to a bucket:
+After calling this script, use gcloud storage to upload the weights to a bucket:
 gcloud storage cp --recursive sdxl-model-finetuned gs://<your-bucket>/sdxl_1.0_base/
 """
 
