@@ -254,7 +254,8 @@ class ApproximateGELU(nnx.Module):
 
   def __call__(self, x: jax.Array) -> jax.Array:
     with jax.named_scope("gelu"):
-      return nnx.gelu(self.proj(x))
+      x = checkpoint_name(self.proj(x), "ffn_proj")
+      return nnx.gelu(x)
 
 
 class WanFeedForward(nnx.Module):
@@ -509,6 +510,7 @@ class WanTransformerBlock(nnx.Module):
           )
         with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
+          hidden_states = checkpoint_name(hidden_states, "cross_attn_input")
 
       # 2. Cross-attention
       with self.conditional_named_scope("cross_attn"):
@@ -525,6 +527,7 @@ class WanTransformerBlock(nnx.Module):
           )
         with self.conditional_named_scope("cross_attn_residual"):
           hidden_states = hidden_states + attn_output
+          hidden_states = checkpoint_name(hidden_states, "mlp_input")
 
       # 3. Feed-forward
       with self.conditional_named_scope("mlp"):
