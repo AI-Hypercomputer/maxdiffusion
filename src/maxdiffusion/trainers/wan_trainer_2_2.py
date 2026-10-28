@@ -189,6 +189,22 @@ class WanTrainer2_2(BaseWanTrainer):
         out_shardings=(state_shardings["low_noise"], state_shardings["high_noise"], None, None, None),
     )
 
+  def get_per_expert_train_steps(self, pipeline, mesh, state_shardings, data_shardings):
+    repl_sharding = jax.sharding.NamedSharding(mesh, P())
+    p_train_step_high = jax.jit(
+        functools.partial(train_step_2_2_high, scheduler=pipeline.scheduler, config=self.config),
+        in_shardings=(state_shardings["high_noise"], data_shardings, None),
+        out_shardings=(state_shardings["high_noise"], repl_sharding),
+        donate_argnums=(0,),
+    )
+    p_train_step_low = jax.jit(
+        functools.partial(train_step_2_2_low, scheduler=pipeline.scheduler, config=self.config),
+        in_shardings=(state_shardings["low_noise"], data_shardings, None),
+        out_shardings=(state_shardings["low_noise"], repl_sharding),
+        donate_argnums=(0,),
+    )
+    return p_train_step_high, p_train_step_low
+
   def get_eval_step(self, pipeline, mesh, state_shardings, eval_data_shardings):
     return jax.jit(
         functools.partial(eval_step_2_2, scheduler=pipeline.scheduler, config=self.config),
@@ -343,7 +359,9 @@ class WanTrainer2_2(BaseWanTrainer):
       max_logging.log("***** Running training *****")
       max_logging.log(f"  Total optimization steps = {self.config.max_train_steps}")
 
-    p_train_step = self.get_train_step(pipeline, mesh, state_shardings, data_shardings)
+    p_train_step_high, p_train_step_low = self.get_per_expert_train_steps(
+        pipeline, mesh, state_shardings, data_shardings
+    )
     p_eval_step = self.get_eval_step(pipeline, mesh, state_shardings, eval_data_shardings)
 
     base_rng = jax.random.key(self.config.seed)
@@ -359,13 +377,30 @@ class WanTrainer2_2(BaseWanTrainer):
         if opt_state_dict.get("high_noise_step") is not None:
           host_step_high = int(opt_state_dict["high_noise_step"])
 
-    last_step_completion = datetime.datetime.now()
     local_metrics_file = open(self.config.metrics_file, "a", encoding="utf8") if self.config.metrics_file else None
     running_gcs_metrics = [] if self.config.gcs_metrics else None
 
     per_device_tflops, _, _ = self.calculate_tflops(pipeline)
-    scheduler_state = pipeline.scheduler_state
+    repl_sharding = jax.sharding.NamedSharding(mesh, P())
+    scheduler_state = jax.jit(lambda s: s, out_shardings=repl_sharding)(pipeline.scheduler_state)
     example_batch = load_next_batch(train_data_iterator, None, self.config)
+
+    shift = getattr(pipeline.scheduler.config, "shift", 1.0) or 1.0
+    u_boundary = compute_unshifted_boundary(self.config.boundary_ratio, shift)
+
+    # Pre-compile both single-expert steps ahead-of-time so neither step 0 nor the first
+    # step routed to the second expert incurs compilation latency during training/profiling.
+    sample_rng = jax.random.fold_in(base_rng, int(start_step))
+    precompile_start = datetime.datetime.now()
+    with pipeline.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
+      if jax.process_index() == 0:
+        max_logging.log("Pre-compiling per-expert training executables...")
+      _compiled_high = p_train_step_high.lower(state_high, example_batch, sample_rng).compile()
+      _compiled_low = p_train_step_low.lower(state_low, example_batch, sample_rng).compile()
+    precompile_s = (datetime.datetime.now() - precompile_start).total_seconds()
+    if jax.process_index() == 0:
+      max_logging.log(f"Pre-compiled per-expert training executables in {precompile_s:.2f}s")
+    del sample_rng
 
     first_profiling_step = self.config.skip_first_n_steps_for_profiler
     if max_utils.profiler_enabled(self.config) and first_profiling_step >= self.config.max_train_steps:
@@ -379,63 +414,79 @@ class WanTrainer2_2(BaseWanTrainer):
       )
     last_profiling_step = np.min([first_profiling_step + self.config.profiler_steps - 1, self.config.max_train_steps - 1])
 
+    pending_step_info = None
+    prev_step_completion = datetime.datetime.now()
+
+    def _flush_pending():
+      nonlocal pending_step_info, prev_step_completion, running_gcs_metrics
+      if pending_step_info is None:
+        return
+      p_step, p_metric, p_active_lr, p_is_high, p_lr_low, p_lr_high, p_steps_map = pending_step_info
+      pending_step_info = None
+      p_scalars = jax.device_get(p_metric["scalar"])
+      now = datetime.datetime.now()
+      step_duration = now - prev_step_completion
+      prev_step_completion = now
+      p_metric["scalar"] = {k: float(v) for k, v in p_scalars.items()}
+      train_utils.record_scalar_metrics(p_metric, step_duration, per_device_tflops, p_active_lr)
+      if self.config.write_metrics:
+        if p_is_high:
+          p_metric["scalar"] = {k: v for k, v in p_metric["scalar"].items() if "_low" not in k}
+          p_metric["scalar"]["learning/current_learning_rate_high"] = p_lr_high
+        else:
+          p_metric["scalar"] = {k: v for k, v in p_metric["scalar"].items() if "_high" not in k}
+          p_metric["scalar"]["learning/current_learning_rate_low"] = p_lr_low
+        p_metric["steps"] = p_steps_map
+        running_gcs_metrics = train_utils.write_metrics_host_ready(
+            writer, local_metrics_file, running_gcs_metrics, p_metric, p_step, self.config
+        )
+
     with ThreadPoolExecutor(max_workers=1) as executor:
       for step in np.arange(start_step, self.config.max_train_steps):
         step_int = int(step)
         if max_utils.profiler_enabled(self.config) and step == first_profiling_step:
+          _flush_pending()
           self._profiler = max_utils.Profiler(self.config)
           self._profiler.start()
+          prev_step_completion = datetime.datetime.now()
         step_rng = jax.random.fold_in(base_rng, step_int)
-        start_step_time = datetime.datetime.now()
         next_batch_future = executor.submit(load_next_batch, train_data_iterator, example_batch, self.config)
 
         # Determine active expert deterministically on host without device-to-host sync stall
         host_rng = random.Random(self.config.seed + step_int)
-        shift = getattr(pipeline.scheduler.config, "shift", 1.0) or 1.0
-        u_boundary = compute_unshifted_boundary(self.config.boundary_ratio, shift)
         is_high_noise = host_rng.random() >= u_boundary
-        is_high_noise_dev = jnp.bool_(is_high_noise)
-        if is_high_noise:
-          active_lr = float(learning_rate_scheduler_high(host_step_high))
-        else:
-          active_lr = float(learning_rate_scheduler_low(host_step_low))
+        lr_low = float(learning_rate_scheduler_low(host_step_low))
+        lr_high = float(learning_rate_scheduler_high(host_step_high))
+        active_lr = lr_high if is_high_noise else lr_low
 
         with (
             jax.profiler.StepTraceAnnotation("train", step_num=step),
             pipeline.mesh,
             nn_partitioning.axis_rules(self.config.logical_axis_rules),
         ):
-          state_low, state_high, scheduler_state, train_metric, _ = p_train_step(
-              state_low, state_high, example_batch, step_rng, scheduler_state, is_high_noise_dev
-          )
-          train_metric["scalar"]["learning/loss"].block_until_ready()
-        last_step_completion = datetime.datetime.now()
-
-        lr_low = float(learning_rate_scheduler_low(host_step_low))
-        lr_high = float(learning_rate_scheduler_high(host_step_high))
-        train_utils.record_scalar_metrics(train_metric, last_step_completion - start_step_time, per_device_tflops, active_lr)
-
-        if self.config.write_metrics:
           if is_high_noise:
-            train_metric["scalar"] = {k: v for k, v in train_metric["scalar"].items() if "_low" not in k}
-            train_metric["scalar"]["learning/current_learning_rate_high"] = lr_high
+            state_high, train_metric = p_train_step_high(state_high, example_batch, step_rng)
           else:
-            train_metric["scalar"] = {k: v for k, v in train_metric["scalar"].items() if "_high" not in k}
-            train_metric["scalar"]["learning/current_learning_rate_low"] = lr_low
-          train_metric["steps"] = {
-              "learning/loss_low": host_step_low,
-              "learning/loss_low_fine": host_step_low,
-              "learning/loss_low_mid": host_step_low,
-              "learning/loss_low_coarse": host_step_low,
-              "learning/current_learning_rate_low": host_step_low,
-              "learning/max_grad_norm_low": host_step_low,
-              "learning/max_abs_grad_low": host_step_low,
-              "learning/loss_high": host_step_high,
-              "learning/current_learning_rate_high": host_step_high,
-              "learning/max_grad_norm_high": host_step_high,
-              "learning/max_abs_grad_high": host_step_high,
-          }
-          train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, self.config)
+            state_low, train_metric = p_train_step_low(state_low, example_batch, step_rng)
+
+        # Drain previous step's scalars after enqueuing the current step so PJRT keeps
+        # the TPU fed continuously while measuring exact completion-to-completion time.
+        _flush_pending()
+
+        steps_map = {
+            "learning/loss_low": host_step_low,
+            "learning/loss_low_fine": host_step_low,
+            "learning/loss_low_mid": host_step_low,
+            "learning/loss_low_coarse": host_step_low,
+            "learning/current_learning_rate_low": host_step_low,
+            "learning/max_grad_norm_low": host_step_low,
+            "learning/max_abs_grad_low": host_step_low,
+            "learning/loss_high": host_step_high,
+            "learning/current_learning_rate_high": host_step_high,
+            "learning/max_grad_norm_high": host_step_high,
+            "learning/max_abs_grad_high": host_step_high,
+        }
+        pending_step_info = (step_int, train_metric, active_lr, is_high_noise, lr_low, lr_high, steps_map)
 
         if is_high_noise:
           host_step_high += 1
@@ -443,18 +494,23 @@ class WanTrainer2_2(BaseWanTrainer):
           host_step_low += 1
 
         if max_utils.profiler_enabled(self.config) and step == last_profiling_step:
+          _flush_pending()
           if self._profiler:
             self._profiler.stop()
+          prev_step_completion = datetime.datetime.now()
 
         if self.config.eval_every > 0 and (step + 1) % self.config.eval_every == 0:
+          _flush_pending()
           if self.config.enable_generate_video_for_eval:
             pipeline.low_noise_transformer = nnx.merge(state_low.graphdef, state_low.params, state_low.rest_of_state)
             pipeline.high_noise_transformer = nnx.merge(state_high.graphdef, state_high.params, state_high.rest_of_state)
             inference_generate_video(self.config, pipeline, filename_prefix=f"{step+1}-train_steps-")
           self.eval_2_2(mesh, eval_rng_key, step, p_eval_step, state_low, state_high, scheduler_state, writer)
+          prev_step_completion = datetime.datetime.now()
 
         example_batch = next_batch_future.result()
         if self.config.checkpoint_every > 0 and (step + 1) % self.config.checkpoint_every == 0:
+          _flush_pending()
           save_step = int(step + 1)
           max_logging.log(f"Saving checkpoint for step {save_step}")
           train_states = {
@@ -462,7 +518,10 @@ class WanTrainer2_2(BaseWanTrainer):
               "high_noise_transformer": state_high if self.config.save_optimizer else state_high.params,
           }
           self.checkpointer.save_checkpoint(save_step, pipeline, train_states)
+          prev_step_completion = datetime.datetime.now()
 
+      _flush_pending()
+      del _compiled_high, _compiled_low
       _metrics_queue.put(None)
       writer_thread.join()
       if writer:
@@ -700,6 +759,129 @@ def train_step_2_2(state_low, state_high, data, rng, scheduler_state, is_high_no
   }
 
   return new_state_low, new_state_high, scheduler_state, metrics, new_rng
+
+
+def train_step_2_2_high(state_high, data, rng, scheduler=None, config=None):
+  """Single-expert Wan 2.2 high-noise training step with buffer donation support."""
+  data = {k: v[: config.global_batch_size_to_train_on] for k, v in data.items()}
+  bsz = data["latents"].shape[0]
+  num_train_timesteps = scheduler.config.num_train_timesteps
+  shift = getattr(scheduler.config, "shift", 1.0) or 1.0
+  u_boundary = compute_unshifted_boundary(config.boundary_ratio, shift)
+  _, _, timestep_rng, dropout_rng, noise_rng = jax.random.split(rng, num=5)
+
+  def compute_loss_high(high_params, s_high):
+    u = jax.random.uniform(timestep_rng, (bsz,), minval=u_boundary, maxval=1.0)
+    t_shifted = (u * shift) / (1.0 + (shift - 1.0) * u)
+    timesteps = t_shifted * num_train_timesteps
+    model = nnx.merge(s_high.graphdef, high_params, s_high.rest_of_state)
+    latents = data["latents"].astype(config.weights_dtype)
+    encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
+    noise = jax.random.normal(key=noise_rng, shape=latents.shape, dtype=latents.dtype)
+    noisy_latents, training_target, training_weight = scheduler.apply_flow_match(noise, latents, timesteps)
+
+    model_pred = model(
+        hidden_states=noisy_latents,
+        timestep=timesteps,
+        encoder_hidden_states=encoder_hidden_states,
+        deterministic=False,
+        rngs=nnx.Rngs(dropout=dropout_rng),
+    )
+    loss = (training_target - model_pred) ** 2
+    if not getattr(config, "disable_training_weights", False):
+      training_weight = jnp.expand_dims(training_weight, axis=(1, 2, 3, 4))
+      loss = loss * training_weight
+    return jnp.mean(loss)
+
+  loss, high_grads = nnx.value_and_grad(functools.partial(compute_loss_high, s_high=state_high))(state_high.params)
+  scalar_metrics = {
+      "learning/loss": loss,
+      "learning/loss_high": loss,
+  }
+  if getattr(config, "opt_enable_grad_global_norm_clipping", False) or getattr(
+      config, "opt_enable_grad_clipping", False
+  ):
+    scalar_metrics["learning/max_grad_norm_high"] = jaxopt.tree_util.tree_l2_norm(high_grads)
+    scalar_metrics["learning/max_abs_grad_high"] = jax.tree_util.tree_reduce(
+        lambda max_val, arr: jnp.maximum(max_val, jnp.max(jnp.abs(arr))), high_grads, initializer=-1.0
+    )
+
+  new_state_high = state_high.apply_gradients(grads=high_grads)
+  return new_state_high, {"scalar": scalar_metrics, "scalars": {}}
+
+
+def train_step_2_2_low(state_low, data, rng, scheduler=None, config=None):
+  """Single-expert Wan 2.2 low-noise training step with buffer donation support."""
+  data = {k: v[: config.global_batch_size_to_train_on] for k, v in data.items()}
+  bsz = data["latents"].shape[0]
+  num_train_timesteps = scheduler.config.num_train_timesteps
+  shift = getattr(scheduler.config, "shift", 1.0) or 1.0
+  u_boundary = compute_unshifted_boundary(config.boundary_ratio, shift)
+  _, _, timestep_rng, dropout_rng, noise_rng = jax.random.split(rng, num=5)
+
+  def compute_loss_low(low_params, s_low):
+    u = jax.random.uniform(timestep_rng, (bsz,), minval=0.0, maxval=u_boundary)
+    t_shifted = (u * shift) / (1.0 + (shift - 1.0) * u)
+    timesteps = t_shifted * num_train_timesteps
+    model = nnx.merge(s_low.graphdef, low_params, s_low.rest_of_state)
+    latents = data["latents"].astype(config.weights_dtype)
+    encoder_hidden_states = data["encoder_hidden_states"].astype(config.weights_dtype)
+    noise = jax.random.normal(key=noise_rng, shape=latents.shape, dtype=latents.dtype)
+    noisy_latents, training_target, training_weight = scheduler.apply_flow_match(noise, latents, timesteps)
+
+    model_pred = model(
+        hidden_states=noisy_latents,
+        timestep=timesteps,
+        encoder_hidden_states=encoder_hidden_states,
+        deterministic=False,
+        rngs=nnx.Rngs(dropout=dropout_rng),
+    )
+    loss = (training_target - model_pred) ** 2
+    if not getattr(config, "disable_training_weights", False):
+      training_weight = jnp.expand_dims(training_weight, axis=(1, 2, 3, 4))
+      loss = loss * training_weight
+
+    loss_mean = jnp.mean(loss)
+    loss_per_example = loss.reshape(loss.shape[0], -1).mean(axis=1)
+    fine_mask = timesteps < 200
+    mid_mask = (timesteps >= 200) & (timesteps < 500)
+    coarse_mask = timesteps >= 500
+
+    loss_fine = jnp.where(
+        jnp.any(fine_mask),
+        jnp.sum(jnp.where(fine_mask, loss_per_example, 0.0)) / jnp.maximum(1, jnp.sum(fine_mask)),
+        jnp.nan,
+    )
+    loss_mid = jnp.where(
+        jnp.any(mid_mask), jnp.sum(jnp.where(mid_mask, loss_per_example, 0.0)) / jnp.maximum(1, jnp.sum(mid_mask)), jnp.nan
+    )
+    loss_coarse = jnp.where(
+        jnp.any(coarse_mask),
+        jnp.sum(jnp.where(coarse_mask, loss_per_example, 0.0)) / jnp.maximum(1, jnp.sum(coarse_mask)),
+        jnp.nan,
+    )
+    return loss_mean, (loss_fine, loss_mid, loss_coarse)
+
+  (loss, (loss_fine, loss_mid, loss_coarse)), low_grads = nnx.value_and_grad(
+      functools.partial(compute_loss_low, s_low=state_low), has_aux=True
+  )(state_low.params)
+  scalar_metrics = {
+      "learning/loss": loss,
+      "learning/loss_low": loss,
+      "learning/loss_low_fine": loss_fine,
+      "learning/loss_low_mid": loss_mid,
+      "learning/loss_low_coarse": loss_coarse,
+  }
+  if getattr(config, "opt_enable_grad_global_norm_clipping", False) or getattr(
+      config, "opt_enable_grad_clipping", False
+  ):
+    scalar_metrics["learning/max_grad_norm_low"] = jaxopt.tree_util.tree_l2_norm(low_grads)
+    scalar_metrics["learning/max_abs_grad_low"] = jax.tree_util.tree_reduce(
+        lambda max_val, arr: jnp.maximum(max_val, jnp.max(jnp.abs(arr))), low_grads, initializer=-1.0
+    )
+
+  new_state_low = state_low.apply_gradients(grads=low_grads)
+  return new_state_low, {"scalar": scalar_metrics, "scalars": {}}
 
 
 def eval_step_2_2(state_low, state_high, data, rng, scheduler_state, scheduler, config):

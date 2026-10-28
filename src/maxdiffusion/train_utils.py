@@ -106,6 +106,24 @@ _buffered_step = None
 _buffered_metrics = None
 
 
+def _record_mld_metrics(metrics, step, config):
+  """Records scalar metrics to Google Cloud ML Diagnostics if enabled."""
+  if mld_metrics is not None and max_utils.ml_diagnostics_enabled(config) and jax.process_index() == 0:
+    if "scalar" in metrics:
+      scalars = metrics["scalar"]
+      metric_records = []
+      for key, raw_val in scalars.items():
+        val = float(raw_val.item() if hasattr(raw_val, "item") else raw_val)
+        metric_name = _METRICS_TO_MANAGED.get(key, key)
+        metric_records.append({
+            "metric_name": metric_name,
+            "value": val,
+            "step": int(step),
+        })
+      if metric_records:
+        mld_metrics.record_metrics(metric_records)
+
+
 def _tensorboard_writer_worker(writer, config):
   """
   A worker function that runs in a separate thread.
@@ -117,15 +135,42 @@ def _tensorboard_writer_worker(writer, config):
       break
     metrics, step = data
     if jax.process_index() == 0:
-      for metric_name in metrics.get("scalar", []):
-        val = np.array(metrics["scalar"][metric_name])
-        metric_step = metrics.get("steps", {}).get(metric_name, step)
-        writer.add_scalar(metric_name, val, metric_step)
-      for metric_name in metrics.get("scalars", []):
-        writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
+      if writer is not None:
+        for metric_name in metrics.get("scalar", []):
+          val = np.array(metrics["scalar"][metric_name])
+          metric_step = metrics.get("steps", {}).get(metric_name, step)
+          writer.add_scalar(metric_name, val, metric_step)
+        for metric_name in metrics.get("scalars", []):
+          writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
 
-      if step % config.log_period == 0:
-        writer.flush()
+        if step % config.log_period == 0:
+          writer.flush()
+      _record_mld_metrics(metrics, step, config)
+
+
+def write_metrics_host_ready(writer, local_metrics_file, running_gcs_metrics, metrics, step, config):
+  """Non-blocking metric publisher for already host-materialized metrics."""
+  del writer  # Written asynchronously on _tensorboard_writer_worker via _metrics_queue.
+  if config.metrics_file:
+    max_utils.write_metrics_locally(metrics, step, config, local_metrics_file)
+
+  if jax.process_index() == 0:
+    max_logging.log(
+        "completed step: {}, seconds: {:.3f}, TFLOP/s/device: {:.3f}, loss: {:.3f}".format(
+            step,
+            metrics["scalar"]["perf/step_time_seconds"],
+            metrics["scalar"]["perf/per_device_tflops_per_sec"],
+            float(metrics["scalar"]["learning/loss"]),
+        )
+    )
+    if step % config.log_period == 0:
+      max_logging.log(f"To see full metrics 'tensorboard --logdir={config.tensorboard_dir}'")
+
+  if config.gcs_metrics and jax.process_index() == 0:
+    running_gcs_metrics = max_utils.write_metrics_for_gcs(metrics, step, config, running_gcs_metrics)
+
+  _metrics_queue.put((metrics, step))
+  return running_gcs_metrics
 
 
 def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step, config):
@@ -139,35 +184,14 @@ def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step
   """
   global _buffered_step, _buffered_metrics, _metrics_queue
 
-  if metrics:
-    _metrics_queue.put((metrics, step))
   if _buffered_metrics is not None:
-    if config.metrics_file:
-      max_utils.write_metrics_locally(_buffered_metrics, _buffered_step, config, local_metrics_file)
-
     if _buffered_step is None:
       raise ValueError(f"When writing metrics, {_buffered_step=} was none")
-    write_metrics_to_tensorboard(writer, _buffered_metrics, _buffered_step, config)
-
-    if config.gcs_metrics and jax.process_index() == 0:
-      running_gcs_metrics = max_utils.write_metrics_for_gcs(_buffered_metrics, _buffered_step, config, running_gcs_metrics)
-
-    if mld_metrics is not None and max_utils.ml_diagnostics_enabled(config) and jax.process_index() == 0:
-      if "scalar" in _buffered_metrics:
-        scalars = _buffered_metrics["scalar"]
-        metric_records = []
-        for key, raw_val in scalars.items():
-          val = float(raw_val.item() if hasattr(raw_val, "item") else raw_val)
-          metric_name = _METRICS_TO_MANAGED.get(key, key)
-          metric_records.append({
-              "metric_name": metric_name,
-              "value": val,
-              "step": int(_buffered_step),
-          })
-
-        if metric_records:
-          mld_metrics.record_metrics(metric_records)
-
+    host_scalars = jax.device_get(_buffered_metrics.get("scalar", {}))
+    _buffered_metrics["scalar"] = {k: float(v) for k, v in host_scalars.items()}
+    running_gcs_metrics = write_metrics_host_ready(
+        writer, local_metrics_file, running_gcs_metrics, _buffered_metrics, _buffered_step, config
+    )
     _buffered_step = None
     _buffered_metrics = None
 
@@ -176,29 +200,10 @@ def write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, step
 
 
 def write_metrics_to_tensorboard(writer, metrics, step, config):
-  """Writes metrics to tensorboard"""
-  if jax.process_index() == 0:
-    max_logging.log(
-        "completed step: {}, seconds: {:.3f}, TFLOP/s/device: {:.3f}, loss: {:.3f}".format(
-            step,
-            metrics["scalar"]["perf/step_time_seconds"],
-            metrics["scalar"]["perf/per_device_tflops_per_sec"],
-            float(metrics["scalar"]["learning/loss"]),
-        )
-    )
-  if jax.process_index() == 0:
-    for metric_name in metrics.get("scalar", []):
-      val = np.array(metrics["scalar"][metric_name])
-      metric_step = metrics.get("steps", {}).get(metric_name, step)
-      writer.add_scalar(metric_name, val, metric_step)
-    for metric_name in metrics.get("scalars", []):
-      writer.add_scalars(metric_name, metrics["scalars"][metric_name], step)
-
-  full_log = step % config.log_period == 0
-
-  if full_log and jax.process_index() == 0:
-    max_logging.log(f"To see full metrics 'tensorboard --logdir={config.tensorboard_dir}'")
-    writer.flush()
+  """Backwards-compatible helper to log and enqueue metrics for TensorBoard."""
+  host_scalars = jax.device_get(metrics.get("scalar", {}))
+  metrics["scalar"] = {k: float(v) for k, v in host_scalars.items()}
+  write_metrics_host_ready(writer, None, None, metrics, step, config)
 
 
 def get_params_to_save(params):
