@@ -46,6 +46,7 @@ from maxdiffusion.models.wan.autoencoder_kl_wan import (
     AutoencoderKLWanCache,
 )
 from maxdiffusion.models.wan.wan_utils import load_wan_vae
+from maxdiffusion.pipelines.wan.wan_pipeline import WanPipeline
 from maxdiffusion.utils import load_video
 from maxdiffusion.video_processor import VideoProcessor
 import flax
@@ -577,6 +578,26 @@ class WanVaeTest(unittest.TestCase):
     original_video = video_processor.postprocess_video(original_video, output_type="np")
     ssim_compare = ssim(video[0], original_video[0], multichannel=True, channel_axis=-1, data_range=255)
     assert ssim_compare >= 0.9999
+
+  def test_load_vae_uses_vae_weights_dtype(self):
+    for weights_dtype, vae_weights_dtype in (("bfloat16", "float32"), ("float32", "bfloat16")):
+      with self.subTest(weights_dtype=weights_dtype, vae_weights_dtype=vae_weights_dtype):
+        pyconfig.initialize(
+            [
+                None,
+                os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml"),
+                f"weights_dtype={weights_dtype}",
+                f"vae_weights_dtype={vae_weights_dtype}",
+            ],
+            unittest=True,
+        )
+        config = pyconfig.config
+        components = WanPipeline._create_common_components(  # pylint: disable=protected-access
+            config, load_vae=True, load_text_encoder=False, load_scheduler=False
+        )
+        params = nnx.state(components["vae"], nnx.Param)
+        param_dtypes = {x.dtype for x in jax.tree_util.tree_leaves(params)}
+        self.assertEqual(param_dtypes, {jnp.dtype(vae_weights_dtype)})
 
 
 if __name__ == "__main__":
