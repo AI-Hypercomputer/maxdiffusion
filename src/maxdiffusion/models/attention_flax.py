@@ -31,6 +31,7 @@ from maxdiffusion.kernels.splash_attention import ring_attention_kernel as tokam
 from maxdiffusion.kernels.splash_attention import base as tokamax_splash_base
 from maxdiffusion.kernels.fused_producers import fused_rmsnorm_rope
 from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import (
+    build_sharded_fused_rmsnorm_rope_with_pallas_bwd,
     fused_rmsnorm_rope_pallas,
     resolve_rope_accum,
     rope_accum_is_measured,
@@ -913,6 +914,8 @@ def _tpu_flash_attention(
         attention_mask,
         segment_ids_cls,
     )
+    if not mask_padding_tokens and attention_mask is None:
+      segment_ids = None
 
     # make_splash_mha is wrapped around shardmap and seq and head is already
     # sharded based on in_specs, therefore setting head_shards=1 and q_seq_shards=1.
@@ -2001,6 +2004,17 @@ def _ulysses_ring_custom_attention(
   kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
   internal_q_axis_names = _replace_mesh_axis_names(q_axis_names, axis_name, (ring_axis, ulysses_axis))
   internal_kv_axis_names = _replace_mesh_axis_names(kv_axis_names, axis_name, (ring_axis, ulysses_axis))
+  r1_skip_inner_swap = num_ring_shards == 1 and not transpose_out
+  internal_out_q_axis_names = (
+      jax.sharding.PartitionSpec(
+          internal_q_axis_names[0],
+          internal_q_axis_names[1],
+          internal_q_axis_names[3],
+          internal_q_axis_names[2],
+      )
+      if r1_skip_inner_swap
+      else internal_q_axis_names
+  )
 
   @functools.partial(
       jax.shard_map,
@@ -2010,7 +2024,7 @@ def _ulysses_ring_custom_attention(
           internal_kv_axis_names,
           internal_kv_axis_names,
       ),
-      out_specs=internal_q_axis_names,
+      out_specs=internal_out_q_axis_names,
       check_vma=False,
   )
   def wrap_ulysses_ring_attention(query, key, value):
@@ -2148,6 +2162,9 @@ def _ulysses_ring_custom_attention(
             transpose_out=transpose_out,
         )
         raw_out = jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value)
+      if r1_skip_inner_swap:
+        attention_output = raw_out[:, :, :kv_size, :context_q_seq_len].astype(query.dtype)
+        return a2a(attention_output, split_axis=3, concat_axis=1)
       if transpose_out:
         attention_output = raw_out
       else:
@@ -2248,6 +2265,14 @@ def _ulysses_ring_custom_attention(
   )
   if fold_batch:
     x = x.reshape(batch, num_heads, *x.shape[2:])
+  if r1_skip_inner_swap:
+    out_q_axis_names = jax.sharding.PartitionSpec(q_axis_names[0], q_axis_names[1], q_axis_names[3], q_axis_names[2])
+    x = jax.lax.with_sharding_constraint(x, out_q_axis_names)
+    x = x[:, :, :, :orig_q_seq_len]
+    b, h, d, s = x.shape
+    x = jnp.transpose(x, (0, 3, 1, 2)).reshape(b, -1, h * d)
+    x = jax.lax.with_sharding_constraint(x, nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD)))
+    return x
   x = jax.lax.with_sharding_constraint(x, q_axis_names)
   x = x[:, :, :orig_q_seq_len, :]
   x = _reshape_heads_to_head_dim(x)
@@ -3521,8 +3546,30 @@ def _build_sharded_fused_rope_producer(
     head_block: Optional[int],
     q_prescale: float,
     k_prescale: float,
+    use_pallas_bwd: bool = True,
+    bwd_block_s: Optional[int] = None,
 ):
-  """Builds and caches the `with_xla_backward(jax.shard_map(...))` RoPE producer."""
+  """Builds and caches the differentiable SPMD-sharded RoPE producer."""
+  if norm_mode == "exact" and use_pallas_bwd:
+    return build_sharded_fused_rmsnorm_rope_with_pallas_bwd(
+        kernel_fn,
+        mesh,
+        act_spec,
+        replicated_spec,
+        freqs_spec,
+        out_spec,
+        q_heads=q_heads,
+        dim_head=dim_head,
+        eps=eps,
+        k_eps=k_eps,
+        rope_accum=rope_accum,
+        block_s=block_s,
+        bwd_block_s=bwd_block_s,
+        head_block=head_block,
+        q_prescale=q_prescale,
+        k_prescale=k_prescale,
+    )
+
   sharded = jax.shard_map(
       functools.partial(
           kernel_fn,

@@ -99,6 +99,7 @@ NUM_LANES = 128
 # `[block_s, feature]` FP32 intermediate for the reduction.
 DEFAULT_BLOCK_S_EXACT = 512
 DEFAULT_BLOCK_S_FUSED = 256
+DEFAULT_BWD_BLOCK_S_EXACT = 512
 
 # v6e exposes 128 MiB of VMEM per core and tpu7x exposes 64 MiB. 64 MiB fits
 # both (the full tpu7x budget). Other TPU generations get Mosaic's own default;
@@ -454,6 +455,78 @@ def _fused_kernel(
     o_ref[0, i] = out
 
 
+def _exact_bwd_kernel(
+    dout_ref,
+    x_ref,
+    scale_ref,
+    rsqrt_ref,
+    cos_ref,
+    sin_ref,
+    dx_ref,
+    dscale_ref,
+    *,
+    seq_len: int,
+    block_s: int,
+    heads: int,
+    dim_head: int,
+    rope_accum: str,
+    prescale: float = 1.0,
+    sublane_reduce: bool = True,
+):
+  """Fused inverse-RoPE + head-untranspose + FP32 RMSNorm VJP for one `(batch, seq tile)` step."""
+  s_blk = pl.program_id(1)
+  rsqrt_val = rsqrt_ref[0]
+  cos = cos_ref[0].astype(jnp.float32) if rope_accum == "f32" else cos_ref[0]
+  sin_neg = (-sin_ref[0]).astype(jnp.float32) if rope_accum == "f32" else (-sin_ref[0])
+  lane = jax.lax.broadcasted_iota(jnp.int32, cos.shape, cos.ndim - 1)
+  even_mask = jax.lax.rem(lane, 2) == 0
+  prescale_val = jnp.asarray(prescale, dout_ref.dtype) if prescale != 1.0 else None
+
+  if (seq_len % block_s) != 0:
+    row_idx = s_blk * block_s + jax.lax.broadcasted_iota(jnp.int32, (block_s, 1), 0)
+    valid_mask = row_idx < seq_len
+  else:
+    valid_mask = None
+
+  dot_acc = jnp.zeros((block_s, 1), dtype=jnp.float32)
+
+  for i in range(heads):
+    offset = pl.multiple_of(i * dim_head, dim_head)
+    x_i = x_ref[0, :, pl.ds(offset, dim_head)].astype(jnp.float32)
+    scale_i = scale_ref[i, 0].astype(jnp.float32)
+
+    g_i = dout_ref[0, i]
+    if prescale_val is not None:
+      g_i = g_i * prescale_val
+    dy_i = _apply_rope(g_i, cos, sin_neg, rope_accum, even_mask=even_mask).astype(jnp.float32)
+
+    dmul_i = dy_i * x_i
+    dot_acc = dot_acc + jnp.sum(dmul_i * scale_i, axis=-1, keepdims=True)
+
+    dscale_elem = dmul_i * rsqrt_val
+    if valid_mask is not None:
+      dscale_elem = jnp.where(valid_mask, dscale_elem, 0.0)
+    if sublane_reduce:
+      dscale_tile = jnp.sum(dscale_elem.reshape(block_s // 8, 8, dim_head), axis=0)
+    else:
+      dscale_tile = jnp.sum(dscale_elem, axis=0, keepdims=True)
+    dscale_ref[0, :, pl.ds(offset, dim_head)] = dscale_tile
+
+  inv_feature = 1.0 / float(heads * dim_head)
+  coeff = (rsqrt_val * rsqrt_val * rsqrt_val) * inv_feature * dot_acc
+
+  for i in range(heads):
+    offset = pl.multiple_of(i * dim_head, dim_head)
+    x_i = x_ref[0, :, pl.ds(offset, dim_head)].astype(jnp.float32)
+    g_i = dout_ref[0, i]
+    if prescale_val is not None:
+      g_i = g_i * prescale_val
+    dy_i = _apply_rope(g_i, cos, sin_neg, rope_accum, even_mask=even_mask).astype(jnp.float32)
+    mul_i = rsqrt_val * scale_ref[i, 0].astype(jnp.float32)
+    dx_i = (dy_i * mul_i - x_i * coeff).astype(dx_ref.dtype)
+    dx_ref[0, :, pl.ds(offset, dim_head)] = dx_i
+
+
 def _run_exact(
     x,
     scale,
@@ -469,6 +542,7 @@ def _run_exact(
     rope_accum,
     head_block,
     prescale: float = 1.0,
+    return_rsqrt: bool = False,
 ):
   batch, seq_len, feature = x.shape
   block_s = min(block_s, seq_len)
@@ -480,7 +554,7 @@ def _run_exact(
   x_f32 = x.astype(jnp.float32)
   rsqrt_val = jax.lax.rsqrt(jnp.mean(jnp.square(x_f32), axis=-1, keepdims=True) + eps)
 
-  return pl.pallas_call(
+  out = pl.pallas_call(
       functools.partial(_exact_kernel, dim_head=dim_head, rope_accum=rope_accum, head_block=head_block, prescale=prescale),
       grid=(batch, pl.cdiv(seq_len, block_s), heads // head_block),
       in_specs=[
@@ -503,6 +577,68 @@ def _run_exact(
       ),
       interpret=interpret,
   )(x, scale.reshape(heads, 1, dim_head), rsqrt_val, cos_full, sin_signed)
+  if return_rsqrt:
+    return out, rsqrt_val
+  return out
+
+
+def _run_exact_bwd(
+    dout,
+    x,
+    scale,
+    rsqrt_val,
+    cos_full,
+    sin_signed,
+    *,
+    heads,
+    dim_head,
+    bwd_block_s,
+    vmem_limit_bytes,
+    interpret,
+    rope_accum,
+    prescale: float = 1.0,
+):
+  batch, seq_len, feature = x.shape
+  eff_block_s = min(bwd_block_s, seq_len)
+  num_s = pl.cdiv(seq_len, eff_block_s)
+  sublane_reduce = (eff_block_s % 8) == 0
+  red_rows = 8 if sublane_reduce else 1
+
+  dx, dscale_part = pl.pallas_call(
+      functools.partial(
+          _exact_bwd_kernel,
+          seq_len=seq_len,
+          block_s=eff_block_s,
+          heads=heads,
+          dim_head=dim_head,
+          rope_accum=rope_accum,
+          prescale=prescale,
+          sublane_reduce=sublane_reduce,
+      ),
+      grid=(batch, num_s),
+      in_specs=[
+          pl.BlockSpec((1, heads, eff_block_s, dim_head), lambda b, s: (b, 0, s, 0)),
+          pl.BlockSpec((1, eff_block_s, feature), lambda b, s: (b, s, 0)),
+          pl.BlockSpec((heads, 1, dim_head), lambda b, s: (0, 0, 0)),
+          pl.BlockSpec((1, eff_block_s, 1), lambda b, s: (b, s, 0)),
+          pl.BlockSpec((1, eff_block_s, dim_head), lambda b, s: (0, s, 0)),
+          pl.BlockSpec((1, eff_block_s, dim_head), lambda b, s: (0, s, 0)),
+      ],
+      out_specs=[
+          pl.BlockSpec((1, eff_block_s, feature), lambda b, s: (b, s, 0)),
+          pl.BlockSpec((1, red_rows, feature), lambda b, s: (b * num_s + s, 0, 0)),
+      ],
+      out_shape=[
+          jax.ShapeDtypeStruct((batch, seq_len, feature), x.dtype),
+          jax.ShapeDtypeStruct((batch * num_s, red_rows, feature), jnp.float32),
+      ],
+      compiler_params=pltpu.CompilerParams(
+          dimension_semantics=("parallel", "parallel"), vmem_limit_bytes=vmem_limit_bytes
+      ),
+      interpret=interpret,
+  )(dout, x, scale.reshape(heads, 1, dim_head), rsqrt_val, cos_full, sin_signed)
+  dscale = jnp.sum(dscale_part, axis=(0, 1)).astype(scale.dtype)
+  return dx, dscale
 
 
 def _run_fused(
@@ -569,7 +705,8 @@ def fused_rmsnorm_rope_pallas(
     mesh=None,
     q_prescale: float = 1.0,
     k_prescale: float = 1.0,
-) -> Tuple[jax.Array, jax.Array]:
+    return_rsqrt: bool = False,
+) -> Tuple[jax.Array, ...]:
   """Fused FP32 RMSNorm + RoPE + head transposition on TPU via Pallas.
 
   Drop-in replacement for `fused_producers.fused_rmsnorm_rope`.
@@ -676,6 +813,33 @@ def fused_rmsnorm_rope_pallas(
       "interpret": interpret,
       "rope_accum": rope_accum,
   }
+  if norm_mode == "exact" and return_rsqrt:
+    q_out, q_rsqrt = _run_exact(
+        raw_q,
+        q_norm_scale,
+        cos_q,
+        sin_q,
+        heads=q_heads,
+        head_block=q_heads if head_block is None else head_block,
+        eps=eps,
+        prescale=q_prescale,
+        return_rsqrt=True,
+        **common,
+    )
+    k_out, k_rsqrt = _run_exact(
+        raw_k,
+        k_norm_scale,
+        cos_k,
+        sin_k,
+        heads=kv_heads,
+        head_block=kv_heads if head_block is None else head_block,
+        eps=effective_k_eps,
+        prescale=k_prescale,
+        return_rsqrt=True,
+        **common,
+    )
+    return q_out, k_out, q_rsqrt, k_rsqrt
+
   q_out = runner(
       raw_q,
       q_norm_scale,
@@ -699,6 +863,199 @@ def fused_rmsnorm_rope_pallas(
       **common,
   )
   return q_out, k_out
+
+
+def fused_rmsnorm_rope_pallas_bwd(
+    dq_out: jax.Array,
+    dk_out: jax.Array,
+    raw_q: jax.Array,
+    raw_k: jax.Array,
+    q_norm_scale: jax.Array,
+    k_norm_scale: jax.Array,
+    freqs_cis: jax.Array,
+    q_rsqrt: jax.Array,
+    k_rsqrt: jax.Array,
+    *,
+    q_heads: int = 40,
+    kv_heads: int | None = None,
+    dim_head: int = 128,
+    rope_accum: str = "dtype",
+    bwd_block_s: int | None = None,
+    vmem_limit_bytes: int | None = None,
+    interpret: bool = False,
+    mesh=None,
+    q_prescale: float = 1.0,
+    k_prescale: float = 1.0,
+) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+  """Fused Pallas VJP for `fused_rmsnorm_rope_pallas` (`norm_mode='exact'`)."""
+  kv_heads = q_heads if kv_heads is None else kv_heads
+  eff_bwd_block_s = DEFAULT_BWD_BLOCK_S_EXACT if bwd_block_s is None else bwd_block_s
+  if eff_bwd_block_s <= 0 or eff_bwd_block_s % 8 != 0:
+    raise ValueError(f"bwd_block_s must be a positive multiple of 8, got {eff_bwd_block_s}.")
+  resolved_vmem_limit_bytes = _resolve_vmem_limit_bytes(vmem_limit_bytes, mesh)
+
+  seq_q = raw_q.shape[1]
+  seq_k = raw_k.shape[1]
+  cos_q, sin_q = _rope_tables(freqs_cis, seq_q, raw_q.dtype)
+  if seq_k == seq_q and raw_k.dtype == raw_q.dtype:
+    cos_k, sin_k = cos_q, sin_q
+  else:
+    cos_k, sin_k = _rope_tables(freqs_cis, seq_k, raw_k.dtype)
+
+  common = {
+      "dim_head": dim_head,
+      "bwd_block_s": eff_bwd_block_s,
+      "vmem_limit_bytes": resolved_vmem_limit_bytes,
+      "interpret": interpret,
+      "rope_accum": rope_accum,
+  }
+  dq, dq_scale = _run_exact_bwd(
+      dq_out,
+      raw_q,
+      q_norm_scale,
+      q_rsqrt,
+      cos_q,
+      sin_q,
+      heads=q_heads,
+      prescale=q_prescale,
+      **common,
+  )
+  dk, dk_scale = _run_exact_bwd(
+      dk_out,
+      raw_k,
+      k_norm_scale,
+      k_rsqrt,
+      cos_k,
+      sin_k,
+      heads=kv_heads,
+      prescale=k_prescale,
+      **common,
+  )
+  return dq, dk, dq_scale, dk_scale
+
+
+def build_sharded_fused_rmsnorm_rope_with_pallas_bwd(
+    kernel_fn,
+    mesh,
+    act_spec: jax.sharding.PartitionSpec,
+    replicated_spec: jax.sharding.PartitionSpec,
+    freqs_spec: jax.sharding.PartitionSpec,
+    out_spec: jax.sharding.PartitionSpec,
+    *,
+    q_heads: int,
+    dim_head: int,
+    eps: float,
+    k_eps: float | None,
+    rope_accum: str,
+    block_s: int | None,
+    bwd_block_s: int | None,
+    head_block: int | None,
+    q_prescale: float,
+    k_prescale: float,
+):
+  """Builds a SPMD-sharded `fused_rmsnorm_rope_pallas` callable with a fused Pallas VJP."""
+  target_fn = getattr(kernel_fn, "side_effect", None) or kernel_fn
+  interpret = bool(getattr(target_fn, "keywords", {}).get("interpret", False))
+
+  psum_axes = []
+  for entry in (act_spec[0], act_spec[1]):
+    if entry is None:
+      continue
+    if isinstance(entry, str):
+      if mesh.shape[entry] > 1:
+        psum_axes.append(entry)
+    else:
+      for a in entry:
+        if mesh.shape[a] > 1:
+          psum_axes.append(a)
+  psum_axes = tuple(psum_axes)
+
+  rsqrt_spec = jax.sharding.PartitionSpec(act_spec[0], act_spec[1], None)
+
+  sharded_fwd = jax.shard_map(
+      functools.partial(
+          kernel_fn,
+          q_heads=q_heads,
+          dim_head=dim_head,
+          eps=eps,
+          k_eps=k_eps,
+          norm_mode="exact",
+          rope_accum=rope_accum,
+          block_s=block_s,
+          head_block=head_block,
+          q_prescale=q_prescale,
+          k_prescale=k_prescale,
+          mesh=mesh,
+          return_rsqrt=True,
+      ),
+      mesh=mesh,
+      in_specs=(act_spec, act_spec, replicated_spec, replicated_spec, freqs_spec),
+      out_specs=(out_spec, out_spec, rsqrt_spec, rsqrt_spec),
+      check_vma=False,
+  )
+
+  def _local_bwd(raw_q, raw_k, q_scale, k_scale, freqs, q_rsqrt, k_rsqrt, dq_out, dk_out):
+    dq, dk, dq_scale, dk_scale = fused_rmsnorm_rope_pallas_bwd(
+        dq_out,
+        dk_out,
+        raw_q,
+        raw_k,
+        q_scale,
+        k_scale,
+        freqs,
+        q_rsqrt,
+        k_rsqrt,
+        q_heads=q_heads,
+        dim_head=dim_head,
+        rope_accum=rope_accum,
+        bwd_block_s=bwd_block_s,
+        interpret=interpret,
+        mesh=mesh,
+        q_prescale=q_prescale,
+        k_prescale=k_prescale,
+    )
+    if psum_axes:
+      dq_scale = jax.lax.psum(dq_scale, axis_name=psum_axes)
+      dk_scale = jax.lax.psum(dk_scale, axis_name=psum_axes)
+    return dq, dk, dq_scale, dk_scale
+
+  sharded_bwd = jax.shard_map(
+      _local_bwd,
+      mesh=mesh,
+      in_specs=(
+          act_spec,
+          act_spec,
+          replicated_spec,
+          replicated_spec,
+          freqs_spec,
+          rsqrt_spec,
+          rsqrt_spec,
+          out_spec,
+          out_spec,
+      ),
+      out_specs=(act_spec, act_spec, replicated_spec, replicated_spec),
+      check_vma=False,
+  )
+
+  @jax.custom_vjp
+  def producer(raw_q, raw_k, q_scale, k_scale, freqs):
+    q_out, k_out, _, _ = sharded_fwd(raw_q, raw_k, q_scale, k_scale, freqs)
+    return q_out, k_out
+
+  def _fwd(raw_q, raw_k, q_scale, k_scale, freqs):
+    q_out, k_out, q_rsqrt, k_rsqrt = sharded_fwd(raw_q, raw_k, q_scale, k_scale, freqs)
+    return (q_out, k_out), (raw_q, raw_k, q_scale, k_scale, freqs, q_rsqrt, k_rsqrt)
+
+  def _bwd(res, cotangents):
+    raw_q, raw_k, q_scale, k_scale, freqs, q_rsqrt, k_rsqrt = res
+    dq_out, dk_out = cotangents
+    dq, dk, dq_scale, dk_scale = sharded_bwd(
+        raw_q, raw_k, q_scale, k_scale, freqs, q_rsqrt, k_rsqrt, dq_out, dk_out
+    )
+    return dq, dk, dq_scale, dk_scale, jnp.zeros_like(freqs)
+
+  producer.defvjp(_fwd, _bwd)
+  return producer
 
 
 def rope_pair_swap_reference(x: jax.Array) -> jax.Array:

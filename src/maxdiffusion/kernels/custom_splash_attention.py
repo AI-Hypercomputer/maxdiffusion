@@ -1568,11 +1568,12 @@ def _flash_attention_bwd_fused_kernel(
     dk_scratch_ref[...] = jnp.zeros_like(dk_scratch_ref)
     dv_scratch_ref[...] = jnp.zeros_like(dv_scratch_ref)
 
-  dq_scratch_ref[...] = jnp.zeros_like(dq_scratch_ref)
+  assert bkv % bkv_compute == 0
 
-  def _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di):
+  def _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di, *, is_first_outer: bool):
     step = bkv_compute_in
-    dq_acc = dq_scratch_ref[...]
+    do_cast = do.astype(v_chunk.dtype)
+    dq_acc = None if is_first_outer else dq_scratch_ref[...]
     for idx in range(0, qk.shape[0], step):
       sub_len = min(step, qk.shape[0] - idx)
       sub_slice = pl.ds(base_offset + idx, sub_len)
@@ -1580,37 +1581,67 @@ def _flash_attention_bwd_fused_kernel(
       k_slice = k_chunk[idx : idx + sub_len]
       v_slice = v_chunk[idx : idx + sub_len]
 
-      p_curr, ds_curr = _compute_p_and_ds(qk_slice, v_slice, do, lse, di, exp)
-      _accumulate_dk_dv(sub_slice, p_curr, ds_curr, q, do, dk_scratch_ref, dv_scratch_ref)
-      dq_acc = dq_acc + _compute_dq_tile(ds_curr, k_slice)
+      dp_curr = lax.dot_general(
+          v_slice,
+          do_cast,
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      p_curr = exp(qk_slice - lse)
+      dv_curr = lax.dot_general(
+          p_curr.astype(do.dtype),
+          do,
+          NT_DIM_NUMBERS,
+          preferred_element_type=float32,
+      )
+      ds_curr = p_curr * (dp_curr - di)
+      dv_scratch_ref[sub_slice, :] = dv_scratch_ref[sub_slice, :] + dv_curr
+
+      dk_curr = lax.dot_general(
+          ds_curr.astype(q.dtype),
+          q,
+          (((1,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
+      dk_scratch_ref[sub_slice, :] = dk_scratch_ref[sub_slice, :] + dk_curr
+      dq_tile = _compute_dq_tile(ds_curr, k_slice)
+      dq_acc = dq_tile if dq_acc is None else (dq_acc + dq_tile)
     dq_scratch_ref[...] = dq_acc
 
-  def compute_body(kv_compute_index, _):
+  def _run_outer(kv_compute_index: int, chunk_len: int):
     q = q_ref[...]
     do = do_ref[...]
     lse = lse_ref[0:1, :]
     di = di_ref[0:1, :]
     base_offset = kv_compute_index * bkv_compute
-    slice_k = pl.ds(base_offset, bkv_compute)
+    slice_k = pl.ds(base_offset, chunk_len)
     k_chunk = k_ref[slice_k, :]
     v_chunk = v_ref[slice_k, :]
     qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-    _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di)
+    _bwd_fused_inner(
+        base_offset, qk, k_chunk, v_chunk, q, do, lse, di, is_first_outer=(kv_compute_index == 0)
+    )
 
-  def last_compute_body(kv_compute_index):
-    q = q_ref[...]
-    do = do_ref[...]
-    lse = lse_ref[0:1, :]
-    di = di_ref[0:1, :]
-    base_offset = kv_compute_index * bkv_compute
-    slice_k_len = kv_seq_len % bkv_compute
-    slice_k = pl.ds(base_offset, slice_k_len)
-    k_chunk = k_ref[slice_k, :]
-    v_chunk = v_ref[slice_k, :]
-    qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-    _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di)
+  @pl.when(j != grid_width - 1)
+  def body():
+    for outer_idx in range(bkv // bkv_compute):
+      _run_outer(outer_idx, bkv_compute)
 
-  _run_kv_compute_loop(j, grid_width, bkv, bkv_compute, kv_seq_len, compute_body, last_compute_body)
+  @pl.when(j == grid_width - 1)
+  def last_body():
+    if kv_seq_len % bkv == 0:
+      for outer_idx in range(bkv // bkv_compute):
+        _run_outer(outer_idx, bkv_compute)
+    else:
+      remain_kv_seq_len = kv_seq_len % bkv
+      iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
+      if remain_kv_seq_len % bkv_compute == 0:
+        for outer_idx in range(iter_num):
+          _run_outer(outer_idx, bkv_compute)
+      else:
+        for outer_idx in range(iter_num - 1):
+          _run_outer(outer_idx, bkv_compute)
+        _run_outer(iter_num - 1, kv_seq_len % bkv_compute)
 
   if use_base2_exp:
     dq_val = (dq_scratch_ref[...] * LN2).astype(dq_ref.dtype)
