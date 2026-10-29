@@ -1233,47 +1233,66 @@ def _ulysses_attention(
       bsizes = _build_custom_splash_block_sizes(flash_block_sizes, bq, bkv, bkv_compute, bkv_compute_in)
 
       if use_fixed_m:
-        splash_kernel_uniform = custom_splash.make_splash_mha(
-            block_sizes=bsizes,
-            orig_q_seq_len=context_q_seq_len,
-            orig_kv_seq_len=actual_kv_seq_len,
-            heads_per_tile=heads_per_tile,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
-            vmem_limit_bytes=vmem_limit_bytes,
-            use_fixed_m=True,
-            uniform_fixed_m=True,
-            transpose_out=transpose_out,
-        )
-        splash_kernel_hybrid = custom_splash.make_splash_mha(
-            block_sizes=bsizes,
-            orig_q_seq_len=context_q_seq_len,
-            orig_kv_seq_len=actual_kv_seq_len,
-            heads_per_tile=heads_per_tile,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
-            vmem_limit_bytes=vmem_limit_bytes,
-            use_fixed_m=True,
-            uniform_fixed_m=False,
-            transpose_out=transpose_out,
-        )
+        if not transpose_out and heads_per_tile == 1:
+          splash_kernel = custom_splash.make_splash_mha(
+              block_sizes=bsizes,
+              orig_q_seq_len=context_q_seq_len,
+              orig_kv_seq_len=actual_kv_seq_len,
+              heads_per_tile=heads_per_tile,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=True,
+              residual_checkpoint_name=residual_checkpoint_name,
+              transpose_out=transpose_out,
+              q_tail_is_zero=True,
+          )
+          km_axis = 0 if k_mean is not None else None
+          attention_output = jax.vmap(splash_kernel, in_axes=(0, 0, 0, 0, km_axis, None))(
+              query, key, value, mk_arr, k_mean, all_fixed
+          )
+        else:
+          splash_kernel_uniform = custom_splash.make_splash_mha(
+              block_sizes=bsizes,
+              orig_q_seq_len=context_q_seq_len,
+              orig_kv_seq_len=actual_kv_seq_len,
+              heads_per_tile=heads_per_tile,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=True,
+              uniform_fixed_m=True,
+              transpose_out=transpose_out,
+          )
+          splash_kernel_hybrid = custom_splash.make_splash_mha(
+              block_sizes=bsizes,
+              orig_q_seq_len=context_q_seq_len,
+              orig_kv_seq_len=actual_kv_seq_len,
+              heads_per_tile=heads_per_tile,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=True,
+              uniform_fixed_m=False,
+              transpose_out=transpose_out,
+          )
 
-        def _run_uniform(q, k, v, m, km):
-          return jax.vmap(splash_kernel_uniform, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+          def _run_uniform(q, k, v, m, km):
+            return jax.vmap(splash_kernel_uniform, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
 
-        def _run_hybrid(q, k, v, m, km):
-          return jax.vmap(splash_kernel_hybrid, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+          def _run_hybrid(q, k, v, m, km):
+            return jax.vmap(splash_kernel_hybrid, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
 
-        attention_output = jax.lax.cond(
-            all_fixed,
-            _run_uniform,
-            _run_hybrid,
-            query,
-            key,
-            value,
-            mk_arr,
-            k_mean,
-        )
+          attention_output = jax.lax.cond(
+              all_fixed,
+              _run_uniform,
+              _run_hybrid,
+              query,
+              key,
+              value,
+              mk_arr,
+              k_mean,
+          )
       else:
         splash_kernel = custom_splash.make_splash_mha(
             block_sizes=bsizes,
@@ -1286,6 +1305,7 @@ def _ulysses_attention(
             use_fixed_m=False,
             residual_checkpoint_name=residual_checkpoint_name,
             transpose_out=transpose_out,
+            q_tail_is_zero=True,
         )
         vmapped_splash = jax.vmap(splash_kernel, in_axes=(0, 0, 0))
         attention_output = vmapped_splash(query, key, value)
@@ -2116,38 +2136,57 @@ def _ulysses_ring_custom_attention(
     # (2a) R=1: Dedicated single-device splash kernel with fixed-m or online softmax
     if num_ring_shards == 1:
       if use_fixed_m:
-        splash_kernel_uniform = custom_splash.make_splash_mha(
-            block_sizes=bsizes,
-            orig_q_seq_len=context_q_seq_len,
-            orig_kv_seq_len=actual_kv_seq_len,
-            heads_per_tile=heads_per_tile,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
-            vmem_limit_bytes=vmem_limit_bytes,
-            use_fixed_m=True,
-            uniform_fixed_m=True,
-            transpose_out=transpose_out,
-        )
-        splash_kernel_hybrid = custom_splash.make_splash_mha(
-            block_sizes=bsizes,
-            orig_q_seq_len=context_q_seq_len,
-            orig_kv_seq_len=actual_kv_seq_len,
-            heads_per_tile=heads_per_tile,
-            use_base2_exp=use_base2_exp,
-            use_experimental_scheduler=use_experimental_scheduler,
-            vmem_limit_bytes=vmem_limit_bytes,
-            use_fixed_m=True,
-            uniform_fixed_m=False,
-            transpose_out=transpose_out,
-        )
+        if not transpose_out and heads_per_tile == 1:
+          splash_kernel = custom_splash.make_splash_mha(
+              block_sizes=bsizes,
+              orig_q_seq_len=context_q_seq_len,
+              orig_kv_seq_len=actual_kv_seq_len,
+              heads_per_tile=heads_per_tile,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=True,
+              residual_checkpoint_name=residual_checkpoint_name,
+              transpose_out=transpose_out,
+              q_tail_is_zero=True,
+          )
+          km_axis = 0 if k_mean is not None else None
+          raw_out = jax.vmap(splash_kernel, in_axes=(0, 0, 0, 0, km_axis, None))(
+              query, key, value, mk_arr, k_mean, all_fixed
+          )
+        else:
+          splash_kernel_uniform = custom_splash.make_splash_mha(
+              block_sizes=bsizes,
+              orig_q_seq_len=context_q_seq_len,
+              orig_kv_seq_len=actual_kv_seq_len,
+              heads_per_tile=heads_per_tile,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=True,
+              uniform_fixed_m=True,
+              transpose_out=transpose_out,
+          )
+          splash_kernel_hybrid = custom_splash.make_splash_mha(
+              block_sizes=bsizes,
+              orig_q_seq_len=context_q_seq_len,
+              orig_kv_seq_len=actual_kv_seq_len,
+              heads_per_tile=heads_per_tile,
+              use_base2_exp=use_base2_exp,
+              use_experimental_scheduler=use_experimental_scheduler,
+              vmem_limit_bytes=vmem_limit_bytes,
+              use_fixed_m=True,
+              uniform_fixed_m=False,
+              transpose_out=transpose_out,
+          )
 
-        def _run_uniform(q, k, v, m, km):
-          return jax.vmap(splash_kernel_uniform, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+          def _run_uniform(q, k, v, m, km):
+            return jax.vmap(splash_kernel_uniform, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
 
-        def _run_hybrid(q, k, v, m, km):
-          return jax.vmap(splash_kernel_hybrid, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
+          def _run_hybrid(q, k, v, m, km):
+            return jax.vmap(splash_kernel_hybrid, in_axes=(0, 0, 0, 0, 0))(q, k, v, m, km)
 
-        raw_out = jax.lax.cond(all_fixed, _run_uniform, _run_hybrid, query, key, value, mk_arr, k_mean)
+          raw_out = jax.lax.cond(all_fixed, _run_uniform, _run_hybrid, query, key, value, mk_arr, k_mean)
       else:
         splash_kernel = custom_splash.make_splash_mha(
             block_sizes=bsizes,
@@ -2160,6 +2199,7 @@ def _ulysses_ring_custom_attention(
             use_fixed_m=False,
             residual_checkpoint_name=residual_checkpoint_name,
             transpose_out=transpose_out,
+            q_tail_is_zero=True,
         )
         raw_out = jax.vmap(splash_kernel, in_axes=(0, 0, 0))(query, key, value)
       if r1_skip_inner_swap:

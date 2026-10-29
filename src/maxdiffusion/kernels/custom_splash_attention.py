@@ -638,6 +638,7 @@ def _flash_attention_kernel_kcentered(
     use_fixed_m: bool = False,
     uniform_fixed_m: bool = False,
     use_k_centering: bool = True,
+    save_lse: bool = False,
     transpose_out: bool = False,
 ):
   return _flash_attention_kernel_impl(
@@ -664,6 +665,7 @@ def _flash_attention_kernel_kcentered(
       use_fixed_m=use_fixed_m,
       uniform_fixed_m=uniform_fixed_m,
       use_k_centering=use_k_centering,
+      save_lse=save_lse,
       transpose_out=transpose_out,
   )
 
@@ -964,13 +966,6 @@ def _splash_attention_forward(
     )
     kernel_args = (mk, q, k, v)
   else:
-    if save_residuals:
-      # `_flash_attention_kernel_kcentered` has no `save_lse`, so the 5th output
-      # would be the raw denominator `l`, not the LSE the VJP expects.
-      raise NotImplementedError(
-          "save_residuals=True (LSE residual for the VJP) is not supported with k_mean; "
-          "_flash_attention_kernel_kcentered does not emit the LSE."
-      )
     if k_mean.shape != (num_kv_heads, head_dim_qk):
       raise ValueError(f"k_mean must have shape ({num_kv_heads}, {head_dim_qk}) indexed by KV head, got {k_mean.shape}")
     k_mean_tiled = jnp.repeat(k_mean[:, None, :], NUM_SUBLANES, axis=1)
@@ -994,6 +989,7 @@ def _splash_attention_forward(
         use_fixed_m=use_fixed_m,
         uniform_fixed_m=uniform_fixed_m,
         use_k_centering=True,
+        save_lse=save_residuals,
         transpose_out=transpose_out,
     )
     kernel_args = (mk, q, k, v, k_mean_tiled)
@@ -1556,9 +1552,9 @@ def _flash_attention_bwd_fused_kernel(
   slice bounds and accumulating dK/dV in VMEM across Q steps and KV head groups.
   """
   float32 = jnp.float32
-  j, h_q, i = pl.program_id(0), pl.program_id(1), pl.program_id(2)
   exp = jnp.exp2 if use_base2_exp else jnp.exp
 
+  j, h_q, i = pl.program_id(0), pl.program_id(1), pl.program_id(2)
   q_head_in_group = lax.rem(h_q, q_heads_per_kv_head)
   should_init_dkv = jnp.logical_and(i == 0, q_head_in_group == 0)
   should_write_dkv = jnp.logical_and(i == grid_height - 1, q_head_in_group == q_heads_per_kv_head - 1)
@@ -1677,7 +1673,11 @@ def _splash_attention_bwd_fused(
     use_base2_exp: bool = True,
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
+    interpret: bool | None = None,
+    q_tail_is_zero: bool = False,
 ):
+  if interpret is None:
+    interpret = jax.default_backend() == "cpu"
   num_q_heads, _, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
   num_kv_heads = k.shape[0]
@@ -1695,7 +1695,10 @@ def _splash_attention_bwd_fused(
 
   if actual_q_seq_len < active_q_len:
     pad_q = active_q_len - actual_q_seq_len
-    q_bwd = jnp.pad(q[:, :actual_q_seq_len, :], ((0, 0), (0, pad_q), (0, 0)))
+    if not interpret and q_tail_is_zero and q.shape[1] >= active_q_len:
+      q_bwd = q[:, :active_q_len, :] if q.shape[1] > active_q_len else q
+    else:
+      q_bwd = jnp.pad(q[:, :actual_q_seq_len, :], ((0, 0), (0, pad_q), (0, 0)))
     do_bwd = jnp.pad(do[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
     lse_bwd = jnp.pad(lse[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
     di_bwd = jnp.pad(di[:, :, :actual_q_seq_len], ((0, 0), (0, 0), (0, pad_q)))
@@ -1707,21 +1710,35 @@ def _splash_attention_bwd_fused(
   else:
     q_bwd, do_bwd, lse_bwd, di_bwd = q, do, lse, di
 
-  k_bwd = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
-  v_bwd = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
+  unpadded_kv_ok = (
+      not interpret
+      and actual_kv_seq_len == padded_kv_seq_len
+      and actual_kv_seq_len % NUM_SUBLANES == 0
+      and head_dim_qk % NUM_LANES == 0
+      and head_dim_v % NUM_LANES == 0
+  )
+  if unpadded_kv_ok:
+    k_bwd = k
+    v_bwd = v
+    dkv_out_len = actual_kv_seq_len
+  else:
+    k_bwd = jnp.pad(k, ((0, 0), (0, active_kv_len - k.shape[1]), (0, 0))) if k.shape[1] < active_kv_len else k
+    v_bwd = jnp.pad(v, ((0, 0), (0, active_kv_len - v.shape[1]), (0, 0))) if v.shape[1] < active_kv_len else v
+    dkv_out_len = active_kv_len
 
-  use_dq_aliasing = block_sizes.dq_reduction_steps == 3 and grid_width > 3
+  dq_steps = block_sizes.dq_reduction_steps
+  use_dq_aliasing = dq_steps is not None and dq_steps >= 2 and grid_width > dq_steps
 
   if use_dq_aliasing:
 
     def dq_index_map_aliased(j, h_q, i, *_):
-      return (j % 3, h_q, i, 0)
+      return (j % dq_steps, h_q, i, 0)
 
     dq_spec = pl.BlockSpec((None, None, bq, head_dim_qk), dq_index_map_aliased)
     dq_alias_spec = dq_spec
     dq_dtype = jnp.float32
-    dq_shape = jax.ShapeDtypeStruct((3, num_q_heads, active_q_len, head_dim_qk), dq_dtype)
-    dq_init = jnp.zeros((3, num_q_heads, active_q_len, head_dim_qk), dtype=dq_dtype)
+    dq_shape = jax.ShapeDtypeStruct((dq_steps, num_q_heads, active_q_len, head_dim_qk), dq_dtype)
+    dq_init = jnp.zeros((dq_steps, num_q_heads, active_q_len, head_dim_qk), dtype=dq_dtype)
   else:
     if grid_width > 3:
       warnings.warn(
@@ -1739,33 +1756,47 @@ def _splash_attention_bwd_fused(
     dq_shape = jax.ShapeDtypeStruct((grid_width, num_q_heads, active_q_len, head_dim_qk), dq_dtype)
     dq_init = None
 
+  def q_map(j, h_q, i, *_):
+    del j
+    return (h_q, i, 0)
+
+  def do_map(j, h_q, i, *_):
+    del j
+    return (h_q, 0, i)
+
+  def kv_map(j, h_q, i, *_):
+    del i
+    return (h_q // q_heads_per_kv_head, j, 0)
+
+  grid = (grid_width, num_q_heads, grid_height)
+  dim_semantics = ("arbitrary", "arbitrary", "arbitrary")
+
   in_specs = [
-      pl.BlockSpec((None, bq, head_dim_qk), lambda j, h_q, i, *_: (h_q, i, 0)),
-      pl.BlockSpec((None, bkv, head_dim_qk), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
-      pl.BlockSpec((None, bkv, head_dim_v), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
-      pl.BlockSpec((None, head_dim_v, bq), lambda j, h_q, i, *_: (h_q, 0, i)),
-      pl.BlockSpec((None, NUM_SUBLANES, bq), lambda j, h_q, i, *_: (h_q, 0, i)),
-      pl.BlockSpec((None, NUM_SUBLANES, bq), lambda j, h_q, i, *_: (h_q, 0, i)),
+      pl.BlockSpec((None, bq, head_dim_qk), q_map),
+      pl.BlockSpec((None, bkv, head_dim_qk), kv_map),
+      pl.BlockSpec((None, bkv, head_dim_v), kv_map),
+      pl.BlockSpec((None, head_dim_v, bq), do_map),
+      pl.BlockSpec((None, NUM_SUBLANES, bq), do_map),
+      pl.BlockSpec((None, NUM_SUBLANES, bq), do_map),
       dq_alias_spec,
   ]
 
   out_shapes = [
       dq_shape,
-      jax.ShapeDtypeStruct((num_kv_heads, active_kv_len, head_dim_qk), k.dtype),
-      jax.ShapeDtypeStruct((num_kv_heads, active_kv_len, head_dim_v), v.dtype),
+      jax.ShapeDtypeStruct((num_kv_heads, dkv_out_len, head_dim_qk), k.dtype),
+      jax.ShapeDtypeStruct((num_kv_heads, dkv_out_len, head_dim_v), v.dtype),
       jax.ShapeDtypeStruct((bq, head_dim_qk), jnp.float32),
       jax.ShapeDtypeStruct((bkv, head_dim_qk), jnp.float32),
       jax.ShapeDtypeStruct((bkv, head_dim_v), jnp.float32),
   ]
   out_specs = [
       dq_spec,
-      pl.BlockSpec((None, bkv, head_dim_qk), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
-      pl.BlockSpec((None, bkv, head_dim_v), lambda j, h_q, i, *_: (h_q // q_heads_per_kv_head, j, 0)),
+      pl.BlockSpec((None, bkv, head_dim_qk), kv_map),
+      pl.BlockSpec((None, bkv, head_dim_v), kv_map),
       pl.BlockSpec((bq, head_dim_qk), lambda *_: (0, 0)),
       pl.BlockSpec((bkv, head_dim_qk), lambda *_: (0, 0)),
       pl.BlockSpec((bkv, head_dim_v), lambda *_: (0, 0)),
   ]
-  grid = (grid_width, num_q_heads, grid_height)
   input_output_aliases = {6: 0} if use_dq_aliasing else {}
   itemsize = q.dtype.itemsize
   cost_estimate = _attention_cost_estimate(
@@ -1779,7 +1810,7 @@ def _splash_attention_bwd_fused(
       bytes_accessed=(
           grid_width * num_q_heads * active_q_len * ((head_dim_qk + head_dim_v) * itemsize + 2 * NUM_SUBLANES * 4)
           + 2 * grid_width * num_q_heads * active_q_len * head_dim_qk * 4  # f32 dQ partials read+write
-          + 2 * num_kv_heads * active_kv_len * (head_dim_qk + head_dim_v) * itemsize  # K, V in; dK, dV out
+          + 2 * num_kv_heads * dkv_out_len * (head_dim_qk + head_dim_v) * itemsize  # K, V in; dK, dV out
       ),
   )
 
@@ -1803,7 +1834,7 @@ def _splash_attention_bwd_fused(
           grid=grid,
       ),
       compiler_params=pltpu.CompilerParams(
-          dimension_semantics=("arbitrary", "arbitrary", "arbitrary"),
+          dimension_semantics=dim_semantics,
           flags={"XLA_TPU_FORCE_LP_LLO_SCHEDULER": use_experimental_scheduler},
           disable_bounds_checks=True,
           skip_device_barrier=True,
@@ -1812,6 +1843,7 @@ def _splash_attention_bwd_fused(
       out_shape=out_shapes,
       input_output_aliases=input_output_aliases,
       cost_estimate=cost_estimate,
+      interpret=interpret,
   )(q_bwd, k_bwd, v_bwd, do_bwd, lse_bwd, di_bwd, dq_init)
 
   dq_unreduced, dk, dv = all_out[0], all_out[1], all_out[2]
@@ -1825,11 +1857,11 @@ def _splash_attention_bwd_fused(
   elif active_q_len < padded_q_seq_len:
     dq = jnp.pad(dq, ((0, 0), (0, padded_q_seq_len - active_q_len), (0, 0)))
 
-  if active_kv_len > padded_kv_seq_len:
+  if dkv_out_len > padded_kv_seq_len:
     dk = dk[:, :padded_kv_seq_len, :]
     dv = dv[:, :padded_kv_seq_len, :]
-  elif active_kv_len < padded_kv_seq_len:
-    pad_kv = padded_kv_seq_len - active_kv_len
+  elif dkv_out_len < padded_kv_seq_len:
+    pad_kv = padded_kv_seq_len - dkv_out_len
     dk = jnp.pad(dk, ((0, 0), (0, pad_kv), (0, 0)))
     dv = jnp.pad(dv, ((0, 0), (0, pad_kv), (0, 0)))
 
@@ -1850,7 +1882,11 @@ def _splash_attention_backward(
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
     di: jax.Array | None = None,
+    interpret: bool | None = None,
+    q_tail_is_zero: bool = False,
 ):
+  if interpret is None:
+    interpret = jax.default_backend() == "cpu"
   num_q_heads, padded_q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
   num_kv_heads = k.shape[0]
@@ -1883,6 +1919,8 @@ def _splash_attention_backward(
         use_base2_exp=use_base2_exp,
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
+        interpret=interpret,
+        q_tail_is_zero=q_tail_is_zero,
     )
 
   # --- 1. Compute dQ ---
@@ -2067,6 +2105,7 @@ def _splash_attention_backward(
         "use_experimental_scheduler",
         "vmem_limit_bytes",
         "residual_checkpoint_name",
+        "q_tail_is_zero",
     ),
 )
 def _splash_attention_custom(
@@ -2080,7 +2119,9 @@ def _splash_attention_custom(
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
     residual_checkpoint_name: str | None = None,
+    q_tail_is_zero: bool = False,
 ):
+  del q_tail_is_zero
   out = _splash_attention_forward(
       q,
       k,
@@ -2109,7 +2150,9 @@ def _splash_attention_fwd(
     use_experimental_scheduler: bool = False,
     vmem_limit_bytes: int | None = None,
     residual_checkpoint_name: str | None = None,
+    q_tail_is_zero: bool = False,
 ):
+  del q_tail_is_zero
   out, lse = _splash_attention_forward(
       q,
       k,
@@ -2136,6 +2179,7 @@ def _splash_attention_bwd(
     use_experimental_scheduler: bool,
     vmem_limit_bytes: int | None,
     residual_checkpoint_name: str | None,
+    q_tail_is_zero: bool,
     residuals,
     do: jax.Array,
 ):
@@ -2154,11 +2198,197 @@ def _splash_attention_bwd(
       use_base2_exp=use_base2_exp,
       use_experimental_scheduler=use_experimental_scheduler,
       vmem_limit_bytes=vmem_limit_bytes,
+      q_tail_is_zero=q_tail_is_zero,
   )
   return dq, dk, dv
 
 
 _splash_attention_custom.defvjp(_splash_attention_fwd, _splash_attention_bwd)
+
+
+def _run_splash_fixed_m_forward(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    mk: jax.Array | None,
+    k_mean: jax.Array | None,
+    all_fixed: jax.Array | None,
+    *,
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None,
+    kv_seq_len: int | None,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    use_fixed_m: bool,
+    uniform_fixed_m: bool,
+    save_residuals: bool,
+):
+  def _call(uniform_flag: bool, q_, k_, v_, mk_, km_):
+    return _splash_attention_forward(
+        q_,
+        k_,
+        v_,
+        block_sizes,
+        q_seq_len=q_seq_len,
+        kv_seq_len=kv_seq_len,
+        use_base2_exp=use_base2_exp,
+        use_experimental_scheduler=use_experimental_scheduler,
+        vmem_limit_bytes=vmem_limit_bytes,
+        use_fixed_m=use_fixed_m,
+        mk=mk_,
+        uniform_fixed_m=uniform_flag,
+        k_mean=km_,
+        save_residuals=save_residuals,
+    )
+
+  if use_fixed_m and all_fixed is not None:
+    return jax.lax.cond(
+        all_fixed,
+        functools.partial(_call, True),
+        functools.partial(_call, False),
+        q,
+        k,
+        v,
+        mk,
+        k_mean,
+    )
+  return _call(uniform_fixed_m, q, k, v, mk, k_mean)
+
+
+@functools.partial(
+    jax.custom_vjp,
+    nondiff_argnames=(
+        "block_sizes",
+        "q_seq_len",
+        "kv_seq_len",
+        "use_base2_exp",
+        "use_experimental_scheduler",
+        "vmem_limit_bytes",
+        "use_fixed_m",
+        "uniform_fixed_m",
+        "residual_checkpoint_name",
+        "q_tail_is_zero",
+    ),
+)
+def _splash_attention_fixed_m_custom(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    mk: jax.Array | None,
+    k_mean: jax.Array | None,
+    all_fixed: jax.Array | None,
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None = None,
+    kv_seq_len: int | None = None,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+    use_fixed_m: bool = True,
+    uniform_fixed_m: bool = False,
+    residual_checkpoint_name: str | None = None,
+    q_tail_is_zero: bool = False,
+):
+  del q_tail_is_zero
+  out = _run_splash_fixed_m_forward(
+      q,
+      k,
+      v,
+      mk,
+      k_mean,
+      all_fixed,
+      block_sizes=block_sizes,
+      q_seq_len=q_seq_len,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      use_fixed_m=use_fixed_m,
+      uniform_fixed_m=uniform_fixed_m,
+      save_residuals=False,
+  )
+  if residual_checkpoint_name is not None:
+    out = jax.ad_checkpoint.checkpoint_name(out, name=residual_checkpoint_name)
+  return out
+
+
+def _splash_attention_fixed_m_fwd(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    mk: jax.Array | None,
+    k_mean: jax.Array | None,
+    all_fixed: jax.Array | None,
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None = None,
+    kv_seq_len: int | None = None,
+    use_base2_exp: bool = True,
+    use_experimental_scheduler: bool = False,
+    vmem_limit_bytes: int | None = None,
+    use_fixed_m: bool = True,
+    uniform_fixed_m: bool = False,
+    residual_checkpoint_name: str | None = None,
+    q_tail_is_zero: bool = False,
+):
+  del q_tail_is_zero
+  out, lse = _run_splash_fixed_m_forward(
+      q,
+      k,
+      v,
+      mk,
+      k_mean,
+      all_fixed,
+      block_sizes=block_sizes,
+      q_seq_len=q_seq_len,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      use_fixed_m=use_fixed_m,
+      uniform_fixed_m=uniform_fixed_m,
+      save_residuals=True,
+  )
+  if residual_checkpoint_name is not None:
+    out = jax.ad_checkpoint.checkpoint_name(out, name=residual_checkpoint_name)
+    lse = jax.ad_checkpoint.checkpoint_name(lse, name=residual_checkpoint_name)
+  return out, (q, k, v, out, lse)
+
+
+def _splash_attention_fixed_m_bwd(
+    block_sizes: _BlockSizes,
+    q_seq_len: int | None,
+    kv_seq_len: int | None,
+    use_base2_exp: bool,
+    use_experimental_scheduler: bool,
+    vmem_limit_bytes: int | None,
+    use_fixed_m: bool,
+    uniform_fixed_m: bool,
+    residual_checkpoint_name: str | None,
+    q_tail_is_zero: bool,
+    residuals,
+    do: jax.Array,
+):
+  del use_fixed_m, uniform_fixed_m, residual_checkpoint_name
+  q, k, v, out, lse = residuals
+  dq, dk, dv = _splash_attention_backward(
+      q,
+      k,
+      v,
+      out,
+      lse,
+      do,
+      block_sizes,
+      q_seq_len=q_seq_len,
+      kv_seq_len=kv_seq_len,
+      use_base2_exp=use_base2_exp,
+      use_experimental_scheduler=use_experimental_scheduler,
+      vmem_limit_bytes=vmem_limit_bytes,
+      q_tail_is_zero=q_tail_is_zero,
+  )
+  return dq, dk, dv, None, None, None
+
+
+_splash_attention_fixed_m_custom.defvjp(_splash_attention_fixed_m_fwd, _splash_attention_fixed_m_bwd)
 
 
 def make_splash_mha(
@@ -2174,16 +2404,17 @@ def make_splash_mha(
     interpret: bool | None = None,
     residual_checkpoint_name: str | None = None,
     transpose_out: bool | None = None,
+    q_tail_is_zero: bool = False,
 ):
   """Builds a splash multi-head attention callable.
 
   Note:
-    - Standard dense training uses `_splash_attention_custom` (which defines custom VJP
-      forward and backward rules with activation checkpointing).
-    - `heads_per_tile > 1`, `use_fixed_m=True`, `mk is not None`, `k_mean is not None`,
-      `interpret=True`, and `transpose_out=True` are inference/testing paths that execute
-      forward-only kernels without custom backward passes. `interpret=False` behaves like
-      the default (`None`) and keeps the custom VJP.
+    - Standard dense training uses `_splash_attention_custom` and `use_fixed_m` / `k_mean`
+      training uses `_splash_attention_fixed_m_custom` (custom VJP forward + backward with
+      activation checkpointing).
+    - `heads_per_tile > 1`, `interpret=True`, and `transpose_out=True` are inference/testing
+      paths that execute forward-only kernels without custom backward passes. `interpret=False`
+      behaves like the default (`None`) and keeps the custom VJP.
   """
   if transpose_out is None:
     transpose_out = False
@@ -2192,9 +2423,7 @@ def make_splash_mha(
         "fixed-m softmax bounds are derived strictly for base-2 exponents. Please set use_base2_exp=True."
     )
 
-  def _splash_attention(q, k, v, mk=None, k_mean=None):
-    # Note: heads_per_tile > 1 and fixed-m/mk/k_mean/transpose_out paths are forward-only (inference-only);
-    # they do not define a custom backward VJP rule.
+  def _splash_attention(q, k, v, mk=None, k_mean=None, all_fixed=None):
     if use_fixed_m and mk is None:
       raise ValueError("`mk` metadata array is required when `use_fixed_m=True`.")
     if heads_per_tile > 1:
@@ -2213,7 +2442,7 @@ def make_splash_mha(
           vmem_limit_bytes=vmem_limit_bytes,
           transpose_out=transpose_out,
       )
-    if use_fixed_m or mk is not None or k_mean is not None or interpret or transpose_out:
+    if interpret or transpose_out:
       return _splash_attention_forward(
           q,
           k,
@@ -2231,6 +2460,25 @@ def make_splash_mha(
           interpret=interpret,
           transpose_out=transpose_out,
       )
+    if use_fixed_m or mk is not None or k_mean is not None:
+      return _splash_attention_fixed_m_custom(
+          q,
+          k,
+          v,
+          mk,
+          k_mean,
+          all_fixed,
+          block_sizes=block_sizes,
+          q_seq_len=orig_q_seq_len,
+          kv_seq_len=orig_kv_seq_len,
+          use_base2_exp=use_base2_exp,
+          use_experimental_scheduler=use_experimental_scheduler,
+          vmem_limit_bytes=vmem_limit_bytes,
+          use_fixed_m=use_fixed_m,
+          uniform_fixed_m=uniform_fixed_m,
+          residual_checkpoint_name=residual_checkpoint_name,
+          q_tail_is_zero=q_tail_is_zero,
+      )
     return _splash_attention_custom(
         q,
         k,
@@ -2242,6 +2490,7 @@ def make_splash_mha(
         use_experimental_scheduler=use_experimental_scheduler,
         vmem_limit_bytes=vmem_limit_bytes,
         residual_checkpoint_name=residual_checkpoint_name,
+        q_tail_is_zero=q_tail_is_zero,
     )
 
   return _splash_attention
