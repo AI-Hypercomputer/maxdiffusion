@@ -16,6 +16,7 @@ limitations under the License.
 
 import functools
 import datetime
+import os
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -442,11 +443,18 @@ class WanTrainer2_2(BaseWanTrainer):
         )
 
     with ThreadPoolExecutor(max_workers=1) as executor:
+      second_prof_enabled = os.environ.get("WAN_SECOND_PROFILE_WINDOW") == "1"
+      second_prof_start = last_profiling_step + 3
+      second_prof_end = second_prof_start + 2
+
       for step in np.arange(start_step, self.config.max_train_steps):
         step_int = int(step)
-        if max_utils.profiler_enabled(self.config) and step == first_profiling_step:
+        if max_utils.profiler_enabled(self.config) and (
+            step == first_profiling_step or (second_prof_enabled and step == second_prof_start)
+        ):
           _flush_pending()
-          self._profiler = max_utils.Profiler(self.config)
+          sess_name = "window2" if (second_prof_enabled and step == second_prof_start) else None
+          self._profiler = max_utils.Profiler(self.config, session_name=sess_name)
           self._profiler.start()
           prev_step_completion = datetime.datetime.now()
         step_rng = jax.random.fold_in(base_rng, step_int)
@@ -493,10 +501,13 @@ class WanTrainer2_2(BaseWanTrainer):
         else:
           host_step_low += 1
 
-        if max_utils.profiler_enabled(self.config) and step == last_profiling_step:
+        if max_utils.profiler_enabled(self.config) and (
+            step == last_profiling_step or (second_prof_enabled and step == second_prof_end)
+        ):
           _flush_pending()
           if self._profiler:
             self._profiler.stop()
+            self._profiler = None
           prev_step_completion = datetime.datetime.now()
 
         if self.config.eval_every > 0 and (step + 1) % self.config.eval_every == 0:
