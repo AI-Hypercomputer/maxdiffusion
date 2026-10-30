@@ -20,9 +20,13 @@
 # isomorphic to tpu7x-2x4x4 FSDP=16, CP=4 at per_device_batch_size=0.25):
 #   - Stock tpu-recipes baseline (main @ eba2219a + MODE=baseline):
 #       12.7255 s/step | 430.73 true TFLOP/s/TC (37.29% True MFU) | PJRT 21.03 GiB
-#   - Optimized champion (branch opt/wan22-train-tpu7x-diagon + MODE=optimized):
+#   - Phase E champion (cfd44a89):
 #       11.7535 s/step | 466.35 true TFLOP/s/TC (40.38% True MFU) | PJRT 17.04 GiB
-#       (-972.0 ms/step = -7.64% step time / +8.27% throughput, max_rel_diff=0.00055)
+#   - Phase F champion (branch opt/wan22-train-tpu7x-diagon + MODE=optimized):
+#       ~11.580 s/step on 2x2x2 (FSDP=4, Tier 1) | ~11.575 s/step on 2x4x4 (FSDP=16, Tier 2 raw_v)
+#       473.1–473.5 true TFLOP/s/TC (40.96–41.00% True MFU) | PJRT 17.04 GiB (2x2x2) / 4.26 GiB (2x4x4)
+#       (-173.3 ms/step same-node 40L A/B on FSDP<8; -178.2 ms/step 40L-eq on FSDP>=8;
+#        ~-1.15 s/step = -9.0% step time / +9.9% throughput vs baseline, max_rel_diff<=0.00039)
 #
 # Usage:
 #   BASE_OUTPUT_DIR=gs://<bucket>/wan22-repro \
@@ -43,6 +47,12 @@
 #   MAX_TRAIN_STEPS         Total steps to run (default: 51; steady-state median uses steps 25..48)
 #   ICI_FSDP_PARALLELISM    FSDP axis size (-1 auto-fills devices_per_slice / 4: 16 on 2x4x4, 4 on 2x2x2)
 #   ICI_CONTEXT_PARALLELISM Context/Ulysses axis size (default: 4)
+#   WAN_TIER2_SAVE_QKV      Checkpoint tier selector for MODE=optimized (default: "auto"):
+#                             "auto"  -> Tier 1 on FSDP<8 / <=2 hosts (2x2x2), Tier 2 ("raw_v") on FSDP>=8 / >=4 hosts (2x2x4, 2x4x4)
+#                             "tier1" -> ["self_attn_output","self_attn","cross_attn","self_attn_proj","hidden_states","mlp_input","ffn_proj","ffn_out"]
+#                             "raw_v" -> swaps "cross_attn" -> "raw_value_proj" (optimal when FSDP>=8 frees >=8.5 GiB/TC TrainState HBM)
+#                             "vk"    -> adds "raw_key_proj" on top of "raw_v"
+#                             "qkv"   -> adds "raw_key_proj","raw_query_proj" on top of "raw_v"
 #   ENABLE_DIAGON           Set "true" to enable Google ML Diagnostics + on-demand XProf (default: false)
 #   PROFILER_GCS_PATH       Diagon profile output path (default: $BASE_OUTPUT_DIR/diagon)
 #   EXTRA_LIBTPU            Extra flags appended to LIBTPU_INIT_ARGS
@@ -126,6 +136,9 @@ RECIPE_LIBTPU_ARGS=(
 )
 
 DEFAULT_LIBTPU="${RECIPE_LIBTPU_ARGS[*]}"
+if [[ "${MODE}" == "optimized" ]]; then
+  DEFAULT_LIBTPU="${DEFAULT_LIBTPU} --xla_tpu_force_async_all_to_all=true"
+fi
 if [[ -n "${EXTRA_LIBTPU:-}" ]]; then
   DEFAULT_LIBTPU="${DEFAULT_LIBTPU} ${EXTRA_LIBTPU}"
 fi
@@ -191,12 +204,47 @@ else
 fi
 
 if [[ "${MODE}" == "optimized" ]]; then
+  WAN_TIER2_SAVE_QKV="${WAN_TIER2_SAVE_QKV:-auto}"
+  RESOLVED_TIER="${WAN_TIER2_SAVE_QKV}"
+  if [[ "${RESOLVED_TIER}" == "auto" ]]; then
+    if [[ "${ICI_FSDP_PARALLELISM}" != "-1" ]] && (( ICI_FSDP_PARALLELISM >= 8 )); then
+      RESOLVED_TIER="raw_v"
+    elif [[ "${ICI_FSDP_PARALLELISM}" != "-1" ]]; then
+      RESOLVED_TIER="tier1"
+    else
+      # Count comma-separated hosts in TPU_WORKER_HOSTNAMES (>=4 hosts => >=32 TCs => FSDP>=8 at CP=4)
+      IFS=',' read -r -a _tpu_hosts <<< "${TPU_WORKER_HOSTNAMES:-localhost}"
+      if (( ${#_tpu_hosts[@]} >= 4 )); then
+        RESOLVED_TIER="raw_v"
+      else
+        RESOLVED_TIER="tier1"
+      fi
+    fi
+  fi
+  case "${RESOLVED_TIER}" in
+    tier1 | none)
+      OPT_SAVED_NAMES='["self_attn_output","self_attn","cross_attn","self_attn_proj","hidden_states","mlp_input","ffn_proj","ffn_out"]'
+      ;;
+    raw_v)
+      OPT_SAVED_NAMES='["self_attn_output","self_attn","self_attn_proj","hidden_states","mlp_input","ffn_proj","ffn_out","raw_value_proj"]'
+      ;;
+    vk)
+      OPT_SAVED_NAMES='["self_attn_output","self_attn","self_attn_proj","hidden_states","mlp_input","ffn_proj","ffn_out","raw_value_proj","raw_key_proj"]'
+      ;;
+    qkv)
+      OPT_SAVED_NAMES='["self_attn_output","self_attn","self_attn_proj","hidden_states","mlp_input","ffn_proj","ffn_out","raw_value_proj","raw_key_proj","raw_query_proj"]'
+      ;;
+    *)
+      echo "ERROR: Invalid WAN_TIER2_SAVE_QKV='${WAN_TIER2_SAVE_QKV}' (expected: auto, tier1, raw_v, vk, qkv)" >&2
+      exit 2
+      ;;
+  esac
   MODE_ARGS=(
     "attention=ulysses_custom_fixed_m_per_q_block"
     "use_k_centering=False"
     "ulysses_attention_chunks=5"
     "use_fused_rope_kernel=True"
-    'names_which_can_be_saved=["attn_output","self_attn","cross_attn","cross_attn_input","hidden_states","mlp_input","ffn_proj"]'
+    "names_which_can_be_saved=${OPT_SAVED_NAMES}"
     'flash_block_sizes={"block_q": 2816, "block_kv": 4096, "block_kv_compute": 4096, "block_kv_compute_in": 2048, "block_q_dkv": 2048, "block_kv_dkv": 4096, "block_kv_dkv_compute": 4096, "block_kv_dkv_compute_in": 512, "dq_reduction_steps": 2, "use_fused_bwd_kernel": true}'
   )
 else

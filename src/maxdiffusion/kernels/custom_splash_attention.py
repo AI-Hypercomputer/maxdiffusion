@@ -1532,7 +1532,6 @@ def _flash_attention_bwd_fused_kernel(
     dq_ref,
     dk_ref,
     dv_ref,
-    dq_scratch_ref,
     dk_scratch_ref,
     dv_scratch_ref,
     *,
@@ -1566,10 +1565,9 @@ def _flash_attention_bwd_fused_kernel(
 
   assert bkv % bkv_compute == 0
 
-  def _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di, *, is_first_outer: bool):
+  def _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di, dq_acc):
     step = bkv_compute_in
     do_cast = do.astype(v_chunk.dtype)
-    dq_acc = None if is_first_outer else dq_scratch_ref[...]
     for idx in range(0, qk.shape[0], step):
       sub_len = min(step, qk.shape[0] - idx)
       sub_slice = pl.ds(base_offset + idx, sub_len)
@@ -1591,20 +1589,26 @@ def _flash_attention_bwd_fused_kernel(
           preferred_element_type=float32,
       )
       ds_curr = p_curr * (dp_curr - di)
+      ds_bf16 = ds_curr.astype(q.dtype)
       dv_scratch_ref[sub_slice, :] = dv_scratch_ref[sub_slice, :] + dv_curr
 
       dk_curr = lax.dot_general(
-          ds_curr.astype(q.dtype),
+          ds_bf16,
           q,
           (((1,), (0,)), ((), ())),
           preferred_element_type=float32,
       )
       dk_scratch_ref[sub_slice, :] = dk_scratch_ref[sub_slice, :] + dk_curr
-      dq_tile = _compute_dq_tile(ds_curr, k_slice)
+      dq_tile = lax.dot_general(
+          ds_bf16,
+          k_slice,
+          (((0,), (0,)), ((), ())),
+          preferred_element_type=float32,
+      )
       dq_acc = dq_tile if dq_acc is None else (dq_acc + dq_tile)
-    dq_scratch_ref[...] = dq_acc
+    return dq_acc
 
-  def _run_outer(kv_compute_index: int, chunk_len: int):
+  def _run_outer(kv_compute_index: int, chunk_len: int, dq_acc):
     q = q_ref[...]
     do = do_ref[...]
     lse = lse_ref[0:1, :]
@@ -1614,40 +1618,42 @@ def _flash_attention_bwd_fused_kernel(
     k_chunk = k_ref[slice_k, :]
     v_chunk = v_ref[slice_k, :]
     qk = lax.dot_general(k_chunk, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-    _bwd_fused_inner(
-        base_offset, qk, k_chunk, v_chunk, q, do, lse, di, is_first_outer=(kv_compute_index == 0)
-    )
+    return _bwd_fused_inner(base_offset, qk, k_chunk, v_chunk, q, do, lse, di, dq_acc)
+
+  def _write_dq(dq_acc):
+    if use_base2_exp:
+      dq_val = (dq_acc * LN2).astype(dq_ref.dtype)
+    else:
+      dq_val = dq_acc.astype(dq_ref.dtype)
+    if use_dq_aliasing:
+      dq_ref[...] = dq_alias_ref[...] + dq_val
+    else:
+      dq_ref[...] = dq_val
 
   @pl.when(j != grid_width - 1)
   def body():
+    dq_acc = None
     for outer_idx in range(bkv // bkv_compute):
-      _run_outer(outer_idx, bkv_compute)
+      dq_acc = _run_outer(outer_idx, bkv_compute, dq_acc)
+    _write_dq(dq_acc)
 
   @pl.when(j == grid_width - 1)
   def last_body():
+    dq_acc = None
     if kv_seq_len % bkv == 0:
       for outer_idx in range(bkv // bkv_compute):
-        _run_outer(outer_idx, bkv_compute)
+        dq_acc = _run_outer(outer_idx, bkv_compute, dq_acc)
     else:
       remain_kv_seq_len = kv_seq_len % bkv
       iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
       if remain_kv_seq_len % bkv_compute == 0:
         for outer_idx in range(iter_num):
-          _run_outer(outer_idx, bkv_compute)
+          dq_acc = _run_outer(outer_idx, bkv_compute, dq_acc)
       else:
         for outer_idx in range(iter_num - 1):
-          _run_outer(outer_idx, bkv_compute)
-        _run_outer(iter_num - 1, kv_seq_len % bkv_compute)
-
-  if use_base2_exp:
-    dq_val = (dq_scratch_ref[...] * LN2).astype(dq_ref.dtype)
-  else:
-    dq_val = dq_scratch_ref[...].astype(dq_ref.dtype)
-
-  if use_dq_aliasing:
-    dq_ref[...] = dq_alias_ref[...] + dq_val
-  else:
-    dq_ref[...] = dq_val
+          dq_acc = _run_outer(outer_idx, bkv_compute, dq_acc)
+        dq_acc = _run_outer(iter_num - 1, kv_seq_len % bkv_compute, dq_acc)
+    _write_dq(dq_acc)
 
   @pl.when(should_write_dkv)
   def end_dkv():
@@ -1789,7 +1795,6 @@ def _splash_attention_bwd_fused(
       dq_shape,
       jax.ShapeDtypeStruct((num_kv_heads, dkv_out_len, head_dim_qk), k.dtype),
       jax.ShapeDtypeStruct((num_kv_heads, dkv_out_len, head_dim_v), v.dtype),
-      jax.ShapeDtypeStruct((bq, head_dim_qk), jnp.float32),
       jax.ShapeDtypeStruct((bkv, head_dim_qk), jnp.float32),
       jax.ShapeDtypeStruct((bkv, head_dim_v), jnp.float32),
   ]
@@ -1797,7 +1802,6 @@ def _splash_attention_bwd_fused(
       dq_spec,
       pl.BlockSpec((None, bkv, head_dim_qk), kv_map),
       pl.BlockSpec((None, bkv, head_dim_v), kv_map),
-      pl.BlockSpec((bq, head_dim_qk), lambda *_: (0, 0)),
       pl.BlockSpec((bkv, head_dim_qk), lambda *_: (0, 0)),
       pl.BlockSpec((bkv, head_dim_v), lambda *_: (0, 0)),
   ]

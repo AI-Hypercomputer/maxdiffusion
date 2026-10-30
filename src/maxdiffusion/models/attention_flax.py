@@ -4201,13 +4201,17 @@ class FlaxWanAttention(nnx.Module):
     if not is_i2v_cross_attention:
       with jax.named_scope("query_proj"):
         query_proj = self.query(hidden_states)
+        if is_self_attention:
+          query_proj = checkpoint_name(query_proj, "raw_query_proj")
 
       k_prescaled = False
       if is_self_attention:
         with jax.named_scope("key_proj"):
           key_proj = self.key(hidden_states)
+          key_proj = checkpoint_name(key_proj, "raw_key_proj")
         with jax.named_scope("value_proj"):
           value_proj = self.value(hidden_states)
+          value_proj = checkpoint_name(value_proj, "raw_value_proj")
       elif cached_kv is not None and "text" in cached_kv:
         key_proj, value_proj = cached_kv["text"]
         k_prescaled = self.cross_attn_prescale_kv
@@ -4400,6 +4404,7 @@ class FlaxWanAttention(nnx.Module):
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
+    attn_output = checkpoint_name(attn_output, "self_attn_output" if is_self_attention else "cross_attn_output")
 
     with jax.named_scope("proj_attn"):
       hidden_states = self.proj_attn(attn_output)

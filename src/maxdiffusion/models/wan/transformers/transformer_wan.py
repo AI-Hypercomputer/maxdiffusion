@@ -508,6 +508,7 @@ class WanTransformerBlock(nnx.Module):
               svg_timestep=svg_timestep,
               svg_step_index=svg_step_index,
           )
+          attn_output = checkpoint_name(attn_output, "self_attn_proj")
         with self.conditional_named_scope("self_attn_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + attn_output * gate_msa).astype(hidden_states.dtype)
           hidden_states = checkpoint_name(hidden_states, "cross_attn_input")
@@ -537,6 +538,7 @@ class WanTransformerBlock(nnx.Module):
           )
         with self.conditional_named_scope("mlp_ffn"):
           ff_output = self.ffn(norm_hidden_states, deterministic=deterministic, rngs=rngs)
+          ff_output = checkpoint_name(ff_output, "ffn_out")
         with self.conditional_named_scope("mlp_residual"):
           hidden_states = (hidden_states.astype(jnp.float32) + ff_output.astype(jnp.float32) * c_gate_msa).astype(
               hidden_states.dtype
