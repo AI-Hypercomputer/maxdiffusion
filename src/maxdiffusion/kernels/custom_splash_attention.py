@@ -1727,7 +1727,11 @@ def _splash_attention_bwd_fused(
     dkv_out_len = active_kv_len
 
   dq_steps = block_sizes.dq_reduction_steps
-  use_dq_aliasing = dq_steps is not None and dq_steps >= 2 and grid_width > dq_steps
+  use_dq_aliasing = (
+      not interpret
+      and dq_steps is not None
+      and ((dq_steps >= 2 and grid_width > dq_steps) or (dq_steps == 1 and grid_width > 1 and num_q_heads * grid_height >= 3))
+  )
 
   if use_dq_aliasing:
 
@@ -1847,7 +1851,7 @@ def _splash_attention_bwd_fused(
   )(q_bwd, k_bwd, v_bwd, do_bwd, lse_bwd, di_bwd, dq_init)
 
   dq_unreduced, dk, dv = all_out[0], all_out[1], all_out[2]
-  if grid_width == 1:
+  if grid_width == 1 or (use_dq_aliasing and dq_steps == 1):
     dq = dq_unreduced[0].astype(q.dtype)
   else:
     dq = dq_unreduced.sum(axis=0).astype(q.dtype)

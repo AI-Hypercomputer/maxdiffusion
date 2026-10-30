@@ -1155,6 +1155,7 @@ def _ulysses_attention(
     # into the producer of Q and its 185MB round-trip disappears.
     if use_custom_kernel and use_base2_exp and not qk_prescaled:
       query = query * LOG2E
+
     # Swap sharding: each device gives up a slice of heads and gathers
     # a slice of sequence, so the local kernel sees the full sequence.
     query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
@@ -1757,6 +1758,7 @@ def _ring_fixed_m_norms_pre_a2a(
   dispatch post-a2a.
   """
   reduce_axes = (ulysses_axis, ring_axis)
+  query, key, value = jax.lax.stop_gradient((query, key, value))
   key_f32 = key.astype(jnp.float32)
 
   q_norm_sq = (query.astype(jnp.float32) ** 2).sum(axis=-1)
@@ -1878,6 +1880,12 @@ def _compute_fixed_m_metadata(
         - `mk_arr[:, 1, h, i]`: Discrete eligibility predicate (1.0 for fixed-m, 0.0 for online).
     all_fixed: Boolean scalar indicating if all elements are eligible for uniform fixed-m.
   """
+  query = jax.lax.stop_gradient(query)
+  key = jax.lax.stop_gradient(key)
+  if k_mean is not None:
+    k_mean = jax.lax.stop_gradient(k_mean)
+  if value is not None:
+    value = jax.lax.stop_gradient(value)
   batch_size, num_q_heads, q_len, _ = query.shape
   num_kv_heads = key.shape[1]
   if safe_bound is None or recenter is None:
