@@ -21,8 +21,8 @@
 #   - Stock tpu-recipes baseline (main @ eba2219a + MODE=baseline):
 #       12.7255 s/step | 430.73 true TFLOP/s/TC (37.29% True MFU) | PJRT 21.03 GiB
 #   - Optimized champion (branch opt/wan22-train-tpu7x-diagon + MODE=optimized):
-#       11.8490 s/step | 462.59 true TFLOP/s/TC (40.05% True MFU) | PJRT 17.04 GiB
-#       (-876.5 ms/step = -6.89% step time / +7.40% throughput, max_rel_diff=0.00039)
+#       11.7535 s/step | 466.35 true TFLOP/s/TC (40.38% True MFU) | PJRT 17.04 GiB
+#       (-972.0 ms/step = -7.64% step time / +8.27% throughput, max_rel_diff=0.00055)
 #
 # Usage:
 #   BASE_OUTPUT_DIR=gs://<bucket>/wan22-repro \
@@ -197,7 +197,7 @@ if [[ "${MODE}" == "optimized" ]]; then
     "ulysses_attention_chunks=5"
     "use_fused_rope_kernel=True"
     'names_which_can_be_saved=["attn_output","self_attn","cross_attn","cross_attn_input","hidden_states","mlp_input","ffn_proj"]'
-    'flash_block_sizes={"block_q": 2816, "block_kv": 4096, "block_kv_compute": 4096, "block_kv_compute_in": 4096, "block_q_dkv": 2048, "block_kv_dkv": 4096, "block_kv_dkv_compute": 4096, "block_kv_dkv_compute_in": 512, "dq_reduction_steps": 2, "use_fused_bwd_kernel": true}'
+    'flash_block_sizes={"block_q": 2816, "block_kv": 4096, "block_kv_compute": 4096, "block_kv_compute_in": 2048, "block_q_dkv": 2048, "block_kv_dkv": 4096, "block_kv_dkv_compute": 4096, "block_kv_dkv_compute_in": 512, "dq_reduction_steps": 2, "use_fused_bwd_kernel": true}'
   )
 else
   MODE_ARGS=(

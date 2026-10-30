@@ -1158,9 +1158,38 @@ def _ulysses_attention(
 
     # Swap sharding: each device gives up a slice of heads and gathers
     # a slice of sequence, so the local kernel sees the full sequence.
-    query = jax.lax.all_to_all(query, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
-    key = jax.lax.all_to_all(key, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
-    value = jax.lax.all_to_all(value, axis_name=axis_name, split_axis=1, concat_axis=2, tiled=True)
+    # Always invoke `all_to_all(..., split_axis=1, concat_axis=1, tiled=True)`
+    # on a 4D tensor `[B, num_shards * H_local, ...]` (never on `[B, H_local, S_full, ...]`
+    # with `split_axis=2/3` and never on a 5D tensor `[B, num_shards, H_local, ...]`).
+    # In XLA's `XlaBuilder::AllToAllArray`, `all_to_all(split_axis != concat_axis)`
+    # emits `kAllToAll` BEFORE `Reshape -> Transpose -> Reshape`; when `H_local = 2`
+    # and `S_local % 8 != 0` (e.g. 18900), `AllToAllUsePackedLayout` on
+    # `[B, 2, 75600, 128]` (`split_dim=2`) or 5D `[B, 4, 2, 18900, 128]`
+    # (`split_dim=1`) sees the size-2 `H_local` axis and forces a narrow `T(2,128)`
+    # sublane layout. Keeping `num_shards * H_local` merged as axis 1 (`size = 8`)
+    # in a 4D `split_axis=1, concat_axis=1` call ensures `kAllToAll` runs on
+    # `[B, 8, 18900, 128]` in `T(8,128)` in both forward and backward VJP.
+    def _a2a_heads_to_seq(t):
+      b_, h_, s_, d_ = t.shape
+      h_loc = h_ // num_shards
+      t = jax.lax.all_to_all(t, axis_name=axis_name, split_axis=1, concat_axis=1, tiled=True)
+      return jnp.swapaxes(t.reshape(b_, num_shards, h_loc, s_, d_), 1, 2).reshape(b_, h_loc, num_shards * s_, d_)
+
+    def _a2a_seq_to_heads_transposed(o):
+      b_, h_loc, s_full, d_ = o.shape
+      s_loc = s_full // num_shards
+      o = jnp.swapaxes(o.reshape(b_, h_loc, num_shards, s_loc, d_), 1, 2).reshape(b_, num_shards * h_loc, s_loc, d_)
+      return jax.lax.all_to_all(o, axis_name=axis_name, split_axis=1, concat_axis=1, tiled=True)
+
+    def _a2a_seq_to_heads_untransposed(o):
+      b_, h_loc, d_, s_full = o.shape
+      s_loc = s_full // num_shards
+      o = jnp.moveaxis(o.reshape(b_, h_loc, d_, num_shards, s_loc), 3, 1).reshape(b_, num_shards * h_loc, d_, s_loc)
+      return jax.lax.all_to_all(o, axis_name=axis_name, split_axis=1, concat_axis=1, tiled=True)
+
+    query = _a2a_heads_to_seq(query)
+    key = _a2a_heads_to_seq(key)
+    value = _a2a_heads_to_seq(value)
     if attention_mask is not None and mask_needs_ulysses_gather:
       attention_mask = jax.lax.all_gather(attention_mask, axis_name=axis_name, axis=1, tiled=True)
 
@@ -1313,25 +1342,11 @@ def _ulysses_attention(
       if transpose_out:
         attention_output = attention_output[:, :, :context_q_seq_len, :kv_size].astype(query.dtype)
         # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
-        # Sequence axis is at index 2 (sublanes), heads axis is at index 1.
-        attention_output = jax.lax.all_to_all(
-            attention_output,
-            axis_name=axis_name,
-            split_axis=2,
-            concat_axis=1,
-            tiled=True,
-        )
+        attention_output = _a2a_seq_to_heads_transposed(attention_output)
       else:
         attention_output = attention_output[:, :, :kv_size, :context_q_seq_len].astype(query.dtype)
         # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
-        # Sequence axis is at index 3, heads axis is at index 1.
-        attention_output = jax.lax.all_to_all(
-            attention_output,
-            axis_name=axis_name,
-            split_axis=3,
-            concat_axis=1,
-            tiled=True,
-        )
+        attention_output = _a2a_seq_to_heads_untransposed(attention_output)
       return attention_output
     else:
       # Run the same local splash kernel as standard TPU flash attention, but now
@@ -1374,13 +1389,7 @@ def _ulysses_attention(
       attention_output = attention_output[:, :, :query_seq_len, :kv_size].astype(query.dtype)
 
       # Restore original layout: head-sharded/full-sequence -> sequence-sharded/full-heads.
-      attention_output = jax.lax.all_to_all(
-          attention_output,
-          axis_name=axis_name,
-          split_axis=2,
-          concat_axis=1,
-          tiled=True,
-      )
+      attention_output = _a2a_seq_to_heads_transposed(attention_output)
       return attention_output
 
   devices_in_batch_sharding = mesh.shape["data"] * (mesh.shape["fsdp"] if "fsdp" in mesh.shape else 1)
