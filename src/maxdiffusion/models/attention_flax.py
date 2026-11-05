@@ -36,6 +36,7 @@ from maxdiffusion.kernels.fused_rmsnorm_rope_pallas import (
     rope_accum_is_measured,
     with_xla_backward,
 )
+from maxdiffusion.kernels import cross_attention_pallas
 from einops import rearrange
 from .. import common_types, max_logging
 from maxdiffusion.tpu_utils import get_tpu_type, TpuType
@@ -2824,6 +2825,41 @@ _QK_PRESCALE_SUPPORTED_KERNELS = {
     "ulysses_custom_fixed_m_per_q_block",
 }
 
+_FLASH_MIN_SEQ_LENGTH_KERNELS = frozenset({
+    "flash",
+    "tokamax_flash",
+    "tokamax_ring",
+    "tokamax_ring_custom",
+    "ulysses",
+    "ulysses_custom",
+    "ulysses_custom_fixed_m",
+    "ulysses_custom_fixed_m_per_q_block",
+    "ulysses_ring",
+    "ulysses_ring_custom",
+    "ulysses_ring_custom_fixed_m",
+    "ulysses_ring_custom_fixed_m_per_q_block",
+    "ulysses_ring_custom_bidir",
+})
+
+
+def _would_use_unmasked_dot_product(
+    attention_kernel: str,
+    use_memory_efficient_attention: bool,
+    flash_min_seq_length: int,
+    q_len: int,
+    kv_len: int,
+    v_len: Optional[int] = None,
+) -> bool:
+  """Returns True when `_apply_attention` routes to unmasked dot-product attention."""
+  if use_memory_efficient_attention:
+    return False
+  if attention_kernel == "dot_product":
+    return True
+  if attention_kernel in _FLASH_MIN_SEQ_LENGTH_KERNELS:
+    min_len = min(q_len, kv_len) if v_len is None else min(q_len, kv_len, v_len)
+    return min_len < flash_min_seq_length
+  return False
+
 
 def _apply_attention(
     query: Array,
@@ -2868,19 +2904,7 @@ def _apply_attention(
     seq_len_idx = 2
 
   can_use_flash_attention = True
-  if attention_kernel in [
-      "flash",
-      "tokamax_flash",
-      "ulysses",
-      "ulysses_custom",
-      "ulysses_custom_fixed_m",
-      "ulysses_custom_fixed_m_per_q_block",
-      "ulysses_ring",
-      "ulysses_ring_custom",
-      "ulysses_ring_custom_fixed_m",
-      "ulysses_ring_custom_fixed_m_per_q_block",
-      "ulysses_ring_custom_bidir",
-  ]:
+  if attention_kernel in _FLASH_MIN_SEQ_LENGTH_KERNELS:
     can_use_flash_attention = (
         query.shape[seq_len_idx] >= flash_min_seq_length
         and key.shape[seq_len_idx] >= flash_min_seq_length
@@ -3563,6 +3587,61 @@ def _build_sharded_fused_rope_producer(
   return with_xla_backward(sharded, xla_equivalent)
 
 
+@functools.lru_cache(maxsize=64)
+def _build_sharded_pallas_cross_attention(
+    kernel_fn: Callable,
+    mesh: jax.sharding.Mesh,
+    q_spec: jax.sharding.PartitionSpec,
+    kv_spec: jax.sharding.PartitionSpec,
+    local_heads: int,
+    global_heads: int,
+    dim_head: int,
+    scale: float,
+    k_prescaled: bool,
+    head_block: int,
+    is_cpu_interpret: bool,
+    dtype: DType,
+    split_head_dim: bool,
+    float32_qk_product: bool,
+):
+  """Builds and caches the `with_xla_backward(jax.shard_map(...))` cross-attention wrapper."""
+  sharded = jax.shard_map(
+      functools.partial(
+          kernel_fn,
+          heads=local_heads,
+          dim_head=dim_head,
+          scale=scale,
+          k_prescaled=k_prescaled,
+          head_block=head_block,
+          mesh=mesh,
+          interpret=is_cpu_interpret,
+      ),
+      mesh=mesh,
+      in_specs=(q_spec, kv_spec, kv_spec),
+      out_specs=q_spec,
+      check_vma=False,
+  )
+
+  def xla_equivalent(q, k, v):
+    """The XLA dot-product path this kernel stands in for."""
+    return _apply_attention_dot(
+        q,
+        k,
+        v,
+        dtype,
+        global_heads,
+        dim_head,
+        scale,
+        split_head_dim,
+        float32_qk_product,
+        False,
+        k_prescaled=k_prescaled,
+    )
+
+  # `pallas_call` has no transpose rule; forward stays the kernel.
+  return with_xla_backward(sharded, xla_equivalent)
+
+
 class FlaxWanAttention(nnx.Module):
 
   def __init__(
@@ -3617,6 +3696,8 @@ class FlaxWanAttention(nnx.Module):
         "wan_splash_transpose_out": None,
         "wan_cross_attn_prescale_kv": None,
         "wan_rope_accum": None,
+        "wan_cross_attn_kernel": None,
+        "wan_cross_attn_cpu_interpret": False,
         **(attention_config or {}),
     }
 
@@ -3656,6 +3737,8 @@ class FlaxWanAttention(nnx.Module):
     self.wan_splash_transpose_out = _wan_opt("wan_splash_transpose_out")
     self.wan_cross_attn_prescale_kv = _wan_opt("wan_cross_attn_prescale_kv")
     self.wan_rope_accum = _wan_opt("wan_rope_accum")
+    self.wan_cross_attn_kernel = _wan_opt("wan_cross_attn_kernel")
+    self.wan_cross_attn_cpu_interpret = bool(attention_config["wan_cross_attn_cpu_interpret"])
 
     if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
@@ -3699,6 +3782,28 @@ class FlaxWanAttention(nnx.Module):
       )
     if cross_attention_remapped_to_flash:
       attention_kernel = "tokamax_flash"
+    if not is_self_attention and self.wan_cross_attn_kernel == "pallas":
+      is_tpu = mesh is not None and all(d.platform == "tpu" for d in mesh.devices.flat)
+      is_cpu_interpret = bool(self.wan_cross_attn_cpu_interpret)
+      if mesh is None or not (is_tpu or is_cpu_interpret):
+        raise ValueError(
+            "wan_cross_attn_kernel='pallas' requires a TPU mesh (or wan_cross_attn_cpu_interpret=True in tests)."
+        )
+      if self.dim_head % cross_attention_pallas.NUM_LANES != 0:
+        raise ValueError(
+            f"wan_cross_attn_kernel='pallas' requires dim_head to be a multiple of {cross_attention_pallas.NUM_LANES}, "
+            f"got {self.dim_head}."
+        )
+      if use_memory_efficient_attention or attention_kernel not in ("dot_product",) + tuple(_FLASH_MIN_SEQ_LENGTH_KERNELS):
+        raise ValueError(
+            f"wan_cross_attn_kernel='pallas' is incompatible with attention_kernel={attention_kernel!r} "
+            f"and use_memory_efficient_attention={use_memory_efficient_attention}."
+        )
+      if is_tpu and not is_cpu_interpret and not cross_attention_pallas.vmem_budget_is_validated(mesh):
+        kinds = sorted(set(cross_attention_pallas._tpu_kinds(mesh)))
+        raise ValueError(
+            f"wan_cross_attn_kernel='pallas' requested but VMEM budget is not validated on TPU kind(s) {kinds}."
+        )
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
     tpu_type = get_tpu_type()
@@ -4052,6 +4157,121 @@ class FlaxWanAttention(nnx.Module):
 
     return producer
 
+  def _pallas_cross_attention(self, query, key, value, *, k_prescaled: bool):
+    """Runs text cross-attention through the fused Pallas kernel, or returns None when `wan_cross_attn_kernel == 'xla'`.
+
+    Opt-in via `wan_cross_attn_kernel: "pallas"`. It replaces only what would
+    otherwise be the XLA dot-product fallback -- unmasked MHA against a KV
+    shorter than `flash_min_seq_length` -- because the kernel holds a head
+    block's entire KV in VMEM. When `wan_cross_attn_kernel == "pallas"`,
+    requires every precondition below and raises `ValueError` otherwise:
+      * the mesh devices are TPUs (or `wan_cross_attn_cpu_interpret` is enabled)
+        and a mesh is available for `shard_map`;
+      * the inputs are flat `[B, S, H*D]` with a lane-aligned `dim_head`;
+      * K/V are short enough to stay resident and multiple-of-8 aligned;
+      * sequence and heads divide evenly by the mesh axes they are sharded over
+        (an indivisible batch dimension is treated as replicated);
+      * on TPU, every mesh device is a generation the kernel's VMEM budget was
+        validated on (v6e, tpu7x) and the estimated working set fits it.
+    """
+    mode = self.wan_cross_attn_kernel
+    if mode == "xla":
+      return None
+    if mode != "pallas":
+      raise ValueError(f"wan_cross_attn_kernel must be 'xla' or 'pallas', got {mode!r}.")
+
+    op = self.attention_op
+    mesh = self.mesh
+    is_tpu = mesh is not None and all(d.platform == "tpu" for d in mesh.devices.flat)
+    is_cpu_interpret = bool(self.wan_cross_attn_cpu_interpret)
+    flat = query.ndim == 3 and key.ndim == 3 and value.ndim == 3
+    kv_len = key.shape[1] if flat else -1
+    would_use_dot_product = flat and _would_use_unmasked_dot_product(
+        op.attention_kernel,
+        op.use_memory_efficient_attention,
+        op.flash_min_seq_length,
+        query.shape[1],
+        kv_len,
+        value.shape[1],
+    )
+
+    def _shards_over(axis) -> int:
+      if axis is None:
+        return 1
+      names = (axis,) if isinstance(axis, str) else tuple(axis)
+      return math.prod(mesh.shape[n] for n in names)
+
+    reason = None
+    if not (is_tpu or is_cpu_interpret):
+      reason = "the mesh devices are not TPUs"
+    elif not flat:
+      reason = f"inputs are not flat [B, S, H*D] (q={query.shape}, k={key.shape}, v={value.shape})"
+    elif self.dim_head % cross_attention_pallas.NUM_LANES:
+      reason = f"dim_head={self.dim_head} is not a multiple of {cross_attention_pallas.NUM_LANES}"
+    elif kv_len > cross_attention_pallas.MAX_KV_LEN:
+      reason = f"KV length {kv_len} exceeds {cross_attention_pallas.MAX_KV_LEN}"
+    elif kv_len % 8 != 0:
+      reason = f"KV length {kv_len} is not a multiple of 8"
+    elif not would_use_dot_product:
+      reason = f"the configured {op.attention_kernel!r} kernel already handles this KV length"
+    if reason is None:
+      batch_axis, seq_axis, head_axis = nn.logical_to_mesh_axes((BATCH, LENGTH, HEAD))
+      batch_shards, seq_shards, head_shards = (_shards_over(a) for a in (batch_axis, seq_axis, head_axis))
+      if query.shape[1] % seq_shards or self.heads % head_shards:
+        reason = f"q={query.shape} with {self.heads} heads does not split {seq_shards}x{head_shards} (seq x heads)"
+      else:
+        local_q_len = query.shape[1] // seq_shards
+        if local_q_len <= cross_attention_pallas.DEFAULT_BLOCK_Q and local_q_len % 8 != 0:
+          reason = f"local query length {local_q_len} <= {cross_attention_pallas.DEFAULT_BLOCK_Q} is not a multiple of 8"
+    if reason is not None:
+      raise ValueError(f"wan_cross_attn_kernel='pallas' requested but unusable: {reason}.")
+
+    # As in `_fused_rope_producer`: GSPMD degenerates an uneven batch split
+    # into replication, so declare it replicated rather than lose the kernel.
+    local_batch_axis = batch_axis if query.shape[0] % batch_shards == 0 else None
+    local_heads = self.heads // head_shards
+    head_block = max(
+        hb for hb in range(1, min(local_heads, cross_attention_pallas.DEFAULT_HEAD_BLOCK) + 1) if local_heads % hb == 0
+    )
+    if not is_cpu_interpret:
+      vmem_reason = cross_attention_pallas.vmem_unusable_reason(
+          seq_q=local_q_len,
+          seq_kv=kv_len,
+          dim_head=self.dim_head,
+          head_block=head_block,
+          itemsize=jnp.dtype(query.dtype).itemsize,
+          mesh=mesh,
+      )
+      if vmem_reason is not None:
+        raise ValueError(f"wan_cross_attn_kernel='pallas' requested but unusable: {vmem_reason}.")
+    q_spec = jax.sharding.PartitionSpec(local_batch_axis, seq_axis, head_axis)
+    kv_spec = jax.sharding.PartitionSpec(local_batch_axis, None, head_axis)
+    _warn_once(
+        f"pallas_cross_attn_active:{tuple(query.shape)}",
+        f"Pallas cross-attention ACTIVE: q={query.shape}, kv={key.shape}, q_spec={q_spec}, kv_spec={kv_spec}, "
+        f"local_heads={local_heads}, head_block={head_block}, block_q={cross_attention_pallas.DEFAULT_BLOCK_Q}, "
+        f"k_prescaled={k_prescaled}.",
+    )
+    # `pallas_call` has no transpose rule; forward stays the kernel.
+    differentiable = _build_sharded_pallas_cross_attention(
+        cross_attention_pallas.cross_attention_pallas,
+        mesh,
+        q_spec,
+        kv_spec,
+        local_heads,
+        self.heads,
+        self.dim_head,
+        float(op.scale),
+        bool(k_prescaled),
+        head_block,
+        bool(is_cpu_interpret),
+        op.dtype,
+        bool(op.split_head_dim),
+        bool(op.float32_qk_product),
+    )
+    with jax.named_scope("kernel_pallas_cross_attention"):
+      return differentiable(query, key, value)
+
   def conditional_named_scope(self, name: str):
     """Return a JAX named scope if enabled, otherwise a null context."""
     return jax.named_scope(name) if self.enable_jax_named_scopes else contextlib.nullcontext()
@@ -4192,7 +4412,12 @@ class FlaxWanAttention(nnx.Module):
         )
       else:
         with jax.named_scope("apply_attention"):
-          attn_output = run_attention()
+          attn_output = None
+          # Unmasked T2V cross-attention; Q is never prescaled on the cross-attention path.
+          if not is_self_attention:
+            attn_output = self._pallas_cross_attention(query_proj, key_proj, value_proj, k_prescaled=k_prescaled)
+          if attn_output is None:
+            attn_output = run_attention()
 
     else:
       # NEW PATH for I2V CROSS-ATTENTION
@@ -4269,9 +4494,13 @@ class FlaxWanAttention(nnx.Module):
 
         # Attention - tensors are (B, S, D)
         with self.conditional_named_scope("cross_attn_text_apply"):
-          attn_output_text = self.attention_op.apply_attention(
+          attn_output_text = self._pallas_cross_attention(
               query_proj_text, key_proj_text, value_proj_text, k_prescaled=k_prescaled_text
           )
+          if attn_output_text is None:
+            attn_output_text = self.attention_op.apply_attention(
+                query_proj_text, key_proj_text, value_proj_text, k_prescaled=k_prescaled_text
+            )
         with self.conditional_named_scope("cross_attn_img_apply"):
           # Pass encoder_attention_mask_img for image cross-attention to mask padded tokens
           attn_output_img = self.attention_op.apply_attention(
@@ -4290,9 +4519,13 @@ class FlaxWanAttention(nnx.Module):
         value_proj_text = checkpoint_name(value_proj_text, "value_proj_text")
 
         with self.conditional_named_scope("cross_attn_text_apply"):
-          attn_output = self.attention_op.apply_attention(
+          attn_output = self._pallas_cross_attention(
               query_proj_text, key_proj_text, value_proj_text, k_prescaled=k_prescaled_text
           )
+          if attn_output is None:
+            attn_output = self.attention_op.apply_attention(
+                query_proj_text, key_proj_text, value_proj_text, k_prescaled=k_prescaled_text
+            )
 
     attn_output = attn_output.astype(dtype=dtype)
     attn_output = checkpoint_name(attn_output, "attn_output")
