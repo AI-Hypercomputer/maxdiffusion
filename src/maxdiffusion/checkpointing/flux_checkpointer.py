@@ -30,7 +30,10 @@ from maxdiffusion import (
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 from ..pipelines.flux.flux_pipeline import FluxPipeline
 
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)
+from maxdiffusion.models.flux.text_encoders.torchax_text_encoders import (
+    load_clip_encoder_and_tokenizer,
+    load_t5_encoder_and_tokenizer,
+)
 
 from maxdiffusion.checkpointing.checkpointing_utils import (create_orbax_checkpoint_manager)
 from maxdiffusion.models.flux.util import load_flow_model
@@ -187,12 +190,8 @@ class FluxCheckpointer(ABC):
       context = nullcontext()
 
     with context:
-      clip_encoder = FlaxCLIPTextModel.from_pretrained(self.config.clip_model_name_or_path, dtype=self.config.weights_dtype)
-      clip_tokenizer = CLIPTokenizer.from_pretrained(self.config.clip_model_name_or_path, max_length=77, use_fast=True)
-      t5_encoder = FlaxT5EncoderModel.from_pretrained(self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype)
-      t5_tokenizer = AutoTokenizer.from_pretrained(
-          self.config.t5xxl_model_name_or_path, model_max_length=self.config.max_sequence_length, use_fast=True
-      )
+      clip_encoder, clip_tokenizer = load_clip_encoder_and_tokenizer(self.config)
+      t5_encoder, t5_tokenizer = load_t5_encoder_and_tokenizer(self.config)
 
       vae, vae_params = FlaxAutoencoderKL.from_pretrained(
           self.config.pretrained_model_name_or_path,
@@ -256,16 +255,8 @@ class FluxCheckpointer(ABC):
         context = nullcontext()
 
       with context:
-        clip_encoder = FlaxCLIPTextModel.from_pretrained(
-            self.config.clip_model_name_or_path, dtype=self.config.weights_dtype
-        )
-        clip_tokenizer = CLIPTokenizer.from_pretrained(self.config.clip_model_name_or_path, max_length=77, use_fast=True)
-        t5_encoder = FlaxT5EncoderModel.from_pretrained(
-            self.config.t5xxl_model_name_or_path, dtype=self.config.weights_dtype
-        )
-        t5_tokenizer = AutoTokenizer.from_pretrained(
-            self.config.t5xxl_model_name_or_path, model_max_length=self.config.max_sequence_length, use_fast=True
-        )
+        clip_encoder, clip_tokenizer = load_clip_encoder_and_tokenizer(self.config)
+        t5_encoder, t5_tokenizer = load_t5_encoder_and_tokenizer(self.config)
 
         vae = FlaxAutoencoderKL.from_config(
             model_configs[0]["vae_config"],

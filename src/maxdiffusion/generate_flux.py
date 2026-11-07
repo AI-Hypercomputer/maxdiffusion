@@ -29,13 +29,18 @@ import flax.linen as nn
 from chex import Array
 from einops import rearrange
 from flax.linen import partitioning as nn_partitioning
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, T5EncoderModel, FlaxT5EncoderModel, AutoTokenizer)
+from transformers import (CLIPTokenizer, AutoTokenizer)
 
 from maxdiffusion import FlaxAutoencoderKL, pyconfig, max_logging, max_utils
+from maxdiffusion.models.flux.text_encoders.torchax_text_encoders import (
+    TorchaxCLIPTextEncoder,
+    TorchaxT5TextEncoder,
+    load_clip_encoder_and_tokenizer,
+    load_t5_encoder_and_tokenizer,
+)
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 from maxdiffusion.train_utils import transformer_engine_context
 from maxdiffusion.max_utils import (
-    device_put_replicated,
     get_memory_allocations,
     create_device_mesh,
     get_flash_block_sizes,
@@ -193,7 +198,7 @@ def prepare_latents(
 
 
 def get_clip_prompt_embeds(
-    prompt: Union[str, List[str]], num_images_per_prompt: int, tokenizer: CLIPTokenizer, text_encoder: FlaxCLIPTextModel
+    prompt: Union[str, List[str]], num_images_per_prompt: int, tokenizer: CLIPTokenizer, text_encoder: TorchaxCLIPTextEncoder
 ):
   prompt = [prompt] if isinstance(prompt, str) else prompt
   batch_size = len(prompt)
@@ -207,10 +212,9 @@ def get_clip_prompt_embeds(
       return_tensors="np",
   )
 
-  text_input_ids = text_inputs.input_ids
+  text_input_ids = jnp.asarray(text_inputs.input_ids, dtype=jnp.int32)
 
-  prompt_embeds = text_encoder(text_input_ids, params=text_encoder.params, train=False)
-  prompt_embeds = prompt_embeds.pooler_output
+  prompt_embeds = text_encoder(text_input_ids)
   prompt_embeds = jnp.tile(prompt_embeds, (batch_size * num_images_per_prompt, 1))
   return prompt_embeds
 
@@ -219,7 +223,7 @@ def get_t5_prompt_embeds(
     prompt: Union[str, List[str]],
     num_images_per_prompt: int,
     tokenizer: AutoTokenizer,
-    text_encoder: T5EncoderModel,
+    text_encoder: TorchaxT5TextEncoder,
     max_sequence_length: int = 512,
 ):
   prompt = [prompt] if isinstance(prompt, str) else prompt
@@ -233,10 +237,8 @@ def get_t5_prompt_embeds(
       padding="max_length",
       return_tensors="np",
   )
-  text_input_ids = text_inputs.input_ids
-  prompt_embeds = text_encoder(text_input_ids, attention_mask=None, output_hidden_states=False)["last_hidden_state"]
-  dtype = text_encoder.dtype
-  prompt_embeds = prompt_embeds.astype(dtype)
+  text_input_ids = jnp.asarray(text_inputs.input_ids, dtype=jnp.int32)
+  prompt_embeds = text_encoder(text_input_ids)
   _, seq_len, _ = prompt_embeds.shape
   # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
   prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
@@ -248,9 +250,9 @@ def encode_prompt(
     prompt: Union[str, List[str]],
     prompt_2: Union[str, List[str]],
     clip_tokenizer: CLIPTokenizer,
-    clip_text_encoder: FlaxCLIPTextModel,
+    clip_text_encoder: TorchaxCLIPTextEncoder,
     t5_tokenizer: AutoTokenizer,
-    t5_text_encoder: T5EncoderModel,
+    t5_text_encoder: TorchaxT5TextEncoder,
     num_images_per_prompt: int = 1,
     max_sequence_length: int = 512,
 ):
@@ -331,24 +333,12 @@ def run(config):
     )
 
     # LOAD TEXT ENCODERS
-    clip_text_encoder = FlaxCLIPTextModel.from_pretrained(
-        config.pretrained_model_name_or_path, subfolder="text_encoder", from_pt=True, dtype=config.weights_dtype
-    )
-    clip_tokenizer = CLIPTokenizer.from_pretrained(
-        config.pretrained_model_name_or_path, subfolder="tokenizer", dtype=config.weights_dtype
-    )
-
-    t5_encoder = FlaxT5EncoderModel.from_pretrained(config.t5xxl_model_name_or_path, dtype=config.weights_dtype)
-    t5_tokenizer = AutoTokenizer.from_pretrained(
-        config.t5xxl_model_name_or_path, max_length=config.max_sequence_length, use_fast=True
-    )
+    clip_text_encoder, clip_tokenizer = load_clip_encoder_and_tokenizer(config)
+    t5_encoder, t5_tokenizer = load_t5_encoder_and_tokenizer(config)
 
     encoders_sharding = NamedSharding(mesh, P())
-    partial_device_put_replicated = functools.partial(device_put_replicated, sharding=encoders_sharding)
-    clip_text_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), clip_text_encoder.params)
-    clip_text_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, clip_text_encoder.params)
-    t5_encoder.params = jax.tree_util.tree_map(lambda x: x.astype(jnp.bfloat16), t5_encoder.params)
-    t5_encoder.params = jax.tree_util.tree_map(partial_device_put_replicated, t5_encoder.params)
+    clip_text_encoder.place_params(encoders_sharding)
+    t5_encoder.place_params(encoders_sharding)
 
     prompt_embeds, pooled_prompt_embeds, text_ids = encode_prompt(
         prompt=config.prompt,
@@ -382,8 +372,7 @@ def run(config):
     pooled_prompt_embeds = jax.device_put(pooled_prompt_embeds, data_sharding)
 
     if config.offload_encoders:
-      cpus = jax.devices("cpu")
-      t5_encoder.params = jax.device_put(t5_encoder.params, device=cpus[0])
+      t5_encoder.offload_params()
 
     get_memory_allocations()
     # evaluate shapes
