@@ -42,6 +42,7 @@ _OPTIONS: dict[str, tuple[Any, str]] = {
     "wan_cfg_before_unpatchify": (True, "bool"),
     "wan_cross_attn_prescale_kv": (False, "bool"),
     "wan_rope_accum": ("auto", "str"),
+    "wan_seq_pad": ("off", "str"),
 }
 
 
@@ -61,6 +62,8 @@ def _coerce(name: str, value: Any) -> Any:
     raise ValueError(f"wan_rope_norm_mode must be 'exact' or 'fused', got {value!r}.")
   if name == "wan_rope_accum" and val not in ("auto", "dtype", "f32"):
     raise ValueError(f"wan_rope_accum must be 'auto', 'dtype', or 'f32', got {value!r}.")
+  if name == "wan_seq_pad" and val not in ("off", "lane"):
+    raise ValueError(f"wan_seq_pad must be 'off' or 'lane', got {value!r}.")
   return val
 
 
@@ -101,6 +104,7 @@ ATTENTION_OPTIONS = (
     "wan_splash_transpose_out",
     "wan_cross_attn_prescale_kv",
     "wan_rope_accum",
+    "wan_seq_pad",
 )
 
 
