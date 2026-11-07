@@ -45,6 +45,7 @@ from maxdiffusion.models.wan.autoencoder_kl_wan import (
     WanAttentionBlock,
     AutoencoderKLWanCache,
 )
+from maxdiffusion.models.wan.autoencoder_kl_wan_2p2 import WanAttentionBlock as WanAttentionBlock2p2
 from maxdiffusion.models.wan.wan_utils import load_wan_vae
 from maxdiffusion.utils import load_video
 from maxdiffusion.video_processor import VideoProcessor
@@ -81,6 +82,39 @@ class TorchWanRMS_norm(torch.nn.Module):
 
   def forward(self, x):
     return F.normalize(x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma + self.bias
+
+
+class TorchWanAttentionBlock(torch.nn.Module):
+  r"""
+  Single-head spatial self-attention of the Wan VAE, as in the PyTorch implementation.
+  """
+
+  def __init__(self, dim):
+    super().__init__()
+    self.norm = TorchWanRMS_norm(dim)
+    self.to_qkv = torch.nn.Conv2d(dim, dim * 3, 1)
+    self.proj = torch.nn.Conv2d(dim, dim, 1)
+
+  def forward(self, x):
+    """Applies the block to a (batch, channels, time, height, width) tensor."""
+    identity = x
+    batch_size, channels, time, height, width = x.size()
+
+    x = x.permute(0, 2, 1, 3, 4).reshape(batch_size * time, channels, height, width)
+    x = self.norm(x)
+
+    qkv = self.to_qkv(x)
+    qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
+    qkv = qkv.permute(0, 1, 3, 2).contiguous()
+    q, k, v = qkv.chunk(3, dim=-1)
+
+    x = F.scaled_dot_product_attention(q, k, v)
+    x = x.squeeze(1).permute(0, 2, 1).reshape(batch_size * time, channels, height, width)
+
+    x = self.proj(x)
+    x = x.view(batch_size, time, channels, height, width)
+    x = x.permute(0, 2, 1, 3, 4)
+    return x + identity
 
 
 class TorchWanResample(torch.nn.Module):
@@ -382,6 +416,38 @@ class WanVaeTest(unittest.TestCase):
       dummy_input = jnp.ones(input_shape)
       output, _, _ = wan_attention(dummy_input)
       assert output.shape == input_shape
+
+  def test_wan_attention_matches_pytorch(self):
+    """The attention block attends over all H*W positions of a frame, as the PyTorch block does."""
+    dim = 32
+    input_shape = (1, dim, 2, 4, 6)  # (batch, channels, time, height, width)
+
+    torch.manual_seed(0)
+    torch_attention = TorchWanAttentionBlock(dim)
+    torch.nn.init.normal_(torch_attention.norm.gamma)
+    torch_input = torch.randn(input_shape)
+    with torch.no_grad():
+      torch_output = torch_attention(torch_input).numpy()
+
+    def to_jax(tensor, perm=None):
+      """Converts a torch tensor to a jax array, optionally permuting its axes."""
+      array = tensor.detach().numpy()
+      return jnp.asarray(array if perm is None else array.transpose(perm))
+
+    for attention_cls in (WanAttentionBlock, WanAttentionBlock2p2):
+      with self.subTest(attention_cls.__module__), self.mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
+        wan_attention = attention_cls(dim=dim, rngs=nnx.Rngs(jax.random.key(0)))
+        wan_attention.norm.gamma[...] = to_jax(torch_attention.norm.gamma).reshape(dim)
+        wan_attention.to_qkv.kernel[...] = to_jax(torch_attention.to_qkv.weight, (2, 3, 1, 0))
+        wan_attention.to_qkv.bias[...] = to_jax(torch_attention.to_qkv.bias)
+        wan_attention.proj.kernel[...] = to_jax(torch_attention.proj.weight, (2, 3, 1, 0))
+        wan_attention.proj.bias[...] = to_jax(torch_attention.proj.bias)
+
+        # TPUs run float32 matmuls in reduced precision by default; compare at full precision.
+        with jax.default_matmul_precision("highest"):
+          output, _, _ = wan_attention(to_jax(torch_input, (0, 2, 3, 4, 1)))
+        output = np.asarray(output).transpose(0, 4, 1, 2, 3)
+        np.testing.assert_allclose(output, torch_output, atol=1e-5, rtol=1e-5)
 
   def test_wan_midblock(self):
     key = jax.random.key(0)
