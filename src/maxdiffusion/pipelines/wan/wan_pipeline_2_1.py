@@ -68,6 +68,9 @@ class WanPipeline2_1(WanPipeline):
         load_vae=load_vae,
         load_text_encoder=load_text_encoder,
         load_scheduler=load_scheduler,
+        # T2V only runs the VAE on the final full-batch decode, so the
+        # batch-aware (N, 1) mesh is safe here; see _auto_vae_spatial.
+        batch_parallel_vae=True,
     )
     transformer = None
     try:
