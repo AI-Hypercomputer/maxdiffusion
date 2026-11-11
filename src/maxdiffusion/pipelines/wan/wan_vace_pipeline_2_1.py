@@ -468,9 +468,11 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     mesh = getattr(self, "vae_mesh", getattr(self, "mesh", None))
     if mesh is not None and hasattr(mesh, "shape"):
       vae_spatial = mesh.shape.get("vae_spatial", 1)
-      if vae_spatial > 1 and (width // 8) % vae_spatial != 0:
+      # The VAE shards the longer spatial axis, see autoencoder_kl_wan._spatial_sharding.
+      sharded_axis, sharded_size = ("height", height) if height > width else ("width", width)
+      if vae_spatial > 1 and (sharded_size // 8) % vae_spatial != 0:
         max_logging.log(
-            f"Warning: Latent width is not divisible by vae_spatial mesh axis ({vae_spatial})."
+            f"Warning: Latent {sharded_axis} is not divisible by vae_spatial mesh axis ({vae_spatial})."
             " VAE spatial sharding will be partially bypassed."
         )
 

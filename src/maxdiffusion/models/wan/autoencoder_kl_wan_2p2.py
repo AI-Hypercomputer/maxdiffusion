@@ -20,8 +20,7 @@ from flax import nnx
 import jax
 from jax import tree_util
 import jax.numpy as jnp
-from jax.sharding import NamedSharding, PartitionSpec as P
-from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWanCache, WanCausalConv3d  # pylint: disable=g-importing-member
+from maxdiffusion.models.wan.autoencoder_kl_wan import AutoencoderKLWanCache, WanCausalConv3d, _spatial_sharding  # pylint: disable=g-importing-member,protected-access
 
 from ... import common_types
 from ...configuration_utils import ConfigMixin
@@ -1341,7 +1340,7 @@ class AutoencoderKLWan2p2(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + (t - 1) // 4
     enc_feat_map = feat_cache._enc_feat_map
 
-    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
+    spatial_sharding = _spatial_sharding(self.mesh, x.shape, batch_axis=None)
     for i in range(iter_):
       enc_conv_idx = 0
       if i == 0:
@@ -1394,7 +1393,7 @@ class AutoencoderKLWan2p2(nnx.Module, FlaxModelMixin, ConfigMixin):
 
     dec_feat_map = feat_cache._feat_map
 
-    spatial_sharding = NamedSharding(self.mesh, P(None, None, None, "vae_spatial", None))
+    spatial_sharding = _spatial_sharding(self.mesh, x.shape, batch_axis=None)
     for i in range(iter_):
       conv_idx = 0
       chunk = x[:, i : i + 1, :, :, :]
