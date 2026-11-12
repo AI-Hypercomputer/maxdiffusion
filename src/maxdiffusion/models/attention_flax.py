@@ -3324,8 +3324,6 @@ class NNXAttentionOp(nnx.Module):
     if attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
 
-      jax.config.update("jax_use_shardy_partitioner", False)
-
       dpa_layer = DotProductAttention(
           head_dim=dim_head,
           num_attention_heads=heads,
@@ -3436,8 +3434,6 @@ class AttentionOp(nn.Module):
     self.dpa_layer = None
     if self.attention_kernel == "cudnn_flash_te":
       from transformer_engine.jax.flax.transformer import DotProductAttention  # pytype: disable=import-error
-
-      jax.config.update("jax_use_shardy_partitioner", False)
 
       dpa_layer = DotProductAttention(
           head_dim=self.dim_head,
