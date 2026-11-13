@@ -48,6 +48,21 @@ def _update_cache(cache, idx, value):
   return cache[:idx] + (value,) + cache[idx + 1 :]
 
 
+def _spatial_sharding(mesh: Optional[jax.sharding.Mesh], shape: Sequence[int]) -> Optional[NamedSharding]:
+  """Returns the sharding of a (N, D, H, W, C) array over the vae_spatial axis.
+
+  Shards the width, or the height if only the height is divisible by
+  vae_spatial. If neither is, the width is still sharded and XLA pads it.
+  """
+  if mesh is None or "vae_spatial" not in mesh.shape:
+    return None
+  _, _, height, width, _ = shape
+  num_shards = mesh.shape["vae_spatial"]
+  if width % num_shards != 0 and height % num_shards == 0:
+    return NamedSharding(mesh, P("redundant", None, "vae_spatial", None, None))
+  return NamedSharding(mesh, P("redundant", None, None, "vae_spatial", None))
+
+
 # Helper to ensure kernel_size, stride, padding are tuples of 3 integers
 def _canonicalize_tuple(x: Union[int, Sequence[int]], rank: int, name: str) -> Tuple[int, ...]:
   """Canonicalizes a value to a tuple of integers."""
@@ -121,7 +136,7 @@ class WanCausalConv3d(nnx.Module):
 
   def __call__(self, x: jax.Array, cache_x: Optional[jax.Array] = None, idx=-1) -> jax.Array:
     if self.mesh is not None and "vae_spatial" in self.mesh.shape:
-      spatial_sharding = NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
+      spatial_sharding = _spatial_sharding(self.mesh, x.shape)
       if spatial_sharding is not None:
         x = jax.lax.with_sharding_constraint(x, spatial_sharding)
 
@@ -1169,12 +1184,6 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     iter_ = 1 + ((t - 1 + CHUNK_SIZE - 1) // CHUNK_SIZE) if t > 1 else 1
     enc_feat_map = feat_cache._enc_feat_map
 
-    spatial_sharding = (
-        NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
-        if self.mesh is not None and "vae_spatial" in self.mesh.shape
-        else None
-    )
-
     def finalize(out, enc_feat_map):
       feat_cache._enc_feat_map = enc_feat_map
       enc = self.quant_conv(out)
@@ -1184,6 +1193,7 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     with jax.named_scope("AutoencoderKLWan_encode_chunk_0"):
       chunk_0 = x[:, :1, ...]
       out_0, enc_feat_map, _ = self.encoder(chunk_0, feat_cache=enc_feat_map, feat_idx=0)
+      spatial_sharding = _spatial_sharding(self.mesh, out_0.shape)
       if spatial_sharding is not None:
         out_0 = jax.lax.with_sharding_constraint(out_0, spatial_sharding)
 
@@ -1280,16 +1290,13 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     x = self.post_quant_conv(z)
 
     dec_feat_map = feat_cache._feat_map
-    spatial_sharding = (
-        NamedSharding(self.mesh, P("redundant", None, None, "vae_spatial", None))
-        if self.mesh is not None and "vae_spatial" in self.mesh.shape
-        else None
-    )
+    spatial_sharding = _spatial_sharding(self.mesh, x.shape)
 
     # First chunk (i=0)
     with jax.named_scope("AutoencoderKLWan_decode_chunk_0"):
+      chunk_in_0 = x[:, 0:1, ...]
       if spatial_sharding is not None:
-        chunk_in_0 = jax.lax.with_sharding_constraint(x[:, 0:1, ...], spatial_sharding)
+        chunk_in_0 = jax.lax.with_sharding_constraint(chunk_in_0, spatial_sharding)
       out_0, dec_feat_map, _ = self.decoder(chunk_in_0, feat_cache=dec_feat_map, feat_idx=0)
       if spatial_sharding is not None:
         out_0 = jax.lax.with_sharding_constraint(out_0, spatial_sharding)
@@ -1297,8 +1304,9 @@ class AutoencoderKLWan(nnx.Module, FlaxModelMixin, ConfigMixin):
     if iter_ > 1:
       # Run chunk 1 outside scan to properly form the cache shape
       with jax.named_scope("AutoencoderKLWan_decode_chunk_1"):
+        chunk_in_1 = x[:, 1:2, ...]
         if spatial_sharding is not None:
-          chunk_in_1 = jax.lax.with_sharding_constraint(x[:, 1:2, ...], spatial_sharding)
+          chunk_in_1 = jax.lax.with_sharding_constraint(chunk_in_1, spatial_sharding)
         out_chunk_1, dec_feat_map, _ = self.decoder(chunk_in_1, feat_cache=dec_feat_map, feat_idx=0)
         if spatial_sharding is not None:
           out_chunk_1 = jax.lax.with_sharding_constraint(out_chunk_1, spatial_sharding)
