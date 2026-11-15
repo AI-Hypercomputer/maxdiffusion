@@ -1052,6 +1052,118 @@ def _tpu_flash_attention(
 
 
 # ---------------------------------------------------------------------------
+# FlyWheel attention (https://github.com/heavyball-research/flywheel-tpu)
+# ---------------------------------------------------------------------------
+
+FLYWHEEL_KERNELS = ("flywheel", "ulysses_flywheel")
+
+
+def _flywheel_attention(
+    query: jax.Array,
+    key: jax.Array,
+    value: jax.Array,
+    heads: int,
+    mesh: Mesh,
+    axis_names_q: AxisNames,
+    axis_names_kv: AxisNames,
+    scale: float,
+    use_ulysses: bool = False,
+    attention_mask: jax.Array = None,
+    is_causal: bool = False,
+    kv_heads: Optional[int] = None,
+    ulysses_shards: int = -1,
+    ulysses_attention_chunks: int = 1,
+) -> jax.Array:
+  """FlyWheel `flash_attn_varlen_func` self-attention.
+
+  `use_ulysses=False` keeps the `flash` sharding (sequence-sharded q, full K/V);
+  `use_ulysses=True` keeps the `ulysses` sharding (all-to-all around the kernel).
+  Each device makes one varlen call with cu_seqlens = [0, length], so K/V padding
+  is never attended. Forward-only and bfloat16-only; unsupported inputs raise.
+  """
+  kernel_name = "ulysses_flywheel" if use_ulysses else "flywheel"
+  if attention_mask is not None:
+    raise NotImplementedError(f"{kernel_name} does not support attention_mask.")
+  if is_causal:
+    raise NotImplementedError(f"{kernel_name} supports full (non-causal) attention only.")
+  if kv_heads is not None and kv_heads != heads:
+    raise NotImplementedError(f"{kernel_name} does not support GQA (got heads={heads}, kv_heads={kv_heads}).")
+  for name, tensor in (("query", query), ("key", key), ("value", value)):
+    if tensor.dtype != jnp.bfloat16:
+      raise TypeError(f"{kernel_name} requires bfloat16 inputs, got {name}.dtype={tensor.dtype}.")
+
+  num_shards = mesh.shape[CONTEXT] if CONTEXT in mesh.shape else 1
+  q_axis_names = nn.logical_to_mesh_axes(axis_names_q)
+  kv_axis_names = nn.logical_to_mesh_axes(axis_names_kv)
+  if use_ulysses:
+    _validate_implicit_ulysses_degree(ulysses_shards, num_shards, kernel_name)
+    if heads % num_shards != 0:
+      raise ValueError(
+          f"{kernel_name} requires the number of heads to be divisible by the context shard count, "
+          f"got heads={heads} and context_shards={num_shards}."
+      )
+  elif num_shards > 1 and _mesh_axis_in_spec(kv_axis_names[2], CONTEXT):
+    raise ValueError(
+        f"{kernel_name} needs the full K/V sequence on every device, but the K/V sequence axis is "
+        f"sharded over '{CONTEXT}'. Use ulysses_flywheel for sequence-sharded K/V."
+    )
+
+  query, orig_q_seq_len = _reshape_data_for_flash(query, heads, num_shards)
+  num_shards_kv = num_shards if use_ulysses else 1
+  key, orig_kv_seq_len = _reshape_data_for_flash(key, heads, num_shards_kv)
+  value, _ = _reshape_data_for_flash(value, heads, num_shards_kv)
+
+  try:
+    # Optional dependency, imported only when the kernel is selected.
+    from flywheel_tpu import flash_attn_varlen_func  # pylint: disable=import-outside-toplevel
+  except ImportError as e:
+    raise ImportError(f"{kernel_name} requires the flywheel-tpu package (pip install flywheel-tpu).") from e
+
+  def local_attention(q, k, v):
+    if use_ulysses:
+      # [b, h, S/N, d] -> [b, h/N, S, d]: give up heads, gather the sequence.
+      q = jax.lax.all_to_all(q, axis_name=CONTEXT, split_axis=1, concat_axis=2, tiled=True)
+      k = jax.lax.all_to_all(k, axis_name=CONTEXT, split_axis=1, concat_axis=2, tiled=True)
+      v = jax.lax.all_to_all(v, axis_name=CONTEXT, split_axis=1, concat_axis=2, tiled=True)
+      q_len = orig_q_seq_len
+    else:
+      # Local query shard; its padding rows are computed and trimmed below.
+      q_len = q.shape[2]
+    b, h, s_q, d = q.shape
+    s_kv = k.shape[2]
+    out = flash_attn_varlen_func(
+        q.reshape(b * h, s_q, d),
+        k.reshape(b * h, s_kv, d),
+        v.reshape(b * h, s_kv, v.shape[-1]),
+        jnp.array([0, q_len], dtype=jnp.int32),
+        jnp.array([0, orig_kv_seq_len], dtype=jnp.int32),
+        max_seqlen_q=s_q,
+        max_seqlen_k=s_kv,
+        softmax_scale=float(scale),
+        causal=False,
+    )
+    out = out.reshape(b, h, s_q, v.shape[-1])
+    if use_ulysses:
+      # [b, h/N, S, d] -> [b, h, S/N, d]
+      out = jax.lax.all_to_all(out, axis_name=CONTEXT, split_axis=2, concat_axis=1, tiled=True)
+    return out
+
+  sharded_attention = jax.shard_map(
+      local_attention,
+      mesh=mesh,
+      in_specs=(q_axis_names, kv_axis_names, kv_axis_names),
+      out_specs=q_axis_names,
+      check_vma=False,
+  )
+  if use_ulysses:
+    x = _run_chunked_ulysses_attention(query, key, value, heads, num_shards, ulysses_attention_chunks, sharded_attention)
+  else:
+    x = sharded_attention(query, key, value)
+  x = x[:, :, :orig_q_seq_len, :]
+  return _reshape_heads_to_head_dim(x)
+
+
+# ---------------------------------------------------------------------------
 # Ulysses sequence-parallel attention
 # ---------------------------------------------------------------------------
 
@@ -2733,6 +2845,44 @@ def flash_kernel(q, k, v, context):
   )
 
 
+@register_kernel("flywheel")
+def flywheel_kernel(q, k, v, context):
+  return _flywheel_attention(
+      q,
+      k,
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      # K may arrive already multiplied by the softmax scale (as attention="flash" accepts).
+      scale=1.0 if context.get("k_prescaled", False) else context["scale"],
+      attention_mask=context["attention_mask"],
+      is_causal=context.get("is_causal", False),
+      kv_heads=context.get("kv_heads", None),
+  )
+
+
+@register_kernel("ulysses_flywheel")
+def ulysses_flywheel_kernel(q, k, v, context):
+  return _flywheel_attention(
+      q,
+      k,
+      v,
+      context["heads"],
+      context["mesh"],
+      context["axis_names_q"],
+      context["axis_names_kv"],
+      scale=1.0 if context.get("k_prescaled", False) else context["scale"],
+      use_ulysses=True,
+      attention_mask=context["attention_mask"],
+      is_causal=context.get("is_causal", False),
+      kv_heads=context.get("kv_heads", None),
+      ulysses_shards=context.get("ulysses_shards", -1),
+      ulysses_attention_chunks=context.get("ulysses_attention_chunks", 1),
+  )
+
+
 @register_kernel("tokamax_flash")
 def tokamax_flash_kernel(q, k, v, context):
   return _tpu_flash_attention(
@@ -2871,6 +3021,8 @@ def _apply_attention(
   if attention_kernel in [
       "flash",
       "tokamax_flash",
+      "flywheel",
+      "ulysses_flywheel",
       "ulysses",
       "ulysses_custom",
       "ulysses_custom_fixed_m",
@@ -3657,7 +3809,7 @@ class FlaxWanAttention(nnx.Module):
     self.wan_cross_attn_prescale_kv = _wan_opt("wan_cross_attn_prescale_kv")
     self.wan_rope_accum = _wan_opt("wan_rope_accum")
 
-    if attention_kernel in {"flash", "cudnn_flash_te"} and mesh is None:
+    if attention_kernel in {"flash", "cudnn_flash_te", *FLYWHEEL_KERNELS} and mesh is None:
       raise ValueError(f"The flash attention kernel requires a value for mesh, but mesh is {self.mesh}")
     self.dim_head = dim_head
     self.heads = heads
@@ -3684,7 +3836,8 @@ class FlaxWanAttention(nnx.Module):
         "ulysses_custom_fixed_m_per_q_block",
     )
     cross_attention_uses_local_kv = not is_self_attention and (
-        cross_attention_remapped_to_flash or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te")
+        cross_attention_remapped_to_flash
+        or attention_kernel in ("flash", "tokamax_flash", "cudnn_flash_te", *FLYWHEEL_KERNELS)
     )
     if is_self_attention:
       axis_names_q = (BATCH, SELF_ATTN_HEAD, SELF_ATTN_Q_LENGTH, D_KV)
@@ -3699,6 +3852,10 @@ class FlaxWanAttention(nnx.Module):
       )
     if cross_attention_remapped_to_flash:
       attention_kernel = "tokamax_flash"
+    elif not is_self_attention and attention_kernel in FLYWHEEL_KERNELS:
+      # FlyWheel replaces self-attention only. Cross-attention (video queries x
+      # text keys, and the I2V image mask) stays on Splash.
+      attention_kernel = "flash"
     self.added_kv_proj_dim = added_kv_proj_dim  # New for I2V
     self.image_seq_len = image_seq_len  # New for I2V
     tpu_type = get_tpu_type()

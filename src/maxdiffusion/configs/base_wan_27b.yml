@@ -103,7 +103,7 @@ svg_low_noise_density: -1.0
 # {"block_q":3328,"block_kv":2816,"block_kv_compute":256,
 #  "block_kv_compute_in":256,"heads_per_tile":1,"vmem_limit_bytes":67108864}.
 svg_flash_block_sizes: {}
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir
+attention: 'flash' # Supported attention: dot_product, flash, flywheel, ulysses_flywheel, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir
 
 
 #
