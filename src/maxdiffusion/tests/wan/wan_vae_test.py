@@ -44,6 +44,7 @@ from maxdiffusion.models.wan.autoencoder_kl_wan import (
     ZeroPaddedConv2D,
     WanAttentionBlock,
     AutoencoderKLWanCache,
+    _spatial_sharding,
 )
 from maxdiffusion.models.wan.wan_utils import load_wan_vae
 from maxdiffusion.utils import load_video
@@ -505,6 +506,52 @@ class WanVaeTest(unittest.TestCase):
       input = jnp.ones(input_shape)
       output = wan_vae.encode(input, feat_cache=vae_cache)
       assert output.latent_dist.sample(key).shape == (1, 13, 64, 128, 16)
+
+  def _create_vae_mesh(self):
+    devices_array = create_device_mesh(self.config)
+    vae_spatial = getattr(self.config, "vae_spatial", -1)
+    if vae_spatial == -1:
+      vae_spatial = devices_array.size
+    return Mesh(devices_array.flatten().reshape(-1, vae_spatial), ("redundant", "vae_spatial"))
+
+  def test_spatial_sharding_shards_longer_axis(self):
+    mesh = self._create_vae_mesh()
+    width_spec = jax.sharding.PartitionSpec("redundant", None, None, "vae_spatial", None)
+    height_spec = jax.sharding.PartitionSpec("redundant", None, "vae_spatial", None, None)
+
+    # Landscape and square videos shard the width, portrait videos the height.
+    self.assertEqual(_spatial_sharding(mesh, (1, 2, 90, 160, 16)).spec, width_spec)
+    self.assertEqual(_spatial_sharding(mesh, (1, 2, 64, 64, 16)).spec, width_spec)
+    self.assertEqual(_spatial_sharding(mesh, (1, 2, 160, 90, 16)).spec, height_spec)
+    # The axis only depends on the aspect ratio, so it is the same at every
+    # resolution level of the VAE.
+    for scale in (1, 2, 4, 8):
+      self.assertEqual(_spatial_sharding(mesh, (1, 2, 1280 // scale, 720 // scale, 96)).spec, height_spec)
+    self.assertIsNone(_spatial_sharding(None, (1, 2, 160, 90, 16)))
+
+  def test_wan_encode_decode_portrait(self):
+    key = jax.random.key(0)
+    rngs = nnx.Rngs(key)
+    mesh = self._create_vae_mesh()
+    with mesh, nn_partitioning.axis_rules(self.config.vae_logical_axis_rules):
+      wan_vae = AutoencoderKLWan(
+          rngs=rngs,
+          base_dim=96,
+          z_dim=16,
+          dim_mult=[1, 2, 4, 4],
+          num_res_blocks=2,
+          attn_scales=[],
+          temperal_downsample=[False, True, True],
+          mesh=mesh,
+      )
+      vae_cache = AutoencoderKLWanCache(wan_vae)
+      # A portrait video whose latent width (3) is not divisible by 4 devices,
+      # but whose latent height (4) is.
+      video = jnp.ones((1, 3, 5, 32, 24))
+      latents = wan_vae.encode(video, feat_cache=vae_cache).latent_dist.sample(key)
+      assert latents.shape == (1, 2, 4, 3, 16)
+      decoded = wan_vae.decode(latents, feat_cache=vae_cache)
+      assert decoded.sample.shape == (1, 5, 32, 24, 3)
 
   def test_load_checkpoint(self):
     def vae_encode(video, wan_vae, vae_cache, key):
