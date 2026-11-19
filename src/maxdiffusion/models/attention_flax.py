@@ -2911,6 +2911,7 @@ def _apply_attention(
   # Masks enter the dispatcher as canonical [B, K] keep masks. Adapt them
   # only after fallback selection because a configured flash kernel may use
   # dot-product attention for short sequences.
+  has_valid_key = None
   if attention_mask is not None:
     if attention_mask.ndim != 2:
       raise ValueError(f"attention_mask must have shape [batch, kv_length], got {attention_mask.shape}.")
@@ -2925,6 +2926,9 @@ def _apply_attention(
         attention_mask = attention_bias[:, None, None, :]
       else:
         attention_mask = jnp.repeat(attention_bias, heads, axis=0)[:, None, :]
+    else:
+      key_seq_len = key.shape[2 if key.ndim == 4 else 1]
+      has_valid_key = jnp.any(attention_mask[:, :key_seq_len], axis=-1)
 
   context = {
       "heads": heads,
@@ -2973,7 +2977,11 @@ def _apply_attention(
   # Module-level Registry lookup
   if effective_attention_kernel in KERNEL_REGISTRY:
     with jax.named_scope(f"kernel_{effective_attention_kernel}"):
-      return KERNEL_REGISTRY[effective_attention_kernel](query, key, value, context)
+      out = KERNEL_REGISTRY[effective_attention_kernel](query, key, value, context)
+      if has_valid_key is not None:
+        mask_bcast = has_valid_key.reshape((has_valid_key.shape[0],) + (1,) * (out.ndim - 1))
+        out = jnp.where(mask_bcast, out, jnp.zeros_like(out))
+      return out
 
   raise ValueError(f"Unexpected attention kernel {effective_attention_kernel=}.")
 

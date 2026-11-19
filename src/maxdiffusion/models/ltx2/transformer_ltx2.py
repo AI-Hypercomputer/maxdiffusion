@@ -54,6 +54,8 @@ class LTX2StaticContext:
   audio_encoder_attention_mask: Optional[jax.Array] = None
   a2v_cross_attention_mask: Optional[jax.Array] = None
   v2a_cross_attention_mask: Optional[jax.Array] = None
+  video_attention_mask: Optional[jax.Array] = None
+  audio_attention_mask: Optional[jax.Array] = None
   spatiotemporal_shape: Optional[Tuple[int, int, int]] = struct.field(pytree_node=False, default=None)
   svg_timestep: Optional[int | float | jax.Array] = None
   svg_step_index: Optional[int | jax.Array] = None
@@ -69,7 +71,12 @@ class LTX2BlockContext:
   layer_index: Optional[int | jax.Array] = None
 
 
-def _canonicalize_attention_mask(mask: Optional[jax.Array], batch_size: int, name: str) -> Optional[jax.Array]:
+def _canonicalize_attention_mask(
+    mask: Optional[jax.Array],
+    batch_size: int,
+    name: str,
+    expected_kv_length: Optional[int] = None,
+) -> Optional[jax.Array]:
   if mask is None:
     return None
   if mask.ndim != 2:
@@ -78,7 +85,57 @@ def _canonicalize_attention_mask(mask: Optional[jax.Array], batch_size: int, nam
     raise ValueError(f"{name} batch dimension must be {batch_size}, got {mask.shape[0]}.")
   if mask.dtype != jnp.bool_:
     raise ValueError(f"{name} must be a boolean mask, got {mask.dtype}.")
+  if expected_kv_length is not None and mask.shape[1] != expected_kv_length:
+    raise ValueError(f"{name} kv_length dimension must be {expected_kv_length}, got {mask.shape[1]}.")
   return mask
+
+
+def _canonicalize_modality_mask(
+    modality_mask: Optional[jax.Array],
+    batch_size: int,
+    dtype: jnp.dtype,
+) -> Optional[jax.Array]:
+  if modality_mask is None:
+    return None
+  if modality_mask.ndim not in (1, 2, 3):
+    raise ValueError(f"modality_mask must be 1D, 2D, or 3D, got shape {modality_mask.shape}.")
+  if modality_mask.shape[0] != batch_size:
+    raise ValueError(f"modality_mask batch dimension must be {batch_size}, got {modality_mask.shape[0]}.")
+  if modality_mask.ndim == 1:
+    modality_mask = modality_mask[:, None, None]
+  elif modality_mask.ndim == 2:
+    modality_mask = modality_mask[:, :, None]
+  return modality_mask.astype(dtype)
+
+
+def _resolve_cross_modal_mask(
+    explicit_mask: Optional[jax.Array],
+    modality_kv_mask: Optional[jax.Array],
+) -> Optional[jax.Array]:
+  if explicit_mask is None:
+    return modality_kv_mask
+  if modality_kv_mask is None:
+    return explicit_mask
+  return explicit_mask & modality_kv_mask
+
+
+def _zero_padded_tokens(x: jax.Array, mask: Optional[jax.Array]) -> jax.Array:
+  if mask is None:
+    return x
+  return jnp.where(mask[:, :, None], x, jnp.zeros_like(x))
+
+
+def _zero_if_no_valid_kv(attn_out: jax.Array, kv_mask: Optional[jax.Array]) -> jax.Array:
+  if kv_mask is None:
+    return attn_out
+  has_valid_kv = jnp.any(kv_mask, axis=1)[:, None, None]
+  return jnp.where(has_valid_kv, attn_out, jnp.zeros_like(attn_out))
+
+
+def _apply_modality_mask(attn_out: jax.Array, modality_mask: Optional[jax.Array]) -> jax.Array:
+  if modality_mask is None:
+    return attn_out
+  return jnp.where(modality_mask == 0, jnp.zeros_like(attn_out), attn_out * modality_mask.astype(attn_out.dtype))
 
 
 class LTX2AdaLayerNormSingle(nnx.Module):
@@ -557,13 +614,44 @@ class LTX2VideoTransformerBlock(nnx.Module):
     audio_encoder_attention_mask = ctx.static.audio_encoder_attention_mask
     a2v_cross_attention_mask = ctx.static.a2v_cross_attention_mask
     v2a_cross_attention_mask = ctx.static.v2a_cross_attention_mask
+    video_attention_mask = ctx.static.video_attention_mask
+    audio_attention_mask = ctx.static.audio_attention_mask
     perturbation_mask = ctx.perturbation_mask
     batch_size = hidden_states.shape[0]
+
+    video_attention_mask = _canonicalize_attention_mask(
+        video_attention_mask, batch_size, "video_attention_mask", expected_kv_length=hidden_states.shape[1]
+    )
+    audio_attention_mask = _canonicalize_attention_mask(
+        audio_attention_mask, batch_size, "audio_attention_mask", expected_kv_length=audio_hidden_states.shape[1]
+    )
+    a2v_cross_attention_mask = _resolve_cross_modal_mask(
+        _canonicalize_attention_mask(
+            a2v_cross_attention_mask,
+            batch_size,
+            "a2v_cross_attention_mask",
+            expected_kv_length=audio_hidden_states.shape[1],
+        ),
+        audio_attention_mask,
+    )
+    v2a_cross_attention_mask = _resolve_cross_modal_mask(
+        _canonicalize_attention_mask(
+            v2a_cross_attention_mask,
+            batch_size,
+            "v2a_cross_attention_mask",
+            expected_kv_length=hidden_states.shape[1],
+        ),
+        video_attention_mask,
+    )
+    modality_mask = _canonicalize_modality_mask(modality_mask, batch_size, hidden_states.dtype)
 
     axis_names = nn.logical_to_mesh_axes(("activation_batch", "activation_length", "activation_embed"))
     hidden_states = jax.lax.with_sharding_constraint(hidden_states, axis_names)
     axis_names_audio = nn.logical_to_mesh_axes(("activation_batch", None, "activation_embed"))
     audio_hidden_states = jax.lax.with_sharding_constraint(audio_hidden_states, axis_names_audio)
+
+    hidden_states = _zero_padded_tokens(hidden_states, video_attention_mask)
+    audio_hidden_states = _zero_padded_tokens(audio_hidden_states, audio_attention_mask)
 
     if encoder_hidden_states is not None:
       encoder_hidden_states = jax.lax.with_sharding_constraint(encoder_hidden_states, axis_names)
@@ -600,6 +688,7 @@ class LTX2VideoTransformerBlock(nnx.Module):
       attn_hidden_states = self.attn1(
           hidden_states=norm_hidden_states,
           encoder_hidden_states=None,
+          attention_mask=video_attention_mask,
           rotary_emb=video_rotary_emb,
           perturbation_mask=perturbation_mask,
           spatiotemporal_shape=ctx.static.spatiotemporal_shape,
@@ -607,7 +696,8 @@ class LTX2VideoTransformerBlock(nnx.Module):
           svg_timestep=ctx.static.svg_timestep,
           svg_step_index=ctx.static.svg_step_index,
       )
-    hidden_states = hidden_states + attn_hidden_states * gate_msa
+      attn_hidden_states = _zero_if_no_valid_kv(attn_hidden_states, video_attention_mask)
+    hidden_states = _zero_padded_tokens(hidden_states + attn_hidden_states * gate_msa, video_attention_mask)
 
     # Calculate Audio AdaLN values
     norm_audio_hidden_states = self.audio_norm1(audio_hidden_states)
@@ -635,10 +725,14 @@ class LTX2VideoTransformerBlock(nnx.Module):
       attn_audio_hidden_states = self.audio_attn1(
           hidden_states=norm_audio_hidden_states,
           encoder_hidden_states=None,
+          attention_mask=audio_attention_mask,
           rotary_emb=audio_rotary_emb,
           perturbation_mask=perturbation_mask,
       )
-    audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * audio_gate_msa
+      attn_audio_hidden_states = _zero_if_no_valid_kv(attn_audio_hidden_states, audio_attention_mask)
+    audio_hidden_states = _zero_padded_tokens(
+        audio_hidden_states + attn_audio_hidden_states * audio_gate_msa, audio_attention_mask
+    )
 
     # 2. Video and Audio Cross-Attention with the text embeddings
     norm_hidden_states = self.norm2(hidden_states)
@@ -661,9 +755,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_mask=encoder_attention_mask,
         cached_kv=attn2_kv,
     )
+    attn_hidden_states = _zero_if_no_valid_kv(attn_hidden_states, encoder_attention_mask)
     if self.cross_attn_mod:
       attn_hidden_states = attn_hidden_states * gate_q
-    hidden_states = hidden_states + attn_hidden_states
+    hidden_states = _zero_padded_tokens(hidden_states + attn_hidden_states, video_attention_mask)
 
     norm_audio_hidden_states = self.audio_norm2(audio_hidden_states)
     if self.cross_attn_mod:
@@ -685,9 +780,10 @@ class LTX2VideoTransformerBlock(nnx.Module):
         attention_mask=audio_encoder_attention_mask,
         cached_kv=audio_attn2_kv,
     )
+    attn_audio_hidden_states = _zero_if_no_valid_kv(attn_audio_hidden_states, audio_encoder_attention_mask)
     if self.cross_attn_mod:
       attn_audio_hidden_states = attn_audio_hidden_states * audio_gate_q
-    audio_hidden_states = audio_hidden_states + attn_audio_hidden_states
+    audio_hidden_states = _zero_padded_tokens(audio_hidden_states + attn_audio_hidden_states, audio_attention_mask)
 
     # 3. Audio-to-Video (a2v) and Video-to-Audio (v2a) Cross-Attention
     norm_hidden_states = self.audio_to_video_norm(hidden_states)
@@ -740,9 +836,9 @@ class LTX2VideoTransformerBlock(nnx.Module):
           k_rotary_emb=ca_audio_rotary_emb,
           attention_mask=a2v_cross_attention_mask,
       )
-    if modality_mask is not None:
-      a2v_attn_hidden_states = a2v_attn_hidden_states * modality_mask
-    hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
+      a2v_attn_hidden_states = _zero_if_no_valid_kv(a2v_attn_hidden_states, a2v_cross_attention_mask)
+    a2v_attn_hidden_states = _apply_modality_mask(a2v_attn_hidden_states, modality_mask)
+    hidden_states = _zero_padded_tokens(hidden_states + a2v_gate * a2v_attn_hidden_states, video_attention_mask)
 
     # Video-to-Audio Cross Attention: Q: Audio; K,V: Video
     mod_norm_hidden_states_v2a = norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
@@ -756,20 +852,20 @@ class LTX2VideoTransformerBlock(nnx.Module):
           k_rotary_emb=ca_video_rotary_emb,
           attention_mask=v2a_cross_attention_mask,
       )
-    if modality_mask is not None:
-      v2a_attn_hidden_states = v2a_attn_hidden_states * modality_mask
-    audio_hidden_states = audio_hidden_states + v2a_gate * v2a_attn_hidden_states
+      v2a_attn_hidden_states = _zero_if_no_valid_kv(v2a_attn_hidden_states, v2a_cross_attention_mask)
+    v2a_attn_hidden_states = _apply_modality_mask(v2a_attn_hidden_states, modality_mask)
+    audio_hidden_states = _zero_padded_tokens(audio_hidden_states + v2a_gate * v2a_attn_hidden_states, audio_attention_mask)
 
     # 4. Feedforward
     norm_hidden_states = self.norm3(hidden_states)
     norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
     ff_output = self.ff(norm_hidden_states)
-    hidden_states = hidden_states + ff_output * gate_mlp
+    hidden_states = _zero_padded_tokens(hidden_states + ff_output * gate_mlp, video_attention_mask)
 
     norm_audio_hidden_states = self.audio_norm3(audio_hidden_states)
     norm_audio_hidden_states = norm_audio_hidden_states * (1 + audio_scale_mlp) + audio_shift_mlp
     audio_ff_output = self.audio_ff(norm_audio_hidden_states)
-    audio_hidden_states = audio_hidden_states + audio_ff_output * audio_gate_mlp
+    audio_hidden_states = _zero_padded_tokens(audio_hidden_states + audio_ff_output * audio_gate_mlp, audio_attention_mask)
 
     return hidden_states, audio_hidden_states
 
@@ -1423,6 +1519,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       rope_cache: Optional[Dict[str, Tuple[jax.Array, jax.Array]]] = None,
       time_embed_cache: Optional[Dict[str, jax.Array]] = None,
       svg_step_index: Optional[int | jax.Array] = None,
+      video_attention_mask: Optional[jax.Array] = None,
+      audio_attention_mask: Optional[jax.Array] = None,
   ) -> Any:
     """
     Forward pass for the full LTX2 Video/Audio Diffusion Transformer.
@@ -1450,6 +1548,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
       modality_mask: Mask indicating which modality to drop/keep.
       return_dict: If True, returns a dictionary. Otherwise, returns a tuple.
       perturbation_mask: Optional mask for perturbing attention.
+      video_attention_mask: Optional boolean keep-mask `[batch, seq_len]` for video tokens.
+      audio_attention_mask: Optional boolean keep-mask `[batch, audio_seq_len]` for audio tokens.
 
     Returns:
       Output dict containing `sample` (video) and `audio_sample` (audio).
@@ -1463,13 +1563,43 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
     if attention_kwargs is not None:
       a2v_cross_attention_mask = attention_kwargs.get("a2v_cross_attention_mask", None)
       v2a_cross_attention_mask = attention_kwargs.get("v2a_cross_attention_mask", None)
+      if video_attention_mask is None:
+        video_attention_mask = attention_kwargs.get("video_attention_mask", None)
+      if audio_attention_mask is None:
+        audio_attention_mask = attention_kwargs.get("audio_attention_mask", None)
 
+    if bool(self.attention_config.get("use_svg_attention", False)) and video_attention_mask is not None:
+      raise ValueError("SVG attention (use_svg_attention=True) does not support video_attention_mask padding masks.")
+
+    video_attention_mask = _canonicalize_attention_mask(
+        video_attention_mask, batch_size, "video_attention_mask", expected_kv_length=hidden_states.shape[1]
+    )
+    audio_attention_mask = _canonicalize_attention_mask(
+        audio_attention_mask, batch_size, "audio_attention_mask", expected_kv_length=audio_hidden_states.shape[1]
+    )
     encoder_attention_mask = _canonicalize_attention_mask(encoder_attention_mask, batch_size, "encoder_attention_mask")
     audio_encoder_attention_mask = _canonicalize_attention_mask(
         audio_encoder_attention_mask, batch_size, "audio_encoder_attention_mask"
     )
-    a2v_cross_attention_mask = _canonicalize_attention_mask(a2v_cross_attention_mask, batch_size, "a2v_cross_attention_mask")
-    v2a_cross_attention_mask = _canonicalize_attention_mask(v2a_cross_attention_mask, batch_size, "v2a_cross_attention_mask")
+    a2v_cross_attention_mask = _resolve_cross_modal_mask(
+        _canonicalize_attention_mask(
+            a2v_cross_attention_mask,
+            batch_size,
+            "a2v_cross_attention_mask",
+            expected_kv_length=audio_hidden_states.shape[1],
+        ),
+        audio_attention_mask,
+    )
+    v2a_cross_attention_mask = _resolve_cross_modal_mask(
+        _canonicalize_attention_mask(
+            v2a_cross_attention_mask,
+            batch_size,
+            "v2a_cross_attention_mask",
+            expected_kv_length=hidden_states.shape[1],
+        ),
+        video_attention_mask,
+    )
+    modality_mask = _canonicalize_modality_mask(modality_mask, batch_size, self.dtype)
 
     # 1. Prepare RoPE positional embeddings
     with self.named_scope("RoPE Preparation"):
@@ -1492,8 +1622,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
     # 2. Patchify input projections
     with self.named_scope("Input Projection"):
-      hidden_states = self.proj_in(hidden_states)
-      audio_hidden_states = self.audio_proj_in(audio_hidden_states)
+      hidden_states = _zero_padded_tokens(self.proj_in(hidden_states), video_attention_mask)
+      audio_hidden_states = _zero_padded_tokens(self.audio_proj_in(audio_hidden_states), audio_attention_mask)
 
     # 3. Prepare timestep embeddings and modulation parameters
     with self.named_scope("Timestep and Caption Projection"):
@@ -1648,6 +1778,8 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
           audio_encoder_attention_mask=audio_encoder_attention_mask,
           a2v_cross_attention_mask=a2v_cross_attention_mask,
           v2a_cross_attention_mask=v2a_cross_attention_mask,
+          video_attention_mask=video_attention_mask,
+          audio_attention_mask=audio_attention_mask,
           modality_mask=modality_mask,
           spatiotemporal_shape=spatiotemporal_shape,
           svg_timestep=timestep,
@@ -1796,7 +1928,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
       hidden_states = self.norm_out(hidden_states)
       hidden_states = hidden_states * (1 + scale) + shift
-      output = self.proj_out(hidden_states)
+      output = _zero_padded_tokens(self.proj_out(hidden_states), video_attention_mask)
 
       audio_scale_shift_values = jnp.expand_dims(self.audio_scale_shift_table, axis=(0, 1)) + jnp.expand_dims(
           audio_embedded_timestep, axis=2
@@ -1806,7 +1938,7 @@ class LTX2VideoTransformer3DModel(nnx.Module, ConfigMixin):
 
       audio_hidden_states = self.audio_norm_out(audio_hidden_states)
       audio_hidden_states = audio_hidden_states * (1 + audio_scale) + audio_shift
-      audio_output = self.audio_proj_out(audio_hidden_states)
+      audio_output = _zero_padded_tokens(self.audio_proj_out(audio_hidden_states), audio_attention_mask)
 
     if not return_dict:
       return (output, audio_output)
