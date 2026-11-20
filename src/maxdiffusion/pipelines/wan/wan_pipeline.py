@@ -989,6 +989,14 @@ class WanPipeline:
 
   def _decode_latents_to_video(self, latents: jax.Array, trace: Optional[dict] = None) -> np.ndarray:
     """Decodes latents to video frames and postprocesses."""
+    if self.vae_mesh is not None and hasattr(self.vae_mesh, "shape"):
+      redundant = self.vae_mesh.shape.get("redundant", 1)
+      if redundant > 1 and latents.shape[0] % redundant != 0:
+        raise ValueError(
+            f"VAE decode batch size ({latents.shape[0]}) must be divisible by the 'redundant' mesh axis "
+            f"({redundant}) on vae_mesh={self.vae_mesh.shape}. Pass a full batch matching "
+            "global_batch_size_to_train_on or set vae_spatial explicitly."
+        )
     t_vae_tpu_start = time.perf_counter()
     with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       graphdef, state, rest_of_state = nnx.split(self.vae, nnx.Param, ...)
@@ -1006,6 +1014,48 @@ class WanPipeline:
       video = np.asarray(video)
     return video
 
+  @staticmethod
+  def _auto_vae_spatial(config, total_devices: int, batch_parallel_vae: bool = False) -> int:
+    """Picks the `vae_spatial` mesh extent when the config leaves it at -1 (auto).
+
+    The VAE mesh is ('redundant', 'vae_spatial') with redundant * vae_spatial ==
+    total_devices.  Batch is sharded on 'redundant', and the longer spatial axis
+    (height for portrait videos, width otherwise) / conv channels on
+    'vae_spatial'.  Spatial sharding is what lets a single video fit, but with
+    vae_spatial == total_devices the batch axis is fully replicated, so at
+    B == total_devices every chip holds all B videos' activations and the
+    causal conv stack pays a ~10x slowdown (41.6s -> 6.3s at B=8 on tpu7x-8)
+    and OOMs on 32 GiB parts.
+
+    Measured on v6e-8 / tpu7x-8 (720p, 81 frames):
+      * B % total_devices == 0: pure data parallelism (vae_spatial == 1) is
+        strictly better -- 1 video per device, zero cross-chip collectives.
+      * 1 < B < total_devices: mixed meshes are NOT a win.  At B=2 on v6e-8
+        the (2, 4) mesh needed a 21.2 GiB decode program vs 15.5 GiB for
+        (1, 8), even though per-device activation volume is identical.
+    So this only switches to vae_spatial == 1 when the batch is a multiple of
+    the device count and keeps full spatial sharding otherwise.  Setting
+    `vae_spatial` explicitly in the config still overrides this.
+
+    `batch_parallel_vae` gates the batch-aware choice.  The VAE constrains
+    every activation to P('redundant', ..., 'vae_spatial', ...).  On a
+    vae_spatial == 1 mesh the batch axis is the only sharded axis, so *every*
+    tensor that goes through the VAE needs a batch divisible by total_devices
+    (`_decode_latents_to_video` raises ValueError otherwise, rather than
+    silently decoding replicated on every chip).  Divisibility holds for the T2V pipelines
+    (the only VAE call is the final decode of the full batch), but not for
+    pipelines that also encode conditioning through the VAE at a different
+    batch -- VACE encodes reference images one at a time ([1, 1, H, W, C]),
+    animate / i2v encode conditioning clips.  Those pipelines leave the gate
+    off and keep the full-spatial (1, N) mesh.
+    """
+    if not batch_parallel_vae:
+      return total_devices
+    batch_size = int(config.global_batch_size_to_train_on)
+    if batch_size >= total_devices and batch_size % total_devices == 0:
+      return 1
+    return total_devices
+
   @classmethod
   def _create_common_components(
       cls,
@@ -1014,6 +1064,7 @@ class WanPipeline:
       load_text_encoder=True,
       load_scheduler=True,
       i2v=False,
+      batch_parallel_vae=False,
   ):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
@@ -1022,7 +1073,7 @@ class WanPipeline:
     total_devices = math.prod(devices_array.shape)
 
     if vae_spatial == -1:
-      vae_spatial = total_devices
+      vae_spatial = cls._auto_vae_spatial(config, total_devices, batch_parallel_vae=batch_parallel_vae)
 
     assert (
         total_devices % vae_spatial == 0
@@ -1033,7 +1084,8 @@ class WanPipeline:
 
     vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     max_logging.log(
-        f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}."
+        f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') = "
+        f"({total_devices // vae_spatial}, {vae_spatial}) to support spatial sharding of {vae_spatial}."
     )
 
     # logical axis rules for VAE encoding/decoding
