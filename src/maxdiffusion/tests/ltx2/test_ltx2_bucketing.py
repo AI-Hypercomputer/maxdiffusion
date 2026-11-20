@@ -112,6 +112,7 @@ class LTX2BucketingTest(unittest.TestCase):
 
   def setUp(self):
     super().setUp()
+    self.enterContext(jax.default_matmul_precision("float32"))
     devices = np.array(jax.devices())
     self.devices = devices
     if devices.size >= 8:

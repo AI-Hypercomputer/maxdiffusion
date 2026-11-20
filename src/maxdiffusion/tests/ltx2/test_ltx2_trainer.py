@@ -74,6 +74,7 @@ def _init_mini_config(tmpdir: str, extra_overrides=()):
       "load_encoders_for_training=False",
       "weights_dtype=float32",
       "activations_dtype=float32",
+      "precision=HIGHEST",
       "attention=dot_product",
       "a2v_attention_kernel=dot_product",
       "v2a_attention_kernel=dot_product",
@@ -116,6 +117,10 @@ def _randomize_zero_params(model: LTX2VideoTransformer3DModel, key: jax.Array) -
 
 
 class LTX2TrainerTest(unittest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.enterContext(jax.default_matmul_precision("float32"))
 
   def test_config_entrypoint_jit_cache_and_sharding_invariance(self):
     """Verifies train_ltx2 validation, per-bucket JIT compile counts, and TrainState sharding invariance."""

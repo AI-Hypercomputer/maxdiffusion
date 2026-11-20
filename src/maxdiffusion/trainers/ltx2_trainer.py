@@ -30,6 +30,7 @@ from flax import nnx
 from flax.linen import partitioning as nn_partitioning
 from flax.training import train_state
 import jax
+from jax.experimental import multihost_utils
 import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import numpy as np
@@ -199,7 +200,9 @@ class LTX2LoRALinear(nnx.Module):
 
   def __call__(self, x: jax.Array, *args, **kwargs) -> jax.Array:
     base_out = self.base(x, *args, **kwargs)
-    delta = (x.astype(jnp.float32) @ self.lora_a[...].astype(jnp.float32)) @ self.lora_b[...].astype(jnp.float32)
+    prec = getattr(self.base, "precision", None)
+    hidden = jnp.matmul(x.astype(jnp.float32), self.lora_a[...].astype(jnp.float32), precision=prec)
+    delta = jnp.matmul(hidden, self.lora_b[...].astype(jnp.float32), precision=prec)
     return base_out + (delta * self.scale).astype(base_out.dtype)
 
 
@@ -1170,14 +1173,18 @@ class LTX2Trainer:
     )
 
     lora_export_dir = str(getattr(cfg, "lora_safetensors_export_dir", ""))
-    if enable_lora and lora_export_dir and jax.process_index() == 0:
-      out_file = os.path.join(lora_export_dir, f"step_{step:06d}", "ltx2_lora_adapter.safetensors")
-      save_lora_safetensors(
-          out_file,
-          state.params,
-          lora_alpha=float(getattr(cfg, "lora_alpha", getattr(cfg, "lora_rank", 32))),
-          scan_layers=bool(getattr(cfg, "scan_layers", True)),
+    if enable_lora and lora_export_dir:
+      gathered_lora_params = (
+          multihost_utils.process_allgather(state.params, tiled=True) if jax.process_count() > 1 else state.params
       )
+      if jax.process_index() == 0:
+        out_file = os.path.join(lora_export_dir, f"step_{step:06d}", "ltx2_lora_adapter.safetensors")
+        save_lora_safetensors(
+            out_file,
+            gathered_lora_params,
+            lora_alpha=float(getattr(cfg, "lora_alpha", getattr(cfg, "lora_rank", 32))),
+            scan_layers=bool(getattr(cfg, "scan_layers", True)),
+        )
 
   def start_training(self) -> LTX2Pipeline:
     """End-to-end training loop supporting cross-bucket GA, metrics logging, and Orbax checkpointing."""
@@ -1192,20 +1199,23 @@ class LTX2Trainer:
     grad_accum_steps = max(1, int(getattr(cfg, "gradient_accumulation_steps", 1)))
     timestep_scale_multiplier = float(getattr(pipeline.transformer, "timestep_scale_multiplier", 1000.0))
 
+    is_main_process = jax.process_index() == 0
     writer = max_utils.initialize_summary_writer(cfg)
     writer_thread = threading.Thread(target=_tensorboard_writer_worker, args=(writer, cfg), daemon=True)
     writer_thread.start()
 
     num_trainable_params = max_utils.calculate_num_params_from_pytree(state.params)
-    if jax.process_index() == 0:
+    if is_main_process:
       max_logging.log("***** Running LTX-2 Bucketed Joint Audio-Video Training *****")
       max_logging.log(f"  Global micro-batch size = {cfg.global_batch_size_to_train_on}")
       max_logging.log(f"  Gradient accumulation steps = {grad_accum_steps}")
       max_logging.log(f"  Trainable parameters = {num_trainable_params}")
       max_logging.log(f"  Max train steps = {cfg.max_train_steps}")
 
-    local_metrics_file = open(cfg.metrics_file, "a", encoding="utf8") if getattr(cfg, "metrics_file", "") else None
-    running_gcs_metrics = [] if getattr(cfg, "gcs_metrics", False) else None
+    local_metrics_file = (
+        open(cfg.metrics_file, "a", encoding="utf8") if (is_main_process and getattr(cfg, "metrics_file", "")) else None
+    )
+    running_gcs_metrics = [] if (is_main_process and getattr(cfg, "gcs_metrics", False)) else None
     rng = jax.random.key(int(cfg.seed))
 
     last_step = start_step - 1
@@ -1234,7 +1244,7 @@ class LTX2Trainer:
             lr=float(learning_rate_scheduler(step)),
             total_weights=num_trainable_params,
         )
-        if getattr(cfg, "write_metrics", False):
+        if is_main_process and getattr(cfg, "write_metrics", False):
           train_utils.write_metrics(writer, local_metrics_file, running_gcs_metrics, train_metric, step, cfg)
 
         ckpt_every = int(getattr(cfg, "checkpoint_every", -1))

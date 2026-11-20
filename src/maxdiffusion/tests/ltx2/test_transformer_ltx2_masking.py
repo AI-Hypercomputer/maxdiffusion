@@ -96,6 +96,7 @@ class LTX2TransformerMaskingTest(unittest.TestCase):
 
   def setUp(self):
     super().setUp()
+    self.enterContext(jax.default_matmul_precision("float32"))
     devices = np.array(jax.devices())
     if devices.size >= 8:
       self.mesh = Mesh(devices[:8].reshape(1, 2, 4, 1), ("data", "fsdp", "context", "tensor"))

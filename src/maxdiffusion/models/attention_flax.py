@@ -2916,6 +2916,8 @@ def _apply_attention(
     if attention_mask.ndim != 2:
       raise ValueError(f"attention_mask must have shape [batch, kv_length], got {attention_mask.shape}.")
     attention_mask = attention_mask.astype(jnp.bool_)
+    key_seq_len = key.shape[2 if key.ndim == 4 else 1]
+    has_valid_key = jnp.any(attention_mask[:, :key_seq_len], axis=-1)
     if effective_attention_kernel == "dot_product":
       attention_bias = jnp.where(
           attention_mask,
@@ -2926,9 +2928,6 @@ def _apply_attention(
         attention_mask = attention_bias[:, None, None, :]
       else:
         attention_mask = jnp.repeat(attention_bias, heads, axis=0)[:, None, :]
-    else:
-      key_seq_len = key.shape[2 if key.ndim == 4 else 1]
-      has_valid_key = jnp.any(attention_mask[:, :key_seq_len], axis=-1)
 
   context = {
       "heads": heads,

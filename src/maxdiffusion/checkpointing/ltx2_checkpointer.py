@@ -54,6 +54,8 @@ class LTX2Checkpointer:
     warmup_steps = int(total_steps * float(getattr(config, "warmup_steps_fraction", 0.0)))
 
     if schedule_type == "cosine" and total_steps > warmup_steps and total_steps > 0:
+      # In optax.warmup_cosine_decay_schedule, decay_steps is the total schedule length
+      # including warmup_steps (Optax internally passes decay_steps - warmup_steps).
       learning_rate_scheduler = optax.warmup_cosine_decay_schedule(
           init_value=0.0,
           peak_value=learning_rate,

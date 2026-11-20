@@ -99,6 +99,7 @@ def _init_bucketing_test_config(tmpdir: str, extra_overrides=()):
       "load_encoders_for_training=False",
       "weights_dtype=float32",
       "activations_dtype=float32",
+      "precision=HIGHEST",
       "attention=dot_product",
       "a2v_attention_kernel=dot_product",
       "v2a_attention_kernel=dot_product",
@@ -175,6 +176,10 @@ class LTX2TrainerBucketingVerificationTest(unittest.TestCase):
     cls.devices = devices[:8]
     cls.mesh_8 = Mesh(np.array(cls.devices).reshape(1, 2, 4, 1), ("data", "fsdp", "context", "tensor"))
     cls.submesh_fsdp1 = Mesh(np.array(cls.devices[:4]).reshape(1, 1, 4, 1), ("data", "fsdp", "context", "tensor"))
+
+  def setUp(self):
+    super().setUp()
+    self.enterContext(jax.default_matmul_precision("float32"))
 
   # ============================================================================
   # Gate 1a: Upstream a560b4d8 Inference Backwards-Compatibility +
