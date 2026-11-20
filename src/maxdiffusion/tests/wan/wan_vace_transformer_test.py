@@ -28,6 +28,7 @@ from maxdiffusion.models.wan.transformers.transformer_wan import (
     WanRotaryPosEmbed,
 )
 from maxdiffusion.models.wan.transformers.transformer_wan_vace import (
+    WanVACEModel,
     WanVACETransformerBlock,
 )
 import qwix
@@ -130,6 +131,43 @@ class WanVaceTransformerTest(unittest.TestCase):
       )
     assert conditioning_states.shape == dummy_hidden_states.shape
     assert control_hidden_states.shape == dummy_hidden_states.shape
+
+  def test_wan_vace_model_reuses_returned_vace_hints(self):
+    pyconfig.initialize([None, os.path.join(THIS_DIR, "..", "..", "configs", "base_wan_14b.yml")], unittest=True)
+    config = pyconfig.config
+    mesh = Mesh(create_device_mesh(config), config.mesh_axes)
+    model = WanVACEModel(
+        rngs=nnx.Rngs(0),
+        vace_layers=[0, 2],
+        vace_in_channels=8,
+        num_attention_heads=2,
+        attention_head_dim=16,
+        in_channels=16,
+        out_channels=16,
+        text_dim=32,
+        freq_dim=32,
+        ffn_dim=64,
+        num_layers=4,
+        mesh=mesh,
+        attention="dot_product",
+        scan_layers=False,
+    )
+    latents_key, control_key, prompt_key = jax.random.split(jax.random.key(0), 3)
+    inputs = {
+        "hidden_states": jax.random.normal(latents_key, (1, 16, 2, 4, 4)),
+        "timestep": jnp.array([700]),
+        "encoder_hidden_states": jax.random.normal(prompt_key, (1, 8, 32)),
+        "control_hidden_states": jax.random.normal(control_key, (1, 8, 2, 4, 4)),
+        "control_hidden_states_scale": jnp.array([0.5, -1.25]),
+    }
+
+    with mesh:
+      expected = model(**inputs)
+      vace_hints = model(**inputs, return_vace_hints=True)
+      actual = model(**inputs, vace_hints=vace_hints)
+
+    self.assertEqual(len(vace_hints), 2)
+    self.assertTrue(jnp.array_equal(actual, expected))
 
 
 if __name__ == "__main__":
