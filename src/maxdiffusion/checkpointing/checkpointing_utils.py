@@ -37,6 +37,7 @@ STABLE_DIFFUSION_XL_CHECKPOINT = "STABLE_DIFUSSION_XL_CHECKPOINT"
 FLUX_CHECKPOINT = "FLUX_CHECKPOINT"
 WAN_CHECKPOINT = "WAN_CHECKPOINT"
 Z_IMAGE_CHECKPOINT = "Z_IMAGE_CHECKPOINT"
+LTX2_CHECKPOINT = "LTX2_CHECKPOINT"
 
 
 def create_orbax_checkpoint_manager(
@@ -87,6 +88,12 @@ def create_orbax_checkpoint_manager(
         "wan_state": ocp.StandardCheckpointHandler(),
         "low_noise_transformer_state": ocp.StandardCheckpointHandler(),
         "high_noise_transformer_state": ocp.StandardCheckpointHandler(),
+    }
+  elif checkpoint_type == LTX2_CHECKPOINT:
+    item_names = ("ltx2_config", "ltx2_state")
+    item_handlers = {
+        "ltx2_config": ocp.JsonCheckpointHandler(),
+        "ltx2_state": ocp.PyTreeCheckpointHandler(),
     }
   else:
     item_names = (

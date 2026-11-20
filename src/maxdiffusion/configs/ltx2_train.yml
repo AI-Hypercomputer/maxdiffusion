@@ -1,0 +1,227 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Run & output directories
+run_name: 'ltx2_bucketed_train'
+output_dir: '/tmp/ltx2_train_outputs'
+base_output_directory: ''
+config_path: ''
+save_config_to_gcs: False
+
+metrics_file: ''
+write_metrics: True
+timing_metrics_file: ''
+write_timing_metrics: False
+gcs_metrics: False
+log_period: 10
+
+# Hardware & distributed setup
+hardware: 'tpu'
+skip_jax_distributed_system: False
+jax_cache_dir: ''
+aot_cache_dir: ''
+aot_build_revision: ''
+converted_weights_dir: ''
+
+# Model & dtype settings
+pretrained_model_name_or_path: 'Lightricks/LTX-2'
+model_name: 'ltx2_video'
+model_type: 'T2V'
+unet_checkpoint: ''
+weights_dtype: 'bfloat16'
+activations_dtype: 'bfloat16'
+text_encoder_dtype: 'bfloat16'
+precision: 'DEFAULT'
+jit_initializers: True
+
+# Offline / miniature config-only initialization (set True in CI / unit tests)
+init_transformer_from_config_only: False
+load_encoders_for_training: False
+transformer_in_channels: 128
+transformer_audio_in_channels: 128
+transformer_patch_size: 1
+transformer_patch_size_t: 1
+transformer_num_attention_heads: 32
+transformer_attention_head_dim: 128
+transformer_audio_num_attention_heads: 32
+transformer_audio_attention_head_dim: 64
+transformer_num_layers: 48
+transformer_caption_channels: 3840
+transformer_cross_attn_mod: False
+transformer_gated_attn: False
+
+# Attention & rematerialization
+attention: 'flash'
+a2v_attention_kernel: 'dot_product'
+v2a_attention_kernel: 'dot_product'
+attention_sharding_uniform: True
+ulysses_shards: -1
+ulysses_attention_chunks: 1
+use_base2_exp: False
+use_experimental_scheduler: False
+use_svg_attention: False
+svg_spatial_density: 1.0
+svg_flash_block_sizes: {}
+
+flash_block_sizes: {
+  block_q: 512,
+  block_kv: 512,
+  block_kv_compute: 512,
+  block_q_dkv: 512,
+  block_kv_dkv: 512,
+  block_kv_dkv_compute: 512,
+  block_q_dq: 512,
+  block_kv_dq: 512,
+  use_fused_bwd_kernel: False,
+}
+flash_min_seq_length: 1024
+
+scan_layers: True
+scan_diffusion_loop: False
+remat_policy: 'FULL'
+names_which_can_be_saved: []
+names_which_can_be_offloaded: []
+enable_jax_named_scopes: False
+
+# Parallelism & FSDP-major sharding (avoids parameter transpose remat on hybrid FSDP+CP meshes)
+mesh_axes: ['data', 'fsdp', 'context', 'tensor']
+logical_axis_rules: [
+  ['batch', ['data', 'fsdp']],
+  ['activation_batch', ['data', 'fsdp']],
+  ['activation_self_attn_heads', ['context', 'tensor']],
+  ['activation_cross_attn_q_length', ['context', 'tensor']],
+  ['activation_length', 'context'],
+  ['activation_kv_length', 'context'],
+  ['activation_embed', null],
+  ['activation_heads', 'tensor'],
+  ['activation_kv', null],
+  ['mlp', 'tensor'],
+  ['embed', ['fsdp', 'context']],
+  ['heads', 'tensor'],
+  ['norm', 'tensor'],
+  ['layers', null],
+  ['conv_batch', ['data', 'fsdp', 'context']],
+  ['out_channels', 'tensor'],
+  ['conv_out', 'context'],
+]
+data_sharding: ['data', 'fsdp', 'context', 'tensor']
+
+sharding:
+  transformer: 'default'
+  vae: 'default'
+  text_connector: 'default'
+
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: -1
+dcn_context_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: 1
+ici_fsdp_parallelism: -1
+ici_context_parallelism: 1
+ici_tensor_parallelism: 1
+allow_split_physical_axes: False
+compile_topology_num_slices: -1
+
+# Quantization (disabled by default for training)
+use_qwix_quantization: False
+quantization: 'int8'
+quantization_local_shard_count: -1
+weight_quantization_calibration_method: 'absmax'
+act_quantization_calibration_method: 'absmax'
+bwd_quantization_calibration_method: 'absmax'
+qwix_module_path: '.*'
+
+# Dataset & 3D/1D Bucketing
+dataset_name: ''
+dataset_save_location: ''
+train_data_dir: ''
+train_split: 'train'
+dataset_type: 'synthetic'  # 'synthetic' | 'preencoded_npz'
+cache_latents_text_encoder_outputs: True
+train_text_encoder: False
+per_device_batch_size: 1.0
+global_batch_size: 0
+max_sequence_length: 1024
+
+ltx2_buckets: [
+  [1024, 256, 1024],
+  [2048, 512, 1024],
+  [4096, 1024, 1024],
+]
+text_padding_mode: 'post_connector'
+connector_num_learnable_registers: 128
+bucket_overflow_policy: 'error'
+synthetic_video_only_prob: 0.0
+synthetic_num_unique_batches_per_bucket: 0
+
+# Rectified-Flow Objective & Cross-Bucket Gradient Accumulation
+seed: 42
+max_train_steps: 100
+num_train_epochs: 1
+gradient_accumulation_steps: 1
+audio_loss_weight: 1.0
+timestep_sampling: 'logit_normal'  # 'logit_normal' | 'uniform'
+logit_normal_mean: 0.0
+logit_normal_std: 1.0
+use_dynamic_shifting: True
+disable_training_weights: True
+use_cross_timestep: False  # Set True for LTX-2.3
+
+# Optimizer & LR Schedule
+learning_rate: 1.0e-4
+learning_rate_schedule_steps: -1
+lr_schedule_type: 'cosine'  # 'cosine' | 'constant'
+lr_end_value: 0.0
+warmup_steps_fraction: 0.05
+adam_b1: 0.9
+adam_b2: 0.999
+adam_eps: 1.0e-8
+adam_weight_decay: 0.01
+opt_enable_grad_clipping: False
+max_grad_value: 1.0
+opt_enable_grad_global_norm_clipping: True
+max_grad_norm: 1.0
+
+# NNX LoRA Training Option
+enable_lora_training: False
+lora_rank: 32
+lora_alpha: 32.0
+lora_target_modules: [
+  'attn1.to_q', 'attn1.to_k', 'attn1.to_v', 'attn1.to_out',
+  'audio_attn1.to_q', 'audio_attn1.to_k', 'audio_attn1.to_v', 'audio_attn1.to_out',
+  'attn2.to_q', 'attn2.to_k', 'attn2.to_v', 'attn2.to_out',
+  'audio_attn2.to_q', 'audio_attn2.to_k', 'audio_attn2.to_v', 'audio_attn2.to_out',
+  'audio_to_video_attn.to_q', 'audio_to_video_attn.to_k', 'audio_to_video_attn.to_v', 'audio_to_video_attn.to_out',
+  'video_to_audio_attn.to_q', 'video_to_audio_attn.to_k', 'video_to_audio_attn.to_v', 'video_to_audio_attn.to_out',
+  'ff.net_0', 'ff.net_2',
+  'audio_ff.net_0', 'audio_ff.net_2',
+]
+merge_lora_on_save: False
+lora_safetensors_export_dir: ''
+
+# Checkpointing & Profiling
+checkpoint_dir: ''
+checkpoint_every: -1
+save_optimizer: True
+save_final_checkpoint: False
+enable_async_checkpointing: False
+enable_single_replica_ckpt_restoring: False
+eval_every: -1
+
+enable_profiler: False
+skip_first_n_steps_for_profiler: 5
+profiler_steps: 5
+enable_ml_diagnostics: False
+profiler_gcs_path: ''
+enable_ondemand_xprof: False
