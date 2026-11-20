@@ -51,5 +51,7 @@ TESTS=(
   "$T/wan_patch_embed_test.py"
   # Short-KV cross-attention Pallas kernel (feat/wan-cross-attn-pallas)
   "$T/cross_attention_pallas_test.py"
+  # Lane sequence padding (feat/wan-fast-inference-optimizations)
+  "$T/wan_seq_pad_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
