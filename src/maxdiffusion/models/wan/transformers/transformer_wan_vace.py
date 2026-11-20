@@ -15,7 +15,7 @@ limitations under the License.
 
 import contextlib
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 from flax import nnx
 import flax.linen as nn
@@ -557,7 +557,12 @@ class WanVACEModel(WanModel):
       encoder_attention_mask: Optional[jax.Array] = None,
       deterministic: bool = True,
       rngs: nnx.Rngs = None,
-  ) -> jax.Array:
+      # VACE caching: `return_vace_hints=True` returns the unscaled VACE hints (one per VACE layer) instead of the
+      # prediction. Passing them back as `vace_hints` skips the VACE blocks; `control_hidden_states_scale` still applies.
+      # The hints depend on `hidden_states` and `timestep`, so reusing them at other steps approximates the full model.
+      vace_hints: Optional[Sequence[jax.Array]] = None,
+      return_vace_hints: bool = False,
+  ) -> Union[jax.Array, Tuple[jax.Array, ...]]:
     hidden_states = nn.with_logical_constraint(hidden_states, ("batch", None, None, None, None))
     batch_size, _, num_frames, height, width = hidden_states.shape
     p_t, p_h, p_w = self.config.patch_size
@@ -573,6 +578,8 @@ class WanVACEModel(WanModel):
           f" {len(control_hidden_states_scale)} should be equal to"
           f" {len(self.config.vace_layers)}."
       )
+    if vace_hints is not None and len(vace_hints) != len(self.config.vace_layers):
+      raise ValueError(f"Length of `vace_hints` {len(vace_hints)} should be equal to {len(self.config.vace_layers)}.")
 
     hidden_states = jnp.transpose(hidden_states, (0, 2, 3, 4, 1))
     control_hidden_states = jnp.transpose(control_hidden_states, (0, 2, 3, 4, 1))
@@ -613,36 +620,41 @@ class WanVACEModel(WanModel):
     else:
       vace_kv_cache, main_kv_cache = kv_cache if kv_cache is not None else (None, None)
 
-      # Prepare VACE hints
-      control_hidden_states_list = []
-      for i, vace_block in enumerate(self.vace_blocks):
-        layer_kv_cache = None
-        if vace_kv_cache is not None:
-          layer_kv_cache = jax.tree.map(lambda x: x[i], vace_kv_cache)
+      # Prepare VACE hints, unless precomputed ones are passed (VACE caching).
+      if vace_hints is None:
+        vace_hints = []
+        for i, vace_block in enumerate(self.vace_blocks):
+          layer_kv_cache = None
+          if vace_kv_cache is not None:
+            layer_kv_cache = jax.tree.map(lambda x: x[i], vace_kv_cache)
 
-        def layer_forward(hidden_states, control_hidden_states, rngs):
-          return vace_block(
-              hidden_states=hidden_states,
-              encoder_hidden_states=encoder_hidden_states,
-              control_hidden_states=control_hidden_states,
-              temb=timestep_proj,
-              rotary_emb=rotary_emb,
-              kv_cache=layer_kv_cache,
-              encoder_attention_mask=encoder_attention_mask,
-              deterministic=deterministic,
-              rngs=rngs,
+          def layer_forward(hidden_states, control_hidden_states, rngs):
+            return vace_block(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                control_hidden_states=control_hidden_states,
+                temb=timestep_proj,
+                rotary_emb=rotary_emb,
+                kv_cache=layer_kv_cache,
+                encoder_attention_mask=encoder_attention_mask,
+                deterministic=deterministic,
+                rngs=rngs,
+            )
+
+          rematted_layer_forward = self.gradient_checkpoint.apply(
+              layer_forward,
+              self.names_which_can_be_saved,
+              self.names_which_can_be_offloaded,
+              prevent_cse=not self.scan_layers,
           )
+          conditioning_states, control_hidden_states = rematted_layer_forward(hidden_states, control_hidden_states, rngs)
+          vace_hints.append(conditioning_states)
+      elif any(hint.shape != hidden_states.shape for hint in vace_hints):
+        raise ValueError(f"Each VACE hint should have shape {hidden_states.shape}.")
+      if return_vace_hints:
+        return tuple(vace_hints)
 
-        rematted_layer_forward = self.gradient_checkpoint.apply(
-            layer_forward,
-            self.names_which_can_be_saved,
-            self.names_which_can_be_offloaded,
-            prevent_cse=not self.scan_layers,
-        )
-        conditioning_states, control_hidden_states = rematted_layer_forward(hidden_states, control_hidden_states, rngs)
-        control_hidden_states_list.append((conditioning_states, control_hidden_states_scale[i]))
-
-      control_hidden_states_list = control_hidden_states_list[::-1]
+      control_hidden_states_list = [(hint, control_hidden_states_scale[i]) for i, hint in enumerate(vace_hints)][::-1]
 
       for i, block in enumerate(self.blocks):
         layer_kv_cache = None

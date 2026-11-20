@@ -496,6 +496,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       negative_prompt_embeds: jax.Array | None = None,
       vae_only: bool = False,
       use_kv_cache: bool = False,
+      use_vace_cache: bool = False,
   ):
     """Runs the VACE model for the given inputs.
 
@@ -517,6 +518,9 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       prompt_embeds: Optional precomputed prompt embeddings for the text encoder.
       negative_prompt_embeds: Optional precomputed negative prompt embeddings for the text encoder.
       vae_only: Whether to only run the decoder for a given latent.
+      use_vace_cache: Whether to compute the VACE hints once and reuse them at every denoising step. This only
+        approximates the full model, so the model needs to be fine-tuned with hints computed the same way, see
+        `run_inference`.
     """
     config = getattr(self, "config", None)
     if max_sequence_length is None:
@@ -641,6 +645,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
           scheduler=self.scheduler,
           scheduler_state=scheduler_state,
           use_kv_cache=use_kv_cache,
+          use_vace_cache=use_vace_cache,
       )
 
       with self.mesh, nn_partitioning.axis_rules(self.config.logical_axis_rules):
@@ -729,7 +734,7 @@ class VaceWanPipeline2_1(WanPipeline2_1):
     return jnp.stack(latent_list)
 
 
-@partial(aot_cache.cached_jit, static_argnames=("do_classifier_free_guidance",))
+@partial(aot_cache.cached_jit, static_argnames=("do_classifier_free_guidance", "return_vace_hints"))
 def transformer_forward_pass(
     graphdef: nnx.graph.GraphDef,
     sharded_state: nnx.State,
@@ -743,12 +748,18 @@ def transformer_forward_pass(
     guidance_scale: float,
     kv_cache=None,
     encoder_attention_mask=None,
+    vace_hints=None,
+    return_vace_hints=False,
 ):
-  """Performs a forward pass on the transformer."""
+  """Performs a forward pass on the transformer.
+
+  With `return_vace_hints=True`, returns the VACE hints instead of the noise prediction, to be passed back as
+  `vace_hints`.
+  """
   if do_classifier_free_guidance and latents.shape[0] != prompt_embeds.shape[0]:
     latents = jnp.concatenate([latents, latents], axis=0)
   wan_transformer = nnx.merge(graphdef, sharded_state, rest_of_state)
-  noise_pred = wan_transformer(
+  output = wan_transformer(
       hidden_states=latents,
       timestep=timestep,
       encoder_hidden_states=prompt_embeds,
@@ -756,7 +767,12 @@ def transformer_forward_pass(
       control_hidden_states_scale=control_hidden_states_scale,
       kv_cache=kv_cache,
       encoder_attention_mask=encoder_attention_mask,
+      vace_hints=vace_hints,
+      return_vace_hints=return_vace_hints,
   )
+  if return_vace_hints:
+    return output
+  noise_pred = output
   if do_classifier_free_guidance:
     bsz = latents.shape[0] // 2
     noise_uncond = noise_pred[bsz:]
@@ -780,6 +796,7 @@ def run_inference(
     control_hidden_states,
     control_hidden_states_scale,
     use_kv_cache: bool = False,
+    use_vace_cache: bool = False,
 ):
   do_classifier_free_guidance = guidance_scale > 1.0
   if do_classifier_free_guidance:
@@ -794,6 +811,26 @@ def run_inference(
 
   bsz = latents.shape[0] * 2 if do_classifier_free_guidance else latents.shape[0]
   timesteps = jnp.array(scheduler_state.timesteps, dtype=jnp.int32)
+
+  vace_hints = None
+  if use_vace_cache:
+    # The hints are computed once, from zero latents at the first timestep, and reused at every step.
+    vace_hints = transformer_forward_pass(
+        graphdef,
+        sharded_state,
+        rest_of_state,
+        jnp.zeros_like(latents),
+        jnp.broadcast_to(timesteps[0], (bsz,)),
+        prompt_embeds,
+        control_hidden_states=control_hidden_states,
+        control_hidden_states_scale=control_hidden_states_scale,
+        do_classifier_free_guidance=do_classifier_free_guidance,
+        guidance_scale=guidance_scale,
+        kv_cache=kv_cache,
+        encoder_attention_mask=encoder_attention_mask,
+        return_vace_hints=True,
+    )
+
   for step in range(num_inference_steps):
     t = timesteps[step]
     timestep = jnp.broadcast_to(t, (bsz,))
@@ -811,6 +848,7 @@ def run_inference(
         guidance_scale=guidance_scale,
         kv_cache=kv_cache,
         encoder_attention_mask=encoder_attention_mask,
+        vace_hints=vace_hints,
     )
 
     latents, scheduler_state = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()

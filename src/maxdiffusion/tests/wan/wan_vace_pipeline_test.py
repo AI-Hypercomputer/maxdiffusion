@@ -32,9 +32,13 @@ import jax._src.config as jax_config
 jax_config.pallas_tpu_interpret_mode_context_manager.set_global(True)
 import jax.numpy as jnp
 
-from maxdiffusion import pyconfig
+from flax import nnx
+from jax.sharding import Mesh
 
-from maxdiffusion.pipelines.wan.wan_vace_pipeline_2_1 import VaceWanPipeline2_1
+from maxdiffusion import pyconfig
+from maxdiffusion.max_utils import create_device_mesh
+from maxdiffusion.models.wan.transformers.transformer_wan_vace import WanVACEModel
+from maxdiffusion.pipelines.wan.wan_vace_pipeline_2_1 import VaceWanPipeline2_1, run_inference, transformer_forward_pass
 from maxdiffusion.schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -494,6 +498,75 @@ class WanVacePipelineTest(unittest.TestCase):
     run_scenario(load_vae=False, load_text_encoder=False, load_transformer=False, load_scheduler=True)
     # Scenario 5: All components
     run_scenario(load_vae=True, load_text_encoder=True, load_transformer=True, load_scheduler=True)
+
+  def test_run_inference_reuses_vace_hints_of_zero_latents(self):
+    mesh = Mesh(create_device_mesh(self.config), self.config.mesh_axes)
+    model = WanVACEModel(
+        rngs=nnx.Rngs(0),
+        vace_layers=[0, 2],
+        vace_in_channels=8,
+        num_attention_heads=2,
+        attention_head_dim=16,
+        in_channels=16,
+        out_channels=16,
+        text_dim=32,
+        freq_dim=32,
+        ffn_dim=64,
+        num_layers=4,
+        mesh=mesh,
+        attention="dot_product",
+        scan_layers=False,
+    )
+    graphdef, state, rest_of_state = nnx.split(model, nnx.Param, ...)
+    latents_key, control_key, prompt_key = jax.random.split(jax.random.key(0), 3)
+    latents = jax.random.normal(latents_key, (1, 16, 2, 4, 4))
+    control_hidden_states = jax.random.normal(control_key, (1, 8, 2, 4, 4))
+    prompt_embeds = jax.random.normal(prompt_key, (1, 8, 32))
+    control_hidden_states_scale = jnp.array([0.5, -1.25])
+    guidance_scale = 5.0
+    scheduler = FlaxUniPCMultistepScheduler(
+        num_train_timesteps=1000, prediction_type="flow_prediction", use_flow_sigmas=True, flow_shift=3.0
+    )
+    scheduler_state = scheduler.set_timesteps(scheduler.create_state(), num_inference_steps=1, shape=latents.shape)
+    t = scheduler_state.timesteps[0]
+
+    def forward_pass(latents, **kwargs):
+      return transformer_forward_pass(
+          graphdef,
+          state,
+          rest_of_state,
+          latents,
+          jnp.broadcast_to(t, (2,)),
+          jnp.concatenate([prompt_embeds, -prompt_embeds]),
+          control_hidden_states=jnp.concatenate([control_hidden_states] * 2),
+          control_hidden_states_scale=control_hidden_states_scale,
+          do_classifier_free_guidance=True,
+          guidance_scale=guidance_scale,
+          **kwargs,
+      )
+
+    with mesh:
+      # The hints are computed from zero latents at the first timestep.
+      vace_hints = forward_pass(jnp.zeros_like(latents), return_vace_hints=True)
+      noise_pred = forward_pass(latents, vace_hints=vace_hints)
+      expected, _ = scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+      actual = run_inference(
+          graphdef,
+          state,
+          rest_of_state,
+          latents,
+          prompt_embeds,
+          -prompt_embeds,
+          guidance_scale,
+          num_inference_steps=1,
+          scheduler=scheduler,
+          scheduler_state=scheduler_state,
+          control_hidden_states=control_hidden_states,
+          control_hidden_states_scale=control_hidden_states_scale,
+          use_vace_cache=True,
+      )
+
+    self.assertTrue(jnp.allclose(actual, expected, atol=1e-5))
 
 
 if __name__ == "__main__":
