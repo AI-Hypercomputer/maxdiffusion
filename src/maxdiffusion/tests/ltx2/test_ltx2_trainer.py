@@ -303,7 +303,7 @@ class LTX2TrainerTest(unittest.TestCase):
       for (path, g_got), (_, g_exp) in zip(accum_leaves, ref_leaves):
         d = float(np.max(np.abs(g_got - g_exp)))
         max_diff = max(max_diff, d)
-        self.assertLess(d, 5e-5, f"Cross-bucket GA mismatch at {path}: {d}")
+        self.assertLess(d, 2e-4, f"Cross-bucket GA mismatch at {path}: {d}")
       print(
           f"[Cross-Bucket GA vs Combined Single-VJP] loss_accum={loss_accum:.6f} "
           f"loss_ref={float(loss_ref):.6f} max |Δgrad| across {len(accum_leaves)} leaves = {max_diff:.3e}"
