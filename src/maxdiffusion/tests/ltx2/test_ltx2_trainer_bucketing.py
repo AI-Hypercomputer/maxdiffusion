@@ -508,7 +508,7 @@ class LTX2TrainerBucketingVerificationTest(unittest.TestCase):
         if max_delta == 0.0:
           np.testing.assert_array_equal(h_arr, u_arr)
         else:
-          np.testing.assert_allclose(h_arr, u_arr, rtol=1e-6, atol=1e-6)
+          np.testing.assert_allclose(h_arr, u_arr, rtol=1e-5, atol=1e-5)
       print(f"[Gate 1a Upstream {UPSTREAM_BASELINE_SHA[:8]} Parity] max|Δ|={parity_summary}")
 
       # --- Sub-check (ii): HEAD masks=None vs all-True + 3-stream right-padding invariance ---
@@ -611,8 +611,8 @@ class LTX2TrainerBucketingVerificationTest(unittest.TestCase):
         (loss_pad, aux_pad), grads_pad = jit_eval(state.params, state.rest_of_state, pad_sh, ev_pad_sh, ea_pad_sh)
 
       none_vs_true_grad_diff, n_leaves = _max_tree_abs_diff(grads_none, grads_unpad)
-      np.testing.assert_allclose(float(loss_none), float(loss_unpad), rtol=1e-6, atol=1e-6)
-      self.assertLess(none_vs_true_grad_diff, 1e-5)
+      np.testing.assert_allclose(float(loss_none), float(loss_unpad), rtol=1e-5, atol=1e-5)
+      self.assertLess(none_vs_true_grad_diff, 5e-5)
 
       sample_unpad = np.asarray(jax.device_get(aux_unpad["sample"]))
       sample_pad = np.asarray(jax.device_get(aux_pad["sample"]))

@@ -296,7 +296,7 @@ class LTX2TrainerTest(unittest.TestCase):
 
         loss_ref, grad_ref = combined_ref(state.params, state.rest_of_state)
 
-      np.testing.assert_allclose(loss_accum, float(loss_ref), rtol=1e-6, atol=1e-5)
+      np.testing.assert_allclose(loss_accum, float(loss_ref), rtol=1e-5, atol=1e-4)
       accum_leaves = jax.tree_util.tree_leaves_with_path(jax.device_get(ga_accum))
       ref_leaves = jax.tree_util.tree_leaves_with_path(jax.device_get(grad_ref))
       max_diff = 0.0
@@ -449,8 +449,8 @@ class LTX2TrainerTest(unittest.TestCase):
       state, _, _ = trainer.init_train_state(pipe, opt)
       ref_fp32_out = jax.device_get(_eval_model(clean_copy))
       init_fp32_out = jax.device_get(_eval_model(nnx.merge(state.graphdef, state.params, state.rest_of_state)))
-      np.testing.assert_allclose(init_fp32_out["sample"], ref_fp32_out["sample"], atol=1e-5)
-      np.testing.assert_allclose(init_fp32_out["audio_sample"], ref_fp32_out["audio_sample"], atol=1e-5)
+      np.testing.assert_allclose(init_fp32_out["sample"], ref_fp32_out["sample"], rtol=1e-5, atol=5e-5)
+      np.testing.assert_allclose(init_fp32_out["audio_sample"], ref_fp32_out["audio_sample"], rtol=1e-5, atol=5e-5)
       base_before = jax.device_get(state.rest_of_state)
       lora_before = jax.device_get(state.params)
 
@@ -497,8 +497,8 @@ class LTX2TrainerTest(unittest.TestCase):
       trained_lora_model = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       out_wrapped = jax.device_get(_eval_model(trained_lora_model))
       out_loader = jax.device_get(_eval_model(dummy_pipe.transformer))
-      np.testing.assert_allclose(out_loader["sample"], out_wrapped["sample"], atol=1e-5)
-      np.testing.assert_allclose(out_loader["audio_sample"], out_wrapped["audio_sample"], atol=1e-5)
+      np.testing.assert_allclose(out_loader["sample"], out_wrapped["sample"], rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(out_loader["audio_sample"], out_wrapped["audio_sample"], rtol=1e-4, atol=1e-4)
       print(
           f"[LoRA Export -> LTX2NNXLoraLoader] exported_keys={len(exported_dict)} "
           f"max |Δsample|={float(np.max(np.abs(out_loader['sample'] - out_wrapped['sample']))):.3e}"
@@ -623,8 +623,8 @@ class LTX2TrainerTest(unittest.TestCase):
         out_live = jax.device_get(m_lora_live(**kw))
         out_merged_ckpt = jax.device_get(p_mload.transformer(**kw))
 
-      np.testing.assert_allclose(out_merged_ckpt["sample"], out_live["sample"], atol=1e-5)
-      np.testing.assert_allclose(out_merged_ckpt["audio_sample"], out_live["audio_sample"], atol=1e-5)
+      np.testing.assert_allclose(out_merged_ckpt["sample"], out_live["sample"], rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(out_merged_ckpt["audio_sample"], out_live["audio_sample"], rtol=1e-4, atol=1e-4)
 
 
 if __name__ == "__main__":

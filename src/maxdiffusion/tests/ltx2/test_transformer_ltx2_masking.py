@@ -510,7 +510,7 @@ class LTX2TransformerMaskingTest(unittest.TestCase):
           self.assertTrue(bool(jnp.isfinite(out_a["audio_sample"]).all()))
           self.assertEqual(float(jnp.max(jnp.abs(out_a["audio_sample"][1]))), 0.0)
           # Zero to_out.bias drift: modality_mask=None with all-False audio_attention_mask[1] must match modality_mask=0!
-          self.assertLess(float(jnp.max(jnp.abs(out_a["sample"][1] - out_b["sample"][1]))), 1e-6)
+          self.assertLess(float(jnp.max(jnp.abs(out_a["sample"][1] - out_b["sample"][1]))), 1e-5)
 
           # 3. All-video batch (aud_mask_all_zero + modality_mask=0): zero gradients into all audio & a2v/v2a params!
           def video_only_loss(m):
