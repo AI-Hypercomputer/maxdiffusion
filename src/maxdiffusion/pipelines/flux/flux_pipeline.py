@@ -18,7 +18,7 @@ from typing import List, Optional, Union, Callable
 import jax
 import jax.numpy as jnp
 import math
-from transformers import (CLIPTokenizer, FlaxCLIPTextModel, FlaxT5EncoderModel, AutoTokenizer)
+from transformers import (CLIPTokenizer, AutoTokenizer)
 from einops import rearrange
 from jax.typing import DTypeLike
 from chex import Array
@@ -28,6 +28,7 @@ from flax.linen import partitioning as nn_partitioning
 from maxdiffusion.utils import logging
 
 from ...models import FlaxAutoencoderKL
+from ...models.flux.text_encoders.torchax_text_encoders import (TorchaxCLIPTextEncoder, TorchaxT5TextEncoder)
 from ...schedulers import (FlaxEulerDiscreteScheduler)
 from ..pipeline_flax_utils import FlaxDiffusionPipeline
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
@@ -43,10 +44,10 @@ class FluxPipeline(FlaxDiffusionPipeline):
 
   def __init__(
       self,
-      t5_encoder: FlaxCLIPTextModel,
-      clip_encoder: FlaxCLIPTextModel,
+      t5_encoder: TorchaxT5TextEncoder,
+      clip_encoder: TorchaxCLIPTextEncoder,
       vae: FlaxAutoencoderKL,
-      t5_tokenizer: FlaxT5EncoderModel,
+      t5_tokenizer: AutoTokenizer,
       clip_tokenizer: CLIPTokenizer,
       flux: FluxTransformer2DModel,
       scheduler: FlaxEulerDiscreteScheduler,
@@ -163,7 +164,7 @@ class FluxPipeline(FlaxDiffusionPipeline):
       prompt: Union[str, List[str]],
       num_images_per_prompt: int,
       tokenizer: CLIPTokenizer,
-      text_encoder: FlaxCLIPTextModel,
+      text_encoder: TorchaxCLIPTextEncoder,
   ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     text_inputs = tokenizer(
@@ -176,10 +177,9 @@ class FluxPipeline(FlaxDiffusionPipeline):
         return_tensors="np",
     )
 
-    text_input_ids = text_inputs.input_ids
+    text_input_ids = jnp.asarray(text_inputs.input_ids, dtype=jnp.int32)
 
-    prompt_embeds = text_encoder(text_input_ids, params=text_encoder.params, train=False)
-    prompt_embeds = prompt_embeds.pooler_output
+    prompt_embeds = text_encoder(text_input_ids)
     prompt_embeds = jnp.tile(prompt_embeds, (num_images_per_prompt, 1))
     return prompt_embeds
 
@@ -188,7 +188,7 @@ class FluxPipeline(FlaxDiffusionPipeline):
       prompt: Union[str, List[str]],
       num_images_per_prompt: int,
       tokenizer: AutoTokenizer,
-      text_encoder: FlaxT5EncoderModel,
+      text_encoder: TorchaxT5TextEncoder,
       max_sequence_length: int = 512,
       encode_in_batches=False,
       encode_batch_size=None,
@@ -205,26 +205,21 @@ class FluxPipeline(FlaxDiffusionPipeline):
         padding="max_length",
         return_tensors="np",
     )
-    text_input_ids = text_inputs.input_ids
+    text_input_ids = jnp.asarray(text_inputs.input_ids, dtype=jnp.int32)
     if encode_in_batches:
       prompt_embeds = None
       for i in range(0, text_input_ids.shape[0], encode_batch_size):
-        batch_prompt_embeds = text_encoder(
-            text_input_ids[i : i + encode_batch_size], attention_mask=None, output_hidden_states=False
-        )["last_hidden_state"]
+        batch_prompt_embeds = text_encoder(text_input_ids[i : i + encode_batch_size])
         if prompt_embeds is None:
           prompt_embeds = batch_prompt_embeds
         else:
           prompt_embeds = jnp.concatenate([prompt_embeds, batch_prompt_embeds])
     else:
-      prompt_embeds = text_encoder(text_input_ids, attention_mask=None, output_hidden_states=False)["last_hidden_state"]
+      prompt_embeds = text_encoder(text_input_ids)
       _, seq_len, _ = prompt_embeds.shape
       # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
       prompt_embeds = jnp.tile(prompt_embeds, (1, num_images_per_prompt, 1))
       prompt_embeds = jnp.reshape(prompt_embeds, (batch_size * num_images_per_prompt, seq_len, -1))
-
-    dtype = text_encoder.dtype
-    prompt_embeds = prompt_embeds.astype(dtype)
 
     return prompt_embeds
 
@@ -233,9 +228,9 @@ class FluxPipeline(FlaxDiffusionPipeline):
       prompt: Union[str, List[str]],
       prompt_2: Union[str, List[str]],
       clip_tokenizer: CLIPTokenizer,
-      clip_text_encoder: FlaxCLIPTextModel,
+      clip_text_encoder: TorchaxCLIPTextEncoder,
       t5_tokenizer: AutoTokenizer,
-      t5_text_encoder: FlaxT5EncoderModel,
+      t5_text_encoder: TorchaxT5TextEncoder,
       num_images_per_prompt: int = 1,
       max_sequence_length: int = 512,
       encode_in_batches: bool = False,
