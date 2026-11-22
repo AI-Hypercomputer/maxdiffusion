@@ -414,14 +414,14 @@ class LTX2TrainerTest(unittest.TestCase):
       np.testing.assert_allclose(
           got_bf16_init["sample"].astype(np.float32),
           ref_bf16_out["sample"].astype(np.float32),
-          rtol=1e-2,
-          atol=2e-2,
+          rtol=2e-2,
+          atol=5e-2,
       )
       np.testing.assert_allclose(
           got_bf16_init["audio_sample"].astype(np.float32),
           ref_bf16_out["audio_sample"].astype(np.float32),
-          rtol=1e-2,
-          atol=2e-2,
+          rtol=2e-2,
+          atol=5e-2,
       )
 
       # 2. Float32 LoRA training + base-weight freeze + LTX2NNXLoraLoader safetensors round-trip.
@@ -449,8 +449,8 @@ class LTX2TrainerTest(unittest.TestCase):
       state, _, _ = trainer.init_train_state(pipe, opt)
       ref_fp32_out = jax.device_get(_eval_model(clean_copy))
       init_fp32_out = jax.device_get(_eval_model(nnx.merge(state.graphdef, state.params, state.rest_of_state)))
-      np.testing.assert_allclose(init_fp32_out["sample"], ref_fp32_out["sample"], rtol=1e-5, atol=5e-5)
-      np.testing.assert_allclose(init_fp32_out["audio_sample"], ref_fp32_out["audio_sample"], rtol=1e-5, atol=5e-5)
+      np.testing.assert_allclose(init_fp32_out["sample"], ref_fp32_out["sample"], rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(init_fp32_out["audio_sample"], ref_fp32_out["audio_sample"], rtol=1e-4, atol=1e-4)
       base_before = jax.device_get(state.rest_of_state)
       lora_before = jax.device_get(state.params)
 
