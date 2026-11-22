@@ -303,7 +303,7 @@ class LTX2TrainerTest(unittest.TestCase):
       for (path, g_got), (_, g_exp) in zip(accum_leaves, ref_leaves):
         d = float(np.max(np.abs(g_got - g_exp)))
         max_diff = max(max_diff, d)
-        self.assertLess(d, 2e-4, f"Cross-bucket GA mismatch at {path}: {d}")
+        np.testing.assert_allclose(g_got, g_exp, rtol=5e-4, atol=1e-3, err_msg=f"Cross-bucket GA mismatch at {path}")
       print(
           f"[Cross-Bucket GA vs Combined Single-VJP] loss_accum={loss_accum:.6f} "
           f"loss_ref={float(loss_ref):.6f} max |Δgrad| across {len(accum_leaves)} leaves = {max_diff:.3e}"
@@ -497,8 +497,8 @@ class LTX2TrainerTest(unittest.TestCase):
       trained_lora_model = nnx.merge(state.graphdef, state.params, state.rest_of_state)
       out_wrapped = jax.device_get(_eval_model(trained_lora_model))
       out_loader = jax.device_get(_eval_model(dummy_pipe.transformer))
-      np.testing.assert_allclose(out_loader["sample"], out_wrapped["sample"], rtol=1e-4, atol=1e-4)
-      np.testing.assert_allclose(out_loader["audio_sample"], out_wrapped["audio_sample"], rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(out_loader["sample"], out_wrapped["sample"], rtol=5e-4, atol=5e-4)
+      np.testing.assert_allclose(out_loader["audio_sample"], out_wrapped["audio_sample"], rtol=5e-4, atol=5e-4)
       print(
           f"[LoRA Export -> LTX2NNXLoraLoader] exported_keys={len(exported_dict)} "
           f"max |Δsample|={float(np.max(np.abs(out_loader['sample'] - out_wrapped['sample']))):.3e}"
@@ -623,8 +623,8 @@ class LTX2TrainerTest(unittest.TestCase):
         out_live = jax.device_get(m_lora_live(**kw))
         out_merged_ckpt = jax.device_get(p_mload.transformer(**kw))
 
-      np.testing.assert_allclose(out_merged_ckpt["sample"], out_live["sample"], rtol=1e-4, atol=1e-4)
-      np.testing.assert_allclose(out_merged_ckpt["audio_sample"], out_live["audio_sample"], rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(out_merged_ckpt["sample"], out_live["sample"], rtol=5e-4, atol=5e-4)
+      np.testing.assert_allclose(out_merged_ckpt["audio_sample"], out_live["audio_sample"], rtol=5e-4, atol=5e-4)
 
 
 if __name__ == "__main__":

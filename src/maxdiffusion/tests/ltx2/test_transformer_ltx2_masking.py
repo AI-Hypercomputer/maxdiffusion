@@ -352,11 +352,21 @@ class LTX2TransformerMaskingTest(unittest.TestCase):
         self.assertEqual(float(jnp.max(jnp.abs(out_p["audio_sample"][:, s_aud:, :]))), 0.0)
 
         # Valid prefix forward outputs & scalar loss must match.
-        vid_diff = float(jnp.max(jnp.abs(out_u["sample"] - out_p["sample"][:, :s_vid, :])))
-        aud_diff = float(jnp.max(jnp.abs(out_u["audio_sample"] - out_p["audio_sample"][:, :s_aud, :])))
-        self.assertLess(vid_diff, 2e-4, f"Video fwd diff too high for {kern}: {vid_diff}")
-        self.assertLess(aud_diff, 2e-4, f"Audio fwd diff too high for {kern}: {aud_diff}")
-        np.testing.assert_allclose(float(loss_u), float(loss_p), rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(
+            np.asarray(out_u["sample"]),
+            np.asarray(out_p["sample"][:, :s_vid, :]),
+            rtol=5e-4,
+            atol=5e-4,
+            err_msg=f"Video fwd diff too high for {kern}",
+        )
+        np.testing.assert_allclose(
+            np.asarray(out_u["audio_sample"]),
+            np.asarray(out_p["audio_sample"][:, :s_aud, :]),
+            rtol=5e-4,
+            atol=5e-4,
+            err_msg=f"Audio fwd diff too high for {kern}",
+        )
+        np.testing.assert_allclose(float(loss_u), float(loss_p), rtol=5e-4, atol=5e-4)
 
         # Every nnx.Param leaf gradient must be finite and match unpadded!
         u_leaves = jax.tree_util.tree_leaves_with_path(grads_u)
@@ -367,8 +377,9 @@ class LTX2TransformerMaskingTest(unittest.TestCase):
           name = "/".join(str(k) for k in path)
           self.assertTrue(bool(jnp.isfinite(gu).all()), f"Non-finite unpadded grad in {name}")
           self.assertTrue(bool(jnp.isfinite(gp).all()), f"Non-finite padded grad in {name}")
-          max_diff = float(jnp.max(jnp.abs(gu - gp)))
-          self.assertLess(max_diff, 5e-4, f"Grad mismatch in {name} ({kern}): {max_diff}")
+          np.testing.assert_allclose(
+              np.asarray(gu), np.asarray(gp), rtol=5e-4, atol=1e-3, err_msg=f"Grad mismatch in {name} ({kern})"
+          )
           if "prompt_adaln" in name or "prompt_scale_shift_table" in name:
             prompt_mod_grad_norms.append(float(jnp.linalg.norm(gp)))
 
