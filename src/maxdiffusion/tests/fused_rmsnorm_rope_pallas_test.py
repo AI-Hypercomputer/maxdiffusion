@@ -955,7 +955,7 @@ class FusedRmsNormRopePallasGuardTest(unittest.TestCase):
     v = jnp.ones((1, 16, 2, 64), dtype=jnp.float32)
     captured = {}
 
-    def fake_cudnn(q_in, k_in, v_in, heads, mesh, dpa_layer):
+    def fake_cudnn(q_in, k_in, v_in, heads, mesh, dpa_layer, **_kwargs):
       captured["k"] = np.asarray(k_in)
       return q_in
 
