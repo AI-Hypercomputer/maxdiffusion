@@ -137,6 +137,28 @@ def train_step(state, data, rng, scheduler_state, scheduler, config):
   return step_optimizer(state, data, rng, scheduler_state, scheduler, config)
 
 
+# VACE caching (config.use_vace_cache): the hints are computed from zero latents, not from the training noise. With
+# x_t, the noise would give away the flow-matching target `noise - x0`, so the model could read it off the hints.
+# 999 is `scheduler_state.timesteps[0]` of the UniPC flow-sigma inference scheduler, where cached-VACE inference
+# computes the hints (also from zero latents) once and reuses them at every step.
+_VACE_CACHE_TIMESTEP = 999
+
+
+def _cached_vace_hints(model, timesteps, encoder_hidden_states, control_hidden_states, deterministic, rngs=None):
+  """Returns the VACE hints computed from zero latents at `_VACE_CACHE_TIMESTEP`, for config.use_vace_cache."""
+  batch_size, _, *video_shape = control_hidden_states.shape
+  zero_latents = jnp.zeros((batch_size, model.config.in_channels, *video_shape), control_hidden_states.dtype)
+  return model(
+      hidden_states=zero_latents,
+      timestep=jnp.full_like(timesteps, _VACE_CACHE_TIMESTEP),
+      encoder_hidden_states=encoder_hidden_states,
+      control_hidden_states=control_hidden_states,
+      deterministic=deterministic,
+      rngs=rngs,
+      return_vace_hints=True,
+  )
+
+
 def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
   _, new_rng, timestep_rng, dropout_rng = jax.random.split(rng, num=4)
 
@@ -154,13 +176,20 @@ def step_optimizer(state, data, rng, scheduler_state, scheduler, config):
     noise = jax.random.normal(key=new_rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents, training_target, training_weight = scheduler.apply_flow_match(noise, latents, timesteps)
     with jax.named_scope("forward_pass"):
+      rngs = nnx.Rngs(dropout=dropout_rng)
+      vace_hints = None
+      if getattr(config, "use_vace_cache", False):
+        vace_hints = _cached_vace_hints(
+            model, timesteps, encoder_hidden_states, control_hidden_states, deterministic=False, rngs=rngs
+        )
       model_pred = model(
           hidden_states=noisy_latents,
           timestep=timesteps,
           encoder_hidden_states=encoder_hidden_states,
           control_hidden_states=control_hidden_states,
           deterministic=False,
-          rngs=nnx.Rngs(dropout=dropout_rng),
+          rngs=rngs,
+          vace_hints=vace_hints,
       )
 
     with jax.named_scope("loss"):
@@ -217,6 +246,9 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
 
     noise = jax.random.normal(key=rng, shape=latents.shape, dtype=latents.dtype)
     noisy_latents, training_target, training_weight = scheduler.apply_flow_match(noise, latents, timesteps)
+    vace_hints = None
+    if getattr(config, "use_vace_cache", False):
+      vace_hints = _cached_vace_hints(model, timesteps, encoder_hidden_states, conditioning_latents, deterministic=True)
     # Get the model's prediction
     model_pred = model(
         hidden_states=noisy_latents,
@@ -224,6 +256,7 @@ def eval_step(state, data, rng, scheduler_state, scheduler, config):
         encoder_hidden_states=encoder_hidden_states,
         control_hidden_states=conditioning_latents,
         deterministic=True,
+        vace_hints=vace_hints,
     )
 
     # Calculate the loss against the target

@@ -467,6 +467,10 @@ use_cfg_cache: False
 use_batched_text_encoder: False
 
 use_kv_cache: False
+# WAN-VACE training: compute the VACE hints from zero latents at timestep 999, the first inference timestep,
+# instead of from the noisy latents. This fine-tunes the model for use_vace_cache=True in the VACE pipeline, which
+# computes the hints once and reuses them at every denoising step.
+use_vace_cache: False
 use_magcache: False
 magcache_thresh: 0.12
 magcache_K: 2
