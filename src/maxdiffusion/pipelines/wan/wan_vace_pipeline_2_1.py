@@ -174,6 +174,10 @@ class VaceWanPipeline2_1(WanPipeline2_1):
       Variational Auto-Encoder (VAE) Model to encode and decode videos to and from latent representations.
   """
 
+  # VACE encodes reference images one at a time through the VAE, so unlike its
+  # T2V base class it cannot use the batch-parallel VAE mesh.
+  _supports_batch_parallel_vae = False
+
   def preprocess_conditions(
       self,
       video: Optional[PipelineImageInput] = None,

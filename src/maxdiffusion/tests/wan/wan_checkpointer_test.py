@@ -84,6 +84,23 @@ class WanPretrainedCacheTest(unittest.TestCase):
     self.pipeline_cls.from_pretrained.assert_called_once_with(self.config)
     self.assertEqual(result, pipeline)
 
+  @patch.object(WanCheckpointer, "_save_pretrained_checkpoint")
+  @patch.object(WanCheckpointer, "_restore_pretrained_checkpoint")
+  def test_batch_parallel_vae_is_forwarded_only_when_set(self, mock_restore, mock_save):
+    """Cache hit and miss both forward batch_parallel_vae=True; the default call signature is unchanged (above)."""
+    restored_checkpoint = MagicMock()
+    mock_restore.return_value = restored_checkpoint
+    WanCheckpointer.load_pretrained_pipeline_or_diffusers(
+        self.config, self.pipeline_cls, self.state_sources, self.config_transformer_attr, batch_parallel_vae=True
+    )
+    self.pipeline_cls.from_checkpoint.assert_called_once_with(self.config, restored_checkpoint, batch_parallel_vae=True)
+
+    mock_restore.return_value = None
+    WanCheckpointer.load_pretrained_pipeline_or_diffusers(
+        self.config, self.pipeline_cls, self.state_sources, self.config_transformer_attr, batch_parallel_vae=True
+    )
+    self.pipeline_cls.from_pretrained.assert_called_once_with(self.config, batch_parallel_vae=True)
+
   @patch("maxdiffusion.checkpointing.wan_checkpointer.nnx.split")
   def test_pretrained_save_items_uses_explicit_transformer_config(self, mock_split):
     pipeline = MagicMock()
@@ -193,6 +210,26 @@ class WanCheckpointer2_1Test(unittest.TestCase):
     self.assertEqual(pipeline, mock_pipeline_instance)
     self.assertIsNone(opt_state)
     self.assertIsNone(step)
+
+  @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
+  @patch.object(WanPipeline2_1, "from_pretrained", autospec=True)
+  def test_load_checkpoint_forwards_batch_parallel_vae(self, mock_from_pretrained, mock_create_manager):
+    mock_manager = MagicMock()
+    mock_manager.latest_step.return_value = None
+    mock_create_manager.return_value = mock_manager
+
+    checkpointer = WanCheckpointer2_1(config=self.config)
+    checkpointer.load_checkpoint(step=None, batch_parallel_vae=True)
+
+    mock_from_pretrained.assert_called_once_with(
+        self.config,
+        vae_only=False,
+        load_vae=None,
+        load_text_encoder=None,
+        load_transformer=None,
+        load_scheduler=None,
+        batch_parallel_vae=True,
+    )
 
   @patch("maxdiffusion.checkpointing.wan_checkpointer.create_orbax_checkpoint_manager")
   @patch.object(WanPipeline2_1, "from_checkpoint", autospec=True)

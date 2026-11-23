@@ -36,7 +36,7 @@ from ... import max_utils
 from ...max_utils import get_flash_block_sizes, get_precision, device_put_replicated
 from ...models.wan.wan_utils import load_wan_transformer, load_wan_vae
 from ...models.wan.transformers.transformer_wan import WanModel
-from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache
+from ...models.wan.autoencoder_kl_wan import AutoencoderKLWan, AutoencoderKLWanCache, check_vae_batch_is_shardable
 from maxdiffusion.video_processor import VideoProcessor
 from ...schedulers.scheduling_unipc_multistep_flax import FlaxUniPCMultistepScheduler, UniPCMultistepSchedulerState
 from transformers import AutoTokenizer, UMT5EncoderModel
@@ -488,6 +488,8 @@ class WanPipeline:
   """
 
   _transformer_keys = ["transformer"]
+  # Whether the pipeline can run on the batch-parallel (N, 1) VAE mesh; see _auto_vae_spatial.
+  _supports_batch_parallel_vae = False
 
   def __init__(
       self,
@@ -989,6 +991,7 @@ class WanPipeline:
 
   def _decode_latents_to_video(self, latents: jax.Array, trace: Optional[dict] = None) -> np.ndarray:
     """Decodes latents to video frames and postprocesses."""
+    check_vae_batch_is_shardable(self.vae_mesh, latents.shape[0], "decode")
     t_vae_tpu_start = time.perf_counter()
     with self.vae_mesh, nn_partitioning.axis_rules(self.vae_logical_axis_rules):
       graphdef, state, rest_of_state = nnx.split(self.vae, nnx.Param, ...)
@@ -1006,6 +1009,55 @@ class WanPipeline:
       video = np.asarray(video)
     return video
 
+  @staticmethod
+  def _auto_vae_spatial(config, total_devices: int, batch_parallel_vae: bool = False) -> int:
+    """Picks the `vae_spatial` mesh extent when the config leaves it at -1 (auto).
+
+    The VAE mesh is ('redundant', 'vae_spatial') with redundant * vae_spatial ==
+    total_devices.  Batch is sharded on 'redundant', and the longer spatial axis
+    (height for portrait videos, width otherwise) / conv channels on
+    'vae_spatial'.  Spatial sharding is what lets a single video fit, but with
+    vae_spatial == total_devices the batch axis is fully replicated, so at
+    B == total_devices every chip holds all B videos' activations and the
+    causal conv stack pays a ~10x slowdown (41.6s -> 6.3s at B=8 on tpu7x-8)
+    and OOMs on 32 GiB parts.
+
+    Measured on v6e-8 / tpu7x-8 (720p, 81 frames):
+      * B % total_devices == 0: pure data parallelism (vae_spatial == 1) is
+        strictly better -- 1 video per device, zero cross-chip collectives.
+      * 1 < B < total_devices: mixed meshes are NOT a win.  At B=2 on v6e-8
+        the (2, 4) mesh needed a 21.2 GiB decode program vs 15.5 GiB for
+        (1, 8), even though per-device activation volume is identical.
+    So this only switches to vae_spatial == 1 when the batch is a multiple of
+    the device count and keeps full spatial sharding otherwise.  Setting
+    `vae_spatial` explicitly in the config still overrides this.
+
+    `batch_parallel_vae` gates the batch-aware choice and is opt-in: it is a
+    load-time argument (`from_pretrained` / `from_checkpoint` /
+    `WanCheckpointer.load_checkpoint`) that only T2V inference
+    (`generate_wan.py`) sets.  The VAE constrains every activation to
+    P('redundant', ..., 'vae_spatial', ...).  On a vae_spatial == 1 mesh the
+    batch axis is the only sharded axis, so *every* tensor that goes through
+    the VAE needs a batch divisible by total_devices
+    (`check_vae_batch_is_shardable` raises otherwise, on encode, on decode and
+    before denoising, rather than silently running replicated on every chip).
+    That holds for T2V inference (the only VAE call is the final decode of the
+    full batch), but not for:
+      * pipelines that also encode conditioning through the VAE at a different
+        batch -- VACE encodes reference images one at a time
+        ([1, 1, H, W, C]), animate / i2v encode conditioning clips.  They do
+        not support the gate (`_supports_batch_parallel_vae`).
+      * other users of a T2V pipeline's VAE, e.g. dataset preprocessing, which
+        encodes its own batch sizes.  They load without the gate.
+    All of those keep the full-spatial (1, N) mesh.
+    """
+    if not batch_parallel_vae:
+      return total_devices
+    batch_size = int(config.global_batch_size_to_train_on)
+    if batch_size >= total_devices and batch_size % total_devices == 0:
+      return 1
+    return total_devices
+
   @classmethod
   def _create_common_components(
       cls,
@@ -1014,6 +1066,7 @@ class WanPipeline:
       load_text_encoder=True,
       load_scheduler=True,
       i2v=False,
+      batch_parallel_vae=False,
   ):
     devices_array = max_utils.create_device_mesh(config)
     mesh = Mesh(devices_array, config.mesh_axes)
@@ -1022,7 +1075,7 @@ class WanPipeline:
     total_devices = math.prod(devices_array.shape)
 
     if vae_spatial == -1:
-      vae_spatial = total_devices
+      vae_spatial = cls._auto_vae_spatial(config, total_devices, batch_parallel_vae=batch_parallel_vae)
 
     assert (
         total_devices % vae_spatial == 0
@@ -1033,7 +1086,8 @@ class WanPipeline:
 
     vae_mesh = Mesh(vae_devices_array, ("redundant", "vae_spatial"))
     max_logging.log(
-        f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') to support spatial sharding of {vae_spatial}."
+        f"Created VAE specific mesh with axes ('redundant', 'vae_spatial') = "
+        f"({total_devices // vae_spatial}, {vae_spatial}) to support spatial sharding of {vae_spatial}."
     )
 
     # logical axis rules for VAE encoding/decoding
@@ -1157,6 +1211,22 @@ class WanPipeline:
     )
 
   @classmethod
+  def _batch_parallel_vae_kwargs(cls, batch_parallel_vae: bool) -> dict:
+    """`_load_and_init` kwargs for the opt-in batch-parallel VAE mesh; see `_auto_vae_spatial`.
+
+    Empty unless requested, so pipelines that do not support the gate keep
+    their `_load_and_init` signature.
+    """
+    if not batch_parallel_vae:
+      return {}
+    if not cls._supports_batch_parallel_vae:
+      raise ValueError(
+          f"{cls.__name__} does not support batch_parallel_vae: it runs the VAE at batch sizes other than the "
+          "global batch (conditioning encodes), which a batch-parallel VAE mesh cannot shard."
+      )
+    return {"batch_parallel_vae": True}
+
+  @classmethod
   def from_pretrained(
       cls,
       config,
@@ -1165,6 +1235,7 @@ class WanPipeline:
       load_text_encoder=None,
       load_transformer=None,
       load_scheduler=None,
+      batch_parallel_vae=False,
   ):
     (
         load_vae,
@@ -1185,6 +1256,7 @@ class WanPipeline:
         load_text_encoder=load_text_encoder,
         load_transformer=load_transformer,
         load_scheduler=load_scheduler,
+        **cls._batch_parallel_vae_kwargs(batch_parallel_vae),
     )
     pipeline = outputs[0]
     loaded_transformers = outputs[1:]
@@ -1205,6 +1277,7 @@ class WanPipeline:
       load_text_encoder=None,
       load_transformer=None,
       load_scheduler=None,
+      batch_parallel_vae=False,
   ):
     (
         load_vae,
@@ -1225,6 +1298,7 @@ class WanPipeline:
         load_text_encoder=load_text_encoder,
         load_transformer=load_transformer,
         load_scheduler=load_scheduler,
+        **cls._batch_parallel_vae_kwargs(batch_parallel_vae),
     )
     pipeline = outputs[0]
     loaded_transformers = outputs[1:]

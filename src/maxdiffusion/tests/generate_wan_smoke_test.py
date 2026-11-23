@@ -55,10 +55,12 @@ class WanSmokeTest(unittest.TestCase):
     )
     cls.config = pyconfig.config
     checkpoint_loader = WanCheckpointer2_1(config=cls.config)
-    cls.pipeline, _, _ = checkpoint_loader.load_checkpoint()
+    # Same as generate_wan.py: T2V inference opts into the batch-parallel VAE mesh
+    # and always runs a full batch.
+    cls.pipeline, _, _ = checkpoint_loader.load_checkpoint(batch_parallel_vae=True)
 
-    cls.prompt = [cls.config.prompt]
-    cls.negative_prompt = [cls.config.negative_prompt]
+    cls.prompt = [cls.config.prompt] * cls.config.global_batch_size_to_train_on
+    cls.negative_prompt = [cls.config.negative_prompt] * cls.config.global_batch_size_to_train_on
 
   def test_wan_inference(self):
     """Test that Wan pipeline can run inference and produce output."""
