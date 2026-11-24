@@ -6,7 +6,6 @@ __pycache__/
 *$py.class
 # C extensions
 *.so
-Gemini.md
 
 # tests and logs
 tests/fixtures/cached_*_text.txt
@@ -179,8 +178,10 @@ tags
 
 wandb
 
-# Gemini CLI
-.gemini/
+# Gemini CLI (local state only; .gemini/commands/ is tracked and used by the review workflows)
+.gemini/*
+!.gemini/commands/
+Gemini.md
 gha-creds-*.json
 
 # JAX cache

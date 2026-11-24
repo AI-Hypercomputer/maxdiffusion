@@ -28,8 +28,8 @@
 - **`2026/01/29`**: Wan LoRA for inference is now supported
 - **`2026/01/15`**: Wan2.1 and Wan2.2 Img2vid generation is now supported
 - **`2025/11/11`**: Wan2.2 txt2vid generation is now supported
-- **`2025/10/10`**: Wan2.1 txt2vid training and generation is now supported.
 - **`2025/10/14`**: NVIDIA DGX Spark Flux support.
+- **`2025/10/10`**: Wan2.1 txt2vid training and generation is now supported.
 - **`2025/08/14`**: LTX-Video img2vid generation is now supported.
 - **`2025/07/29`**: LTX-Video text2vid generation is now supported.
 - **`2025/04/17`**: Flux Finetuning.
@@ -71,7 +71,7 @@ MaxDiffusion supports
 - [Overview](#overview)
 - [Table of Contents](#table-of-contents)
 - [Getting Started](#getting-started)
-  - [Getting Started:](#getting-started-1)
+  - [Getting Started](#getting-started-1)
   - [NVIDIA DGX Spark](#nvidia-dgx-spark)
   - [Training](#training)
     - [Wan2.1](#wan-21-training)
@@ -83,10 +83,15 @@ MaxDiffusion supports
     - [Dreambooth](#dreambooth)
   - [Inference](#inference)
     - [Wan](#wan-models)
+      - [Ulysses Attention](#ulysses-attention)
+      - [Caching Mechanisms](#caching-mechanisms)
+      - [Ring Attention](#ring-attention)
+      - [Automatic Tile-Size Search](#automatic-tile-size-search)
     - [LTX-Video](#ltx-video)
     - [LTX-2 Video](#ltx-2-video)
     - [Flux](#flux)
-      - [Fused Attention for GPU](#fused-attention-for-gpu)
+      - [Flux.2-Klein](#flux2-klein-4b--9b)
+    - [Fused Attention for GPU](#fused-attention-for-gpu)
     - [SDXL](#stable-diffusion-xl)
     - [SD 2 base](#stable-diffusion-2-base)
     - [SD 2.1](#stable-diffusion-21)
@@ -106,11 +111,11 @@ MaxDiffusion supports
 
 We recommend starting with a single TPU host and then moving to multihost.
 
-Minimum requirements: Ubuntu Version 22.04, Python 3.12 and Tensorflow >= 2.12.0.
+Minimum requirements: Ubuntu Version 22.04 and Python 3.12.
 
-## Getting Started:
+## Getting Started
 
-For your first time running Maxdiffusion, we provide specific [instructions](docs/getting_started/first_run.md).
+For your first time running MaxDiffusion, we provide specific [instructions](docs/getting_started/first_run.md).
 
 ## NVIDIA DGX Spark
 
@@ -122,7 +127,7 @@ After installation completes, run the training script.
 
   ## Wan 2.1 Training
 
-  in the first part, we'll run on a single host VM to get familiar with the workflow, then run on xpk for large scale training.
+  In the first part, we'll run on a single host VM to get familiar with the workflow, then run on xpk for large scale training.
 
   Although not required, attaching an external disk is recommended as weights take up a lot of disk space. [Follow these instructions if you would like to attach an external disk](https://cloud.google.com/tpu/docs/attach-durable-block-storage).
 
@@ -267,18 +272,18 @@ After installation completes, run the training script.
   ```
 
   It is important to note a couple of things:
-  - per_device_batch_size can be a fractional, but must be a whole number when multiplied by number of devices. In this example, 0.25 * 4 (devices) = effective global batch size = 1.
-  - The step time in v5p-8 with global batch size = 1 is large due to using `FULL` remat. On larger number of chips we can run larger batch sizes greatly increasing MFU, as we will see in the next session of deploying with xpk.
+  - per_device_batch_size can be fractional, but must be a whole number when multiplied by number of devices. In this example, 0.25 * 4 (devices) = effective global batch size = 1.
+  - The step time in v5p-8 with global batch size = 1 is large due to the aggressive remat policy (`HIDDEN_STATE_WITH_OFFLOAD`). On a larger number of chips we can run larger batch sizes, greatly increasing MFU, as we will see in the next section on deploying with xpk.
   - To enable eval during training set `eval_every` to a value > 0.
   - In Wan2.1, the ici_fsdp_parallelism axis is used for sequence parallelism, the ici_tensor_parallelism axis is used for head parallelism.
     - You can enable both, keeping in mind that Wan2.1 has 40 heads and 40 must be evenly divisible by ici_tensor_parallelism.
     - For Sequence parallelism, the code pads the sequence length to evenly divide the sequence. Try out different ici_fsdp_parallelism numbers, but we find 2 and 4 to be the best right now.
-  - For use on GPU it is recommended to enable the cudnn_te_flash attention kernel for optimal performance.
-    - Best performance is achieved with the use of batch parallelism, which can be enabled by using the ici_fsdp_batch_parallelism axis. Note that this parallelism strategy does not support fractional batch sizes.
-    - ici_fsdp_batch_parallelism and ici_fsdp_parallelism can be combined to allow for fractional batch sizes. However, padding is not currently supported for the cudnn_te_flash attention kernel and it is therefore required that the sequence length is divisible by the number of devices in the ici_fsdp_parallelism axis.
+  - For use on GPU it is recommended to enable the `cudnn_flash_te` attention kernel for optimal performance.
+    - Best performance is achieved with the use of batch parallelism, which can be enabled by using the ici_data_parallelism axis. Note that this parallelism strategy does not support fractional batch sizes.
+    - ici_data_parallelism and ici_fsdp_parallelism can be combined to allow for fractional batch sizes. However, padding is not currently supported for the `cudnn_flash_te` attention kernel and it is therefore required that the sequence length is divisible by the number of devices in the ici_fsdp_parallelism axis.
   - For benchmarking training performance on multiple data dimension input without downloading/re-processing the dataset, the synthetic data iterator is supported.
-    - Set dataset_type='synthetic' and synthetic_num_samples=null to enable the synthetic data iterator.
-    - The following overrides on data dimensions are supported:
+    - Set dataset_type='synthetic' to enable the synthetic data iterator.
+    - `synthetic_num_samples` (null for infinite) and the data-dimension overrides below are commented out in the base configs; uncomment the ones you need in your YAML (command-line overrides only work for keys present in the YAML):
       - synthetic_override_height: 720
       - synthetic_override_width: 1280
       - synthetic_override_num_frames: 85
@@ -312,9 +317,9 @@ After installation completes, run the training script.
 
   ### Deploying with XPK
 
-  This assumes the user has already created an xpk cluster, installed all dependencies and the also created the dataset from the step above. For getting started with MaxDiffusion and xpk see [this guide](docs/getting_started/run_maxdiffusion_via_xpk.md).
+  This assumes the user has already created an xpk cluster, installed all dependencies and also created the dataset from the step above. For getting started with MaxDiffusion and xpk see [this guide](docs/getting_started/run_maxdiffusion_via_xpk.md).
 
-  Using v5p-256 Then the command to run on xpk is as follows:
+  Using v5p-256, the command to run on xpk is as follows:
 
   ```bash
   RUN_NAME=jfacevedo-wan-v5p-8-${RANDOM}
@@ -431,7 +436,7 @@ After installation completes, run the training script.
 
   ### Multi-Host Training with XPK
 
-  For large-scale multi-host training across TPU pods or clusters (e.g. v5p, v6e, v7x). The following example is configured for a 128-chip slice (such as `v5p-128`, `v6e-128`, or `tpu7x-4x4x4`):
+  For large-scale multi-host training across TPU pods or clusters (e.g. v5p, v6e, v7x). The following example is configured for a 128-chip slice (such as `v5p-256`, `v6e-128`, or `tpu7x-4x4x4`):
 
   ```bash
   python3 ~/xpk/xpk.py workload create \
@@ -553,12 +558,13 @@ After installation completes, run the training script.
   Supported models are **Stable Diffusion 1.x,2.x**
 
   ```bash
-  python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base14.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" class_prompt="photo of a dog" max_train_steps=150 jax_cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 num_class_images=100 run_name=<your-run-name> output_dir=gs://<your-bucket-name>
+  python src/maxdiffusion/dreambooth/train_dreambooth.py src/maxdiffusion/configs/base14.yml class_data_dir=<your-class-dir> instance_data_dir=<your-instance-dir> instance_prompt="a photo of ohwx dog" max_train_steps=150 jax_cache_dir=<your-cache-dir> class_prompt="a photo of a dog" activations_dtype=bfloat16 weights_dtype=float32 per_device_batch_size=1 enable_profiler=False precision=DEFAULT cache_dreambooth_dataset=False learning_rate=4e-6 num_class_images=100 run_name=<your-run-name> output_dir=gs://<your-bucket-name>
   ```
 
 ## Inference
 
 To generate images, run the following command:
+
   ## Stable Diffusion XL
 
   Single and Multi host inference is supported with sharding annotations:
@@ -604,7 +610,7 @@ To generate images, run the following command:
 
   The following command will run LTX-2 T2V:
 
-   ```bash
+  ```bash
   HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/ \
   LIBTPU_INIT_ARGS="--xla_tpu_enable_async_collective_fusion=true \
   --xla_tpu_enable_async_collective_fusion_fuse_all_reduce=true \
@@ -655,13 +661,13 @@ To generate images, run the following command:
   width=1280 \
   height=720 \
   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/ \
-  per_device_batch_size=.0.25 \
+  per_device_batch_size=0.25 \
   ici_data_parallelism=2 \
   ici_context_parallelism=2 \
   flow_shift=5.0 \
   enable_profiler=True \
   run_name=wan-inference-testing-720p \
-  output_dir=gs:/jfacevedo-maxdiffusion \
+  output_dir=gs://jfacevedo-maxdiffusion \
   fps=16 \
   flash_min_seq_length=0 \
   flash_block_sizes='{"block_q" : 3024, "block_kv_compute" : 1024, "block_kv" : 2048, "block_q_dkv": 3024, "block_kv_dkv" : 2048, "block_kv_dkv_compute" : 2048, "block_q_dq" : 3024, "block_kv_dq" : 2048 }' \
@@ -676,7 +682,7 @@ To generate images, run the following command:
 
   ### Ulysses Attention
 
-  MaxDiffusion supports Ulysses attention for WAN TPU inference. Enable it by setting `attention="ulysses"`.
+  MaxDiffusion supports Ulysses attention for Wan TPU inference. Enable it by setting `attention="ulysses"`.
 
   Internally, this follows the Ulysses sequence-parallel attention pattern and trades sequence shards for head shards around the local TPU splash kernel. For background, see [DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models](https://arxiv.org/abs/2309.14509).
 
@@ -755,22 +761,22 @@ To generate images, run the following command:
     use_cfg_cache=True \
     ...
 
-# Example: enable MagCache for Wan 2.2 T2V
-python src/maxdiffusion/generate_wan.py \
-  src/maxdiffusion/configs/base_wan_27b.yml \
-  use_magcache=True \
-  magcache_thresh=0.04 \
-  magcache_K=2 \
-  ...
+  # Example: enable MagCache for Wan 2.2 T2V
+  python src/maxdiffusion/generate_wan.py \
+    src/maxdiffusion/configs/base_wan_27b.yml \
+    use_magcache=True \
+    magcache_thresh=0.04 \
+    magcache_K=2 \
+    ...
 
-# Example: enable MagCache for Wan 2.2 I2V
-python src/maxdiffusion/generate_wan.py \
-  src/maxdiffusion/configs/base_wan_i2v_27b.yml \
-  use_magcache=True \
-  magcache_thresh=0.06 \
-  magcache_K=2 \
-  ...
-```
+  # Example: enable MagCache for Wan 2.2 I2V
+  python src/maxdiffusion/generate_wan.py \
+    src/maxdiffusion/configs/base_wan_i2v_27b.yml \
+    use_magcache=True \
+    magcache_thresh=0.06 \
+    magcache_K=2 \
+    ...
+  ```
 
 ### Ring Attention
 We added ring attention support for Wan models. Below are the stats for one `720p` (81 frames) video generation (with CFG DP):
@@ -820,7 +826,7 @@ The optimal attention tile sizes (`block_q` / `block_kv`) depend on the sequence
   python src/maxdiffusion/generate_flux.py src/maxdiffusion/configs/base_flux_dev.yml jax_cache_dir=/tmp/cache_dir run_name=flux_test output_dir=/tmp/ prompt="photograph of an electronics chip in the shape of a race car with trillium written on its side" per_device_batch_size=1
   ```
 
-  If you are using a TPU v6e (Trillium), you can use optimized flash block sizes for faster inference. Uncomment Flux-dev [config](src/maxdiffusion/configs/base_flux_dev.yml#60) and Flux-schnell [config](src/maxdiffusion/configs/base_flux_schnell.yml#68)
+  If you are using a TPU v6e (Trillium), you can use optimized flash block sizes for faster inference. They are already enabled in the Flux-dev [config](src/maxdiffusion/configs/base_flux_dev.yml#L79-L89); for Flux-schnell, uncomment the `flash_block_sizes` block in its [config](src/maxdiffusion/configs/base_flux_schnell.yml#L85-L95).
 
   To keep text encoders, vae and transformer on HBM memory at all times, the following command shards the model across devices.
 
@@ -861,15 +867,15 @@ The optimal attention tile sizes (`block_q` / `block_kv`) depend on the sequence
   ```bash
   python src/maxdiffusion/generate_flux2klein.py src/maxdiffusion/configs/base_flux2klein_9B.yml run_name=flux2klein_9b_kv_edit prompt="change the lighting to evening" image_paths="['src/maxdiffusion/tests/images/flux2klein/ref_flux2klein_9b.png']" use_kv=True
   ```
-  ## Fused Attention for GPU:
+  ## Fused Attention for GPU
   Fused Attention for GPU is supported via TransformerEngine. Installation instructions:
 
   ```bash
   cd maxdiffusion
   pip install -U "jax[cuda12]"
-  pip install -r requirements.txt
+  pip install -r dependencies/requirements/generated_requirements/requirements.txt
   pip install --upgrade torch torchvision
-  pip install "transformer_engine[jax]
+  pip install "transformer_engine[jax]==2.1.0"
   pip install .
   ```
 
@@ -882,7 +888,7 @@ The optimal attention tile sizes (`block_q` / `block_kv`) depend on the sequence
 
   Disclaimer: not all LoRA formats have been tested. Currently supports ComfyUI and AI Toolkit formats. If there is a specific LoRA that doesn't load, please let us know.
 
-  First create a copy of the relevant config file eg: `src/maxdiffusion/configs/base_wan_{*}.yml`. Update the prompt and LoRA details in the config. Make sure to set `enable_lora: True`. Then run the following command:
+  First create a copy of the relevant config file, e.g. `src/maxdiffusion/configs/base_wan_{*}.yml`. Update the prompt and LoRA details in the config. Make sure to set `enable_lora: True`. Then run the following command (replace `base_wan_i2v_14b.yml` with your copy):
 
   ```bash
   HF_HUB_CACHE=/mnt/disks/external_disk/maxdiffusion_hf_cache/ \
@@ -893,15 +899,15 @@ The optimal attention tile sizes (`block_q` / `block_kv`) depend on the sequence
   --xla_enable_async_all_reduce=true" \
   HF_HUB_ENABLE_HF_TRANSFER=1 \
   python src/maxdiffusion/generate_wan.py \
-  src/maxdiffusion/configs/base_wan_i2v_14b.yml \   # --> Change to your copy
+  src/maxdiffusion/configs/base_wan_i2v_14b.yml \
   jax_cache_dir=gs://jfacevedo-maxdiffusion/jax_cache/ \
   per_device_batch_size=.125 \
   ici_data_parallelism=2 \
   ici_context_parallelism=2 \
   run_name=wan-lora-inference-testing-720p \
-  output_dir=gs:/jfacevedo-maxdiffusion \
+  output_dir=gs://jfacevedo-maxdiffusion \
   seed=118445 \
-  enable_lora=True \
+  enable_lora=True
   ```
 
   Loading multiple LoRAs is supported as well.
@@ -972,21 +978,21 @@ ZONE=<your-zone>
 PROJECT_ID=<your-project-id>
 gcloud compute tpus tpu-vm ssh $TPU_NAME --zone=$ZONE --project $PROJECT_ID --worker=all --command="
 export LIBTPU_INIT_ARGS=""
-git clone https://github.com/google/maxdiffusion
+git clone https://github.com/AI-Hypercomputer/maxdiffusion
 cd maxdiffusion
 pip3 install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-pip3 install -r requirements.txt
+pip3 install -r dependencies/requirements/generated_requirements/requirements.txt
 pip3 install .
 python -m src.maxdiffusion.train src/maxdiffusion/configs/base_2_base.yml run_name=my_run output_dir=gs://your-bucket/"
 ```
 
 # Comparison to Alternatives
 
-MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/diffusers), a Hugging Face diffusion library written in Python, Pytorch and Jax. MaxDiffusion is compatible with Hugging Face Jax models. MaxDiffusion is more complex and was designed to run distributed across TPU Pods.
+MaxDiffusion started as a fork of [Diffusers](https://github.com/huggingface/diffusers), a Hugging Face diffusion library written in Python, PyTorch and JAX. MaxDiffusion is compatible with Hugging Face JAX models. MaxDiffusion is more complex and was designed to run distributed across TPU Pods.
 
 # Development
 
-Whether you are forking MaxDiffusion for your own needs or intending to contribute back to the community, a full suite of tests can be found in `tests` and `src/maxdiffusion/tests`.
+Whether you are forking MaxDiffusion for your own needs or intending to contribute back to the community, a full suite of unit tests can be found in `src/maxdiffusion/tests` and end-to-end tests in `end_to_end/`.
 
 To run unit tests simply run:
 ```bash
@@ -1028,8 +1034,7 @@ bash code_style.sh
 
 This script will automatically format your code with `pyink` and help you identify any remaining style issues.
 
-
-The full suite of -end-to end tests is in `tests` and `src/maxdiffusion/tests`. We run them with a nightly cadance.
+The full suite of end-to-end tests is in `end_to_end/`. We run them with a nightly cadence.
 
 ## Profiling
 To learn how to enable ML Diagnostics and XProf profiling for your runs, please see our [ML Diagnostics Guide](docs/profiling.md).

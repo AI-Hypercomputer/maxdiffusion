@@ -14,14 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This scripts takes a docker image that already contains the MaxDiffusion dependencies, copies the local source code in and
-# uploads that image into GCR. Once in GCR the docker image can be used for development.
+# This script builds a local docker image (maxdiffusion_base_image) containing all MaxDiffusion dependencies for the
+# requested MODE/DEVICE. It does not push anything; use "bash docker_upload_runner.sh" afterwards to layer in the local
+# source code and upload the result to GCR.
 
-# Each time you update the base image via a "bash docker_maxdiffusion_image_upload.sh", there will be a slow upload process
-# (minutes). However, if you are simply changing local code and not updating dependencies, uploading just takes a few seconds.
+# Rebuilding this base image is slow (minutes) but only needed when dependencies change. If you are only changing local
+# code, re-run docker_upload_runner.sh instead, which takes a few seconds.
 
-# bash docker_build_dependency_image.sh MODE=stable JAX_VERSION=0.4.13
+# bash docker_build_dependency_image.sh MODE=stable JAX_VERSION=0.9.0
 # bash docker_build_dependency_image.sh MODE=stable
+# bash docker_build_dependency_image.sh MODE=nightly DEVICE=gpu
 
 set -e
 
