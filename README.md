@@ -790,6 +790,28 @@ We added ring attention support for Wan models. Below are the stats for one `720
 
 (* There are some known stability issues for ring attention on 16 TPUs, please use `tokamax_flash` attention instead.)
 
+### FlyWheel Attention
+`attention=flywheel` runs Wan self-attention on the [FlyWheel](https://github.com/heavyball-research/flywheel-tpu) kernel instead of Splash, with the same sharding as `attention=flash`. `attention=ulysses_flywheel` runs the same kernel with the head sharding of `attention=ulysses` (requires `ici_context_parallelism` > 1 and heads divisible by it). Cross-attention, RoPE and QK-norm are unchanged and stay on Splash/XLA.
+
+FlyWheel supports TPU v6e and tpu7x, and it is inference-only: the kernel has no backward pass, so do not use it for training. Inputs it does not support (attention masks, causal attention, GQA, non-bfloat16 q/k/v) raise an error instead of falling back to another kernel.
+
+```bash
+pip install flywheel-tpu   # or: pip install -e ".[flywheel]"
+python src/maxdiffusion/generate_wan.py \
+  src/maxdiffusion/configs/base_wan_27b.yml \
+  attention="flywheel" \
+  ...
+```
+
+Wan 2.1 T2V 1.3B, `480x832`, 81 frames, 30 inference steps, CFG, seed 0, one v6e chip. Splash uses the faster of two v6e tilings we tried (`block_q`/`block_kv`/`block_kv_compute` 2048/4096/1024; 3024/2048/1024 took 65.1 s). Times are the average of two runs, which differed by less than 0.2%.
+
+| Accelerator | Model | Attention Type | Denoise | e2e Generation Time |
+| -- | -- | -- | -- | -- |
+| v6e-1 | WAN 2.1 1.3B | Splash (`flash`) | 58.8 s | 63.3 s |
+| v6e-1 | WAN 2.1 1.3B | FlyWheel (`flywheel`) | **49.5 s** | **54.0 s (1.17x)** |
+
+The FlyWheel video differs from the Splash video by 25.0 dB PSNR, about the same as changing only the Splash tiling (25.1 dB between the 512 and 2048/4096/1024 tilings).
+
 ### Automatic Tile-Size Search
 
 The optimal attention tile sizes (`block_q` / `block_kv`) depend on the sequence length, VMEM, sharding, and accelerator, and the feasibility edge is a VMEM OOM with no clean closed form — so we tune them empirically. Passing `enable_tile_search=true` to `generate_wan.py` runs a fast one-DiT-block grid search before inference and injects the winning block sizes into `flash_block_sizes` (`tile_search_mode=smart` by default; the search is opt-in and off by default).  The core is model-agnostic (`utils/tile_size_grid_search.py`) with a per-model plug (`utils/wan_block_benchmark.py`), which also runs standalone via `python -m maxdiffusion.utils.wan_block_benchmark ... --smart-search`.

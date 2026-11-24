@@ -46,6 +46,8 @@ classifiers = [
 quality = ["urllib3", "black", "isort", "ruff", "hf-doc-builder"]
 docs = ["hf-doc-builder"]
 training = ["accelerate", "datasets", "protobuf", "tensorboard", "Jinja2"]
+# attention=flywheel / ulysses_flywheel (Wan inference on TPU v6e and tpu7x).
+flywheel = ["flywheel-tpu>=0.4.1"]
 test = [
     "compel",
     "datasets",

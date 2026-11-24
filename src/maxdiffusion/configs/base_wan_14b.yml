@@ -101,7 +101,7 @@ svg_low_noise_density: -1.0
 # compute blocks and the sparse kernel for small ones. Must stay a dict so the
 # command line can override it with JSON.
 svg_flash_block_sizes: {}
-attention: 'flash' # Supported attention: dot_product, flash, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir
+attention: 'flash' # Supported attention: dot_product, flash, flywheel, ulysses_flywheel, tokamax_flash, cudnn_flash_te, ring, tokamax_ring, tokamax_ring_custom, ulysses, ulysses_custom, ulysses_custom_fixed_m, ulysses_custom_fixed_m_per_q_block, ulysses_ring, ulysses_ring_custom, ulysses_ring_custom_fixed_m, ulysses_ring_custom_fixed_m_per_q_block, ulysses_ring_custom_bidir
 
 use_base2_exp: True
 use_experimental_scheduler: True

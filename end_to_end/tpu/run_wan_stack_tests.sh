@@ -53,5 +53,7 @@ TESTS=(
   "$T/cross_attention_pallas_test.py"
   # Lane sequence padding (feat/wan-fast-inference-optimizations)
   "$T/wan_seq_pad_test.py"
+  # FlyWheel self-attention backend (needs flywheel-tpu on v6e / tpu7x for the numerical tests)
+  "$T/flywheel_attention_test.py"
 )
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "${PYTHON:-python3}" -m pytest -q -rs "${TESTS[@]}" "$@"
