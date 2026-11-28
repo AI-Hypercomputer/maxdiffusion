@@ -436,6 +436,8 @@ def run_inference_2_1(
           magcache_thresh,
           magcache_K,
           skip_warmup,
+          # Never skip before a residual has been cached (e.g. the 2-step compile warmup).
+          use_magcache=False if cached_residual is None else None,
       )
 
       noise_pred, residual_x_cur = transformer_forward_pass(
