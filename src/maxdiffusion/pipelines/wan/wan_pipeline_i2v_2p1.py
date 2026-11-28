@@ -465,6 +465,8 @@ def run_inference_2_1_i2v(
           magcache_thresh,
           magcache_K,
           skip_warmup,
+          # Never skip before a residual has been cached (e.g. the 2-step compile warmup).
+          use_magcache=False if cached_residual is None else None,
       )
 
     latents_input = latents
